@@ -27,12 +27,19 @@ module.exports = {
       restart_delay: 2000,
       kill_timeout: 3000,
       env: {
-        PROJECT_ROOT: path.resolve(__dirname, '..', '..', '..', '..'),
+        PROJECT_ROOT: 'C:\\Era\\devkit',
         PORT: '3001',
         PROXY_ENABLED: 'true',
         PROXY_HOST: '127.0.0.1',
         PROXY_PORT: '8888',
         DASHBOARD_DEBUG: '1',
+        REPO_PATHS: JSON.stringify({
+          game: 'C:\\Era\\game',
+          core: 'C:\\Era\\core',
+          engine: 'C:\\Era\\engine',
+          devkit: 'C:\\Era\\devkit',
+          dashboard: 'C:\\Era\\dashboard'
+        }),
         // CCS_PROFILE: Auto-detected from ~/.ccs/config.yaml (set manually to override)
       },
     },

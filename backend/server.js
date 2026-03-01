@@ -194,7 +194,7 @@ app.get('/api/health', async (req, res) => {
   const queueStatus = claudeService.getQueueStatus();
   const proxy = await claudeService.checkProxy();
 
-  // Git dirty check (main repo + engine/)
+  // Git dirty check (5-repo monitoring)
   const gitStatusOpts = { timeout: 5000, encoding: 'utf8', windowsHide: true };
   const countDirty = (cwd) => {
     try {
@@ -203,9 +203,21 @@ app.get('/api/health', async (req, res) => {
       return lines.length;
     } catch { return 0; }
   };
-  const mainCount = countDirty(PROJECT_ROOT);
-  const engineCount = countDirty(path.join(PROJECT_ROOT, 'engine'));
-  const totalCount = mainCount + engineCount;
+  const repoPaths = JSON.parse(process.env.REPO_PATHS || '{}');
+  const defaultPaths = {
+    game: 'C:\\Era\\game',
+    core: 'C:\\Era\\core',
+    engine: 'C:\\Era\\engine',
+    devkit: 'C:\\Era\\devkit',
+    dashboard: 'C:\\Era\\dashboard'
+  };
+  const paths = { ...defaultPaths, ...repoPaths };
+  const counts = {};
+  let totalCount = 0;
+  for (const [name, dir] of Object.entries(paths)) {
+    counts[name] = countDirty(dir);
+    totalCount += counts[name];
+  }
 
   // Trigger fresh rate limit capture if requested (e.g., on browser refresh)
   if (req.query.refresh) {
@@ -226,7 +238,7 @@ app.get('/api/health', async (req, res) => {
     uptime: process.uptime(),
     logDir: LOG_DIR,
     rateLimit: rateLimitService.getCached(),
-    git: { dirty: totalCount > 0, changedCount: totalCount, main: mainCount, engine: engineCount },
+    git: { dirty: totalCount > 0, changedCount: totalCount, ...counts },
     pendingRestart,
     shellStates: claudeService.getShellStates(),
   });
