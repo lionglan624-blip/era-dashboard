@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+echo "=== Pre-commit CI (dashboard) ==="
+
+# Lint check
+echo "[1/2] ESLint + Prettier check..."
+npx eslint backend/ frontend/src/ --quiet
+npx prettier --check "backend/**/*.{js,cjs}" "frontend/src/**/*.{js,jsx,css}"
+
+echo "[2/2] === CI PASSED ==="
