@@ -3,8 +3,12 @@ set -e
 echo "=== Pre-commit CI (dashboard) ==="
 
 # Lint check
-echo "[1/2] ESLint + Prettier check..."
+echo "[1/3] ESLint + Prettier check..."
 npx eslint backend/ frontend/src/ --quiet
 npx prettier --check "backend/**/*.{js,cjs}" "frontend/src/**/*.{js,jsx,css}"
 
-echo "[2/2] === CI PASSED ==="
+# Test
+echo "[2/3] Running tests..."
+npm run test
+
+echo "[3/3] === CI PASSED ==="
