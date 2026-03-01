@@ -46,8 +46,8 @@ describe('logger', () => {
   });
 
   describe('LOG_DIR constant', () => {
-    it('points to _out/tmp/dashboard/logs', () => {
-      expect(LOG_DIR).toMatch(/_out[/\\]tmp[/\\]dashboard[/\\]logs$/);
+    it('points to _out/logs/dashboard', () => {
+      expect(LOG_DIR).toMatch(/_out[/\\]logs[/\\]dashboard$/);
     });
   });
 
@@ -73,7 +73,7 @@ describe('logger', () => {
       const logger = createLogger('test');
       const logPath = logger.getLogPath();
 
-      expect(logPath).toMatch(/_out[/\\]tmp[/\\]dashboard[/\\]logs[/\\]test-2026-02-04\.log$/);
+      expect(logPath).toMatch(/_out[/\\]logs[/\\]dashboard[/\\]test-2026-02-04\.log$/);
     });
 
     it('returns path with logger name', () => {

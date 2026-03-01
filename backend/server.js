@@ -35,7 +35,6 @@ serverLog.info(`Log directory: ${LOG_DIR}`);
 serverLog.info(`Node version: ${process.version}`);
 serverLog.info(`PID: ${process.pid}`);
 
-
 // Services
 const logStreamer = new LogStreamer();
 const featureService = new FeatureService(PROJECT_ROOT);
@@ -136,21 +135,23 @@ function triggerAutoDR() {
         timestamp: new Date().toISOString(),
       });
     }
-    serverLog.info(`[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting`);
+    serverLog.info(
+      `[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting`,
+    );
   }
 }
 
 // Watch backend source files for changes
 // NOTE: chokidar 4.x glob expansion is broken on Windows + Node 24 (0 watched dirs).
 // Use directory watching instead, with file extension filter in the handler.
-const autoDRWatcher = chokidar.watch([
-  path.join(__dirname, 'src'),
-  path.join(__dirname, 'server.js'),
-], {
-  ignoreInitial: true,
-  ignored: ['**/node_modules/**', '**/*.test.js'],
-  awaitWriteFinish: { stabilityThreshold: 500 },
-});
+const autoDRWatcher = chokidar.watch(
+  [path.join(__dirname, 'src'), path.join(__dirname, 'server.js')],
+  {
+    ignoreInitial: true,
+    ignored: ['**/node_modules/**', '**/*.test.js'],
+    awaitWriteFinish: { stabilityThreshold: 500 },
+  },
+);
 
 autoDRWatcher.on('change', (filePath) => {
   if (!filePath.endsWith('.js')) return;
@@ -199,9 +200,14 @@ app.get('/api/health', async (req, res) => {
   const countDirty = (cwd) => {
     try {
       const output = execSync('git status --porcelain', { ...gitStatusOpts, cwd });
-      const lines = output.trim().split('\n').filter(l => l.length > 0);
+      const lines = output
+        .trim()
+        .split('\n')
+        .filter((l) => l.length > 0);
       return lines.length;
-    } catch { return 0; }
+    } catch {
+      return 0;
+    }
   };
   const repoPaths = JSON.parse(process.env.REPO_PATHS || '{}');
   const defaultPaths = {
@@ -209,7 +215,7 @@ app.get('/api/health', async (req, res) => {
     core: 'C:\\Era\\core',
     engine: 'C:\\Era\\engine',
     devkit: 'C:\\Era\\devkit',
-    dashboard: 'C:\\Era\\dashboard'
+    dashboard: 'C:\\Era\\dashboard',
   };
   const paths = { ...defaultPaths, ...repoPaths };
   const counts = {};
@@ -233,7 +239,7 @@ app.get('/api/health', async (req, res) => {
       running: queueStatus.running,
     },
     proxy,
-    ccsProfile: claudeService.getCcsProfile(),  // Current CCS profile name
+    ccsProfile: claudeService.getCcsProfile(), // Current CCS profile name
     ccsProfiles: getCcsProfiles(),
     uptime: process.uptime(),
     logDir: LOG_DIR,
@@ -249,11 +255,16 @@ app.post('/api/ratelimit/:profile', (req, res) => {
   const profile = req.params.profile;
   const profiles = getCcsProfiles();
   if (!profiles.includes(profile)) {
-    return res.status(400).json({ error: `Unknown profile: ${profile}. Available: ${profiles.join(', ')}` });
+    return res
+      .status(400)
+      .json({ error: `Unknown profile: ${profile}. Available: ${profiles.join(', ')}` });
   }
   const { weekly, session } = req.body || {};
   if (!weekly && !session) {
-    return res.status(400).json({ error: 'Request body must include weekly and/or session: { weekly: { percent, resetsAt }, session: { percent, resetsAt } }' });
+    return res.status(400).json({
+      error:
+        'Request body must include weekly and/or session: { weekly: { percent, resetsAt }, session: { percent, resetsAt } }',
+    });
   }
   const data = {};
   if (weekly) data.weekly = { percent: weekly.percent, resetsAt: weekly.resetsAt || null };
@@ -272,7 +283,10 @@ function cleanupPort(port) {
   let killed = 0;
   try {
     const output = execSync(`netstat -ano | findstr "LISTENING" | findstr ":${port} "`, {
-      encoding: 'utf8', windowsHide: true, shell: true, timeout: 5000
+      encoding: 'utf8',
+      windowsHide: true,
+      shell: true,
+      timeout: 5000,
     });
     const pids = new Set();
     for (const line of output.trim().split('\n')) {
@@ -285,9 +299,13 @@ function cleanupPort(port) {
       try {
         execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, shell: true, timeout: 5000 });
         killed++;
-      } catch { /* process already dead */ }
+      } catch {
+        /* process already dead */
+      }
     }
-  } catch { /* no process on port */ }
+  } catch {
+    /* no process on port */
+  }
   return killed;
 }
 
@@ -298,7 +316,9 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE' && eaddrinuseRetries < MAX_EADDRINUSE_RETRIES) {
     eaddrinuseRetries++;
     const delay = eaddrinuseRetries * 1000; // 1s, 2s, 3s
-    serverLog.error(`Port ${PORT} already in use (attempt ${eaddrinuseRetries}/${MAX_EADDRINUSE_RETRIES}), retrying in ${delay}ms...`);
+    serverLog.error(
+      `Port ${PORT} already in use (attempt ${eaddrinuseRetries}/${MAX_EADDRINUSE_RETRIES}), retrying in ${delay}ms...`,
+    );
     cleanupPort(PORT);
     setTimeout(() => server.listen(PORT), delay);
   } else {
@@ -311,18 +331,24 @@ server.on('error', (err) => {
 const killed = cleanupPort(PORT);
 const startDelay = killed > 0 ? 1500 : 0; // Wait for Windows socket cleanup
 if (startDelay > 0) {
-  serverLog.info(`[Port Cleanup] Killed ${killed} stale process(es), waiting ${startDelay}ms for port release...`);
+  serverLog.info(
+    `[Port Cleanup] Killed ${killed} stale process(es), waiting ${startDelay}ms for port release...`,
+  );
 }
-setTimeout(() => server.listen(PORT, () => {
-  serverLog.info(`Backend running on http://localhost:${PORT}`);
-  serverLog.info(`WebSocket on ws://localhost:${PORT}/ws`);
-  fileWatcher.start();
-  // Background rate limit capture on startup + periodic polling
-  rateLimitService.capture({ forceRefresh: true }).catch(() => {});
-  setInterval(() => rateLimitService.capture().catch(() => {}), RATE_LIMIT_POLL_INTERVAL_MS);
-  statusMailService.start();
-  cleanupService.start();
-}), startDelay);
+setTimeout(
+  () =>
+    server.listen(PORT, () => {
+      serverLog.info(`Backend running on http://localhost:${PORT}`);
+      serverLog.info(`WebSocket on ws://localhost:${PORT}/ws`);
+      fileWatcher.start();
+      // Background rate limit capture on startup + periodic polling
+      rateLimitService.capture({ forceRefresh: true }).catch(() => {});
+      setInterval(() => rateLimitService.capture().catch(() => {}), RATE_LIMIT_POLL_INTERVAL_MS);
+      statusMailService.start();
+      cleanupService.start();
+    }),
+  startDelay,
+);
 
 // Error handling
 process.on('uncaughtException', (err) => {
@@ -337,7 +363,10 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   serverLog.info('Shutting down (SIGINT)...');
-  setTimeout(() => { serverLog.warn('Shutdown timeout, forcing exit'); process.exit(1); }, 1500).unref();
+  setTimeout(() => {
+    serverLog.warn('Shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 1500).unref();
   await statusMailService.stop();
   cleanupService.stop();
   claudeService.killAllRunning();
@@ -349,7 +378,10 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   serverLog.info('Shutting down (SIGTERM)...');
-  setTimeout(() => { serverLog.warn('Shutdown timeout, forcing exit'); process.exit(1); }, 1500).unref();
+  setTimeout(() => {
+    serverLog.warn('Shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 1500).unref();
   await statusMailService.stop();
   cleanupService.stop();
   claudeService.killAllRunning();

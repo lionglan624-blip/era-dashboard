@@ -6,7 +6,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // From utils/ -> src/ -> backend/ -> feature-dashboard/ -> tools/ -> erakoumakanNTR/
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const LOG_DIR = path.join(PROJECT_ROOT, '_out', 'tmp', 'dashboard', 'logs');
+const LOG_DIR = path.join(PROJECT_ROOT, '_out', 'logs', 'dashboard');
 
 // Detect test environment
 const IS_TEST = !!process.env.VITEST;

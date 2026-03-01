@@ -368,14 +368,14 @@ Enables `debugLog()` calls (spawn args, non-JSON stream lines, Task tool depth).
 
 **Log and session files**:
 
-All dashboard logs are under **project root** `{projectRoot}/_out/tmp/dashboard/` (NOT `tools/feature-dashboard/_out/tmp/`). Path is resolved by `logger.js` going up 5 levels from `backend/src/utils/`.
+All dashboard logs are under **project root** `{projectRoot}/_out/logs/dashboard/` (NOT `tools/feature-dashboard/_out/`). Path is resolved by `logger.js` going up 5 levels from `backend/src/utils/`.
 
 | Type | Location (relative to project root) | Description |
 |------|--------------------------------------|-------------|
-| `server-{date}.log` | `_out/tmp/dashboard/logs/` | Express server startup, routes |
-| `websocket-{date}.log` | `_out/tmp/dashboard/logs/` | WebSocket connections, broadcasts |
-| `claude-{date}.log` | `_out/tmp/dashboard/logs/` | ClaudeService: spawn, chain, retry, completion |
-| `watcher-{date}.log` | `_out/tmp/dashboard/logs/` | FileWatcher: status changes, file updates |
+| `server-{date}.log` | `_out/logs/dashboard/` | Express server startup, routes |
+| `websocket-{date}.log` | `_out/logs/dashboard/` | WebSocket connections, broadcasts |
+| `claude-{date}.log` | `_out/logs/dashboard/` | ClaudeService: spawn, chain, retry, completion |
+| `watcher-{date}.log` | `_out/logs/dashboard/` | FileWatcher: status changes, file updates |
 | `debug-{execId}.log` | `_out/tmp/dashboard/` | Per-execution Claude CLI `--debug-file` output |
 | `sessions.json` | `_out/tmp/dashboard/` | Persistent session ID map (survives execution TTL eviction, 7-day retention) |
 | Session JSONL | `~/.ccs/instances/{profile}/projects/{project}/` | Claude conversation history (token usage, messages) |
@@ -574,7 +574,7 @@ Detection: (1) stderr regex `/hit your limit|rate_limit_error|exceed your (organ
 The dashboard has grown into a standalone web application (650+ backend tests, 230+ frontend tests, 12+ service modules) and should eventually be extracted into its own repository. The main coupling points are:
 
 - **`projectRoot` hardcoding**: `featureParser`, `fileWatcher`, and `logger.js` resolve paths relative to the parent project. Replace with a `PROJECT_ROOT` environment variable in `config.js`.
-- **`_out/tmp/dashboard/` log output**: `logger.js` resolves the project root by traversing 5 directory levels. Should use `PROJECT_ROOT` instead.
+- **`_out/logs/dashboard/` log output**: `logger.js` resolves the project root by traversing 5 directory levels. Should use `PROJECT_ROOT` instead.
 - **`patch-pm2.js` location**: Currently at project root `tools/feature-dashboard/`. Move into the dashboard repo.
 
 **Preparation steps** (can be done incrementally before separation):

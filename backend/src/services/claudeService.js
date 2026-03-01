@@ -887,7 +887,12 @@ export class ClaudeService {
 
     // Write context % to file for FL Context Pressure Gate (statusline doesn't run in -p mode)
     if (execution.featureId && execution.contextPercent != null) {
-      const ctxFile = path.join(this.projectRoot, '_out', 'tmp', `claude-ctx-f${execution.featureId}.txt`);
+      const ctxFile = path.join(
+        this.projectRoot,
+        '_out',
+        'tmp',
+        `claude-ctx-f${execution.featureId}.txt`,
+      );
       try {
         writeFileSync(ctxFile, String(execution.contextPercent));
       } catch {}

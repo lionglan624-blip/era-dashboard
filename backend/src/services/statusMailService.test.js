@@ -75,19 +75,17 @@ function makeMockServices() {
         running: [{ id: 'x', featureId: '100', command: 'fl', phase: 2, phaseName: 'FL Review' }],
         queued: [{ id: 'y', featureId: '200', command: 'run' }],
       }),
-      listExecutions: vi
-        .fn()
-        .mockReturnValue([
-          {
-            id: 'x',
-            featureId: '100',
-            command: 'fl',
-            status: 'running',
-            phase: 2,
-            phaseName: 'FL Review',
-            contextPercent: 45,
-          },
-        ]),
+      listExecutions: vi.fn().mockReturnValue([
+        {
+          id: 'x',
+          featureId: '100',
+          command: 'fl',
+          status: 'running',
+          phase: 2,
+          phaseName: 'FL Review',
+          contextPercent: 45,
+        },
+      ]),
     },
     rateLimitService: {
       getCached: vi.fn().mockReturnValue({

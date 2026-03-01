@@ -101,11 +101,9 @@ export function createExecutionRouter(claudeService) {
     }
     const allowedShell = ['cs', 'dr', 'upd'];
     if (!allowedShell.includes(command)) {
-      return res
-        .status(400)
-        .json({
-          error: `Invalid shell command: ${command}. Must be one of: ${allowedShell.join(', ')}`,
-        });
+      return res.status(400).json({
+        error: `Invalid shell command: ${command}. Must be one of: ${allowedShell.join(', ')}`,
+      });
     }
     if (command === 'cs' && profile !== undefined) {
       // Profile validation: simple lowercase letters only
@@ -137,11 +135,9 @@ export function createExecutionRouter(claudeService) {
     }
     const allowedSlash = ['commit', 'sync-deps'];
     if (!allowedSlash.includes(command)) {
-      return res
-        .status(400)
-        .json({
-          error: `Invalid slash command: ${command}. Must be one of: ${allowedSlash.join(', ')}`,
-        });
+      return res.status(400).json({
+        error: `Invalid slash command: ${command}. Must be one of: ${allowedSlash.join(', ')}`,
+      });
     }
     try {
       const executionId = claudeService.executeSlashCommand(command);
