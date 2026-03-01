@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "smtpHost": "smtp.gmail.com",
+  "smtpPort": 587,
+  "user": "YOUR_GMAIL@gmail.com",
+  "pass": "YOUR_APP_PASSWORD",
+  "statusMail": {
+    "enabled": true,
+    "imapHost": "imap.gmail.com",
+    "imapPort": 993,
+    "reconnectDelayMs": 10000,
+    "allowedSenders": ["YOUR_SENDER@example.com"]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "feature-dashboard-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:mutation": "stryker run"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "imapflow": "^1.2.9",
+    "node-pty": "^1.1.0",
+    "nodemailer": "^8.0.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^9.5.1",
+    "@stryker-mutator/vitest-runner": "^9.5.1",
+    "vitest": "^4.0.18"
+  }
+}

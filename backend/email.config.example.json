@@ -1,0 +1,14 @@
+{
+  "enabled": false,
+  "smtpHost": "smtp.gmail.com",
+  "smtpPort": 587,
+  "user": "",
+  "pass": "",
+  "statusMail": {
+    "enabled": false,
+    "imapHost": "imap.gmail.com",
+    "imapPort": 993,
+    "reconnectDelayMs": 10000,
+    "allowedSenders": []
+  }
+}
