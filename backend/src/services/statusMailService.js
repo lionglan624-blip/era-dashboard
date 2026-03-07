@@ -78,6 +78,9 @@ export class StatusMailService {
       this.enabled = false;
     }
 
+    // Release notification callback
+    this.onReleaseEmail = null;
+
     // IDLE state
     this._client = null;
     this._lock = null;
@@ -197,6 +200,24 @@ export class StatusMailService {
           }
           this._processedUids.add(msg.uid);
           this.logger.info(`Processed status request: ${msg.envelope.messageId}`);
+        } else {
+          const releaseInfo = this._isReleaseNotification(msg.envelope);
+          if (releaseInfo && this.onReleaseEmail) {
+            this.logger.info(
+              `Release notification found: ${releaseInfo.version} (uid: ${msg.uid})`,
+            );
+            try {
+              await this.onReleaseEmail(releaseInfo.version, msg.envelope.subject, msg.source);
+            } catch (err) {
+              this.logger.error(`Release callback error: ${err.message}`);
+            }
+            try {
+              await this._client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+            } catch (flagErr) {
+              this.logger.error(`Failed to flag message: ${flagErr.message}`);
+            }
+            this._processedUids.add(msg.uid);
+          }
         }
       }
     } catch (err) {
@@ -241,6 +262,17 @@ export class StatusMailService {
     }
 
     return true;
+  }
+
+  _isReleaseNotification(envelope) {
+    const fromAddr = envelope.from?.[0]?.address?.toLowerCase();
+    if (fromAddr !== 'notifications@github.com') return null;
+
+    const subject = envelope.subject || '';
+    const match = subject.match(/\[anthropics\/claude-code\]\s*Release\s*(v[\d.]+)/i);
+    if (!match) return null;
+
+    return { version: match[1] };
   }
 
   _buildStatusReport() {

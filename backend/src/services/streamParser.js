@@ -29,6 +29,7 @@ export class StreamParser {
     broadcastInputRequired,
     handoffToTerminal,
     handleCompletion,
+    killProcess,
     debugLog,
   }) {
     this.pushLog = pushLog;
@@ -38,6 +39,7 @@ export class StreamParser {
     this.broadcastInputRequired = broadcastInputRequired;
     this.handoffToTerminal = handoffToTerminal;
     this.handleCompletion = handleCompletion;
+    this.killProcess = killProcess || (() => {});
     this.debugLog = debugLog || (() => {});
     this.outputRingBuffers = new Map();
     this.RING_BUFFER_SIZE = 20;
@@ -247,7 +249,11 @@ export class StreamParser {
               level: 'info',
             };
             this.pushLog(execution, entry);
-            this.broadcast(execution.id, { type: 'log', executionId: execution.id, ...entry });
+            this.broadcast(execution.id, {
+              type: 'log',
+              executionId: execution.id,
+              ...entry,
+            });
             this.broadcastState(execution);
           }
 
@@ -262,18 +268,22 @@ export class StreamParser {
         execution.lastAssistantText = textContent.trim();
       }
 
-      // If AskUserQuestion found, store context, notify, and handoff to terminal
+      // If AskUserQuestion found, kill process immediately to prevent auto-empty-response,
+      // then store context and notify browser for user answer → resume flow
       if (askUserQuestion) {
         execution.inputRequired = {
           toolUseId: askUserQuestion.id,
           questions: askUserQuestion.input?.questions || [],
         };
         execution.inputContext = textContent.trim();
+        execution._killedForAskUser = true; // Guard: ignore buffered tool_result after kill
+
+        // Kill process BEFORE tool_result (auto-empty-response) arrives.
+        // Session is saved with AskUserQuestion pending; answerInBrowser resumes with user's choice.
+        this.killProcess(execution);
+
         this.broadcastState(execution);
         this.broadcastInputRequired(execution);
-
-        // Auto-handoff to terminal for user input
-        this.handoffToTerminal(execution, 'AskUserQuestion requires user input');
       }
     }
 
@@ -304,7 +314,11 @@ export class StreamParser {
               level: 'info',
             };
             this.pushLog(execution, entry);
-            this.broadcast(execution.id, { type: 'log', executionId: execution.id, ...entry });
+            this.broadcast(execution.id, {
+              type: 'log',
+              executionId: execution.id,
+              ...entry,
+            });
             this.broadcastState(execution);
 
             this.debugLog(
@@ -312,10 +326,17 @@ export class StreamParser {
             );
           }
           // Clear input required if this was a response to AskUserQuestion
+          // BUT skip if process was killed for AskUserQuestion (buffered auto-response)
           if (execution.inputRequired?.toolUseId === block.tool_use_id) {
-            execution.inputRequired = null;
-            execution.inputContext = null;
-            this.broadcastState(execution);
+            if (execution._killedForAskUser) {
+              this.debugLog(
+                `[StreamParser] Ignoring buffered AskUserQuestion tool_result after kill`,
+              );
+            } else {
+              execution.inputRequired = null;
+              execution.inputContext = null;
+              this.broadcastState(execution);
+            }
           }
         }
       }
@@ -328,11 +349,17 @@ export class StreamParser {
       // to ensure stderr (rate limit detection) is fully drained first
       execution.resultExitCode = event.is_error ? 1 : 0;
       if (execution.pendingHandoff) {
-        // y/n detected earlier — result event confirms session is saved, now handoff
+        // Input detected earlier — result event confirms session is saved.
+        // Cancel handoff timeout — let process complete normally.
+        // Browser UI shows answer buttons; terminal handoff is user-initiated fallback.
         claudeLog.info(
-          `[ClaudeService] Result event received with pending handoff — session saved, proceeding with handoff`,
+          `[ClaudeService] Result event received with pending handoff — session saved, cancelling auto-handoff (browser-first)`,
         );
-        this.handoffToTerminal(execution, execution.pendingHandoff.reason);
+        if (execution.pendingHandoffTimeout) {
+          clearTimeout(execution.pendingHandoffTimeout);
+          execution.pendingHandoffTimeout = null;
+        }
+        execution.pendingHandoff = null;
       }
       // Do NOT call handleCompletion here — let process 'close' event drive it
       // This prevents a race where stdout result fires before stderr rate-limit detection
@@ -353,13 +380,27 @@ export class StreamParser {
       this.updateTokenUsage(execution, event.message.usage, null);
     }
 
-    // Extract final token usage from result event (always top-level)
+    // Extract contextWindow from result event (always top-level)
+    // Note: result.usage contains SESSION-CUMULATIVE totals (all turns summed),
+    // NOT per-turn values. Using them would inflate contextPercent to 100%.
+    // Only extract contextWindow from modelUsage; per-turn values from assistant events are correct.
     if (t === 'result' && event.modelUsage) {
-      // modelUsage contains per-model stats including contextWindow
       const modelKey = Object.keys(event.modelUsage)[0];
       if (modelKey) {
         const modelStats = event.modelUsage[modelKey];
-        this.updateTokenUsage(execution, event.usage, modelStats.contextWindow);
+        if (modelStats.contextWindow && execution.tokenUsage) {
+          execution.tokenUsage.contextWindow = modelStats.contextWindow;
+          // Recalculate contextPercent with correct window (per-turn values unchanged)
+          const total =
+            execution.tokenUsage.input +
+            execution.tokenUsage.cacheCreation +
+            execution.tokenUsage.cacheRead;
+          execution.contextPercent = Math.min(
+            100,
+            Math.floor((total / modelStats.contextWindow) * 100),
+          );
+          this.broadcastState(execution);
+        }
       }
     }
 
@@ -397,10 +438,23 @@ export class StreamParser {
     // false-matches input patterns (e.g. "proceed?" in FAQ). Skip.
     if (source === 'user') return;
 
+    // For assistant events: only check the last line of text.
+    // Claude's long responses often contain "(y/n)" references in documentation,
+    // feature reviews, or mid-text discussion — these are false positives.
+    // Real y/n prompts appear at the end of the response.
+    const textToCheck =
+      source === 'assistant'
+        ? text
+            .split('\n')
+            .filter((l) => l.trim())
+            .pop() || ''
+        : text;
+
     for (const { pattern, description } of INPUT_WAIT_PATTERNS) {
-      if (pattern.test(text)) {
+      if (pattern.test(textToCheck)) {
         if (!execution.waitingForInput) {
           execution.waitingForInput = true;
+          execution._hadInputWait = true;
           execution.waitingInputPattern = description;
           const textSnippet = text.length > 200 ? text.substring(0, 200) + '...' : text;
           claudeLog.info(

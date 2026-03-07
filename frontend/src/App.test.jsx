@@ -42,6 +42,7 @@ const defaultExecution = {
   addLog: vi.fn(),
   updateStatus: vi.fn(),
   fetchExecutions: vi.fn().mockResolvedValue([]),
+  fetchHistory: vi.fn().mockResolvedValue([]),
 };
 
 const defaultWs = {
@@ -724,7 +725,13 @@ describe('App', () => {
       const executions = new Map([
         [
           'exec-1',
-          { id: 'exec-1', featureId: '100', command: 'fc', status: 'completed', logs: [] },
+          {
+            id: 'exec-1',
+            featureId: '100',
+            command: 'fc',
+            status: 'completed',
+            logs: [],
+          },
         ],
         ['exec-2', { id: 'exec-2', featureId: '200', command: 'fl', status: 'running', logs: [] }],
       ]);

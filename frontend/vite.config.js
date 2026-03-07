@@ -8,11 +8,11 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.js'],
   },
   server: {
-    port: 5173,
+    port: parseInt(process.env.VITE_PORT || '5173'),
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': `http://localhost:${process.env.VITE_BACKEND_PORT || '3001'}`,
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: `ws://localhost:${process.env.VITE_BACKEND_PORT || '3001'}`,
         ws: true,
       },
     },

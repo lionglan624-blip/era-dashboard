@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import { execSync, spawn } from 'child_process';
 import chokidar from 'chokidar';
 
@@ -12,11 +13,16 @@ import { FileWatcher } from './src/services/fileWatcher.js';
 import { LogStreamer } from './src/websocket/logStreamer.js';
 import { RateLimitService } from './src/services/ratelimitService.js';
 import { StatusMailService } from './src/services/statusMailService.js';
+import { UpdateWatcherService } from './src/services/updateWatcherService.js';
+import { InsightsService } from './src/services/insightsService.js';
 import { CleanupService } from './src/services/cleanupService.js';
+import { ClaudeStatusService } from './src/services/claudeStatusService.js';
+import { EmailService } from './src/services/emailService.js';
 import { getCcsProfiles } from './src/services/ccsUtils.js';
 import { createFeaturesRouter } from './src/routes/features.js';
 import { createExecutionRouter } from './src/routes/execution.js';
 import { serverLog, LOG_DIR } from './src/utils/logger.js';
+import { decodeExitCode } from './src/utils/exitCodes.js';
 import { RATE_LIMIT_POLL_INTERVAL_MS, AUTO_DR_DEBOUNCE_MS } from './src/config.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +40,26 @@ serverLog.info(`Project root: ${PROJECT_ROOT}`);
 serverLog.info(`Log directory: ${LOG_DIR}`);
 serverLog.info(`Node version: ${process.version}`);
 serverLog.info(`PID: ${process.pid}`);
+
+try {
+  const pm2Log = path.join(process.env.USERPROFILE || process.env.HOME || '', '.pm2', 'pm2.log');
+  const tail = fs.readFileSync(pm2Log, 'utf8').split('\n').slice(-200);
+  const exitLine = tail
+    .reverse()
+    .find((l) => l.includes('dashboard-backend') && l.includes('exited with code'));
+  if (exitLine) {
+    const codeMatch = exitLine.match(/exited with code \[(\d+)\]/);
+    const sigMatch = exitLine.match(/via signal \[(\w+)\]/);
+    const tsMatch = exitLine.match(/^([\d\-T:.]+):/);
+    const code = codeMatch ? parseInt(codeMatch[1]) : null;
+    const decoded = code !== null ? decodeExitCode(code) : 'unknown';
+    serverLog.info(
+      `Previous exit: code=${code} (${decoded}), signal=${sigMatch?.[1] || 'none'}, at=${tsMatch?.[1] || '?'}`,
+    );
+  }
+} catch {
+  /* PM2 log not available */
+}
 
 // Services
 const logStreamer = new LogStreamer();
@@ -75,6 +101,12 @@ const rateLimitService = new RateLimitService(PROJECT_ROOT, {
   },
 });
 
+const emailService = claudeService.emailService || new EmailService();
+const insightsService = new InsightsService(PROJECT_ROOT, {
+  getActiveProfile: () => claudeService.getCcsProfile(),
+  emailService,
+});
+
 // Wire fileWatcher status changes to claudeService for chain execution (fc→fl→run)
 fileWatcher.onStatusChanged = (featureId, oldStatus, newStatus) => {
   claudeService.handleFeatureStatusChanged(featureId, oldStatus, newStatus);
@@ -97,8 +129,14 @@ const statusMailService = new StatusMailService({
   rateLimitService,
 });
 
+// Update watcher (Claude Code release detection + impact analysis via claudeService execution)
+const updateWatcherService = new UpdateWatcherService({ emailService, logStreamer, claudeService });
+statusMailService.onReleaseEmail = (version, subject, rawSource) =>
+  updateWatcherService.handleRelease(version, subject, rawSource);
+
 // Tmp file cleanup (debug logs, old daily logs, term artifacts)
 const cleanupService = new CleanupService(PROJECT_ROOT);
+const claudeStatusService = new ClaudeStatusService();
 
 // =============================================================================
 // Auto-DR: Watch backend source files, restart when idle
@@ -107,8 +145,14 @@ let pendingRestart = false;
 let debounceTimer = null;
 
 function triggerAutoDR() {
-  const { runningCount, queuedCount, chainWaiterCount } = claudeService.getQueueStatus();
-  if (runningCount === 0 && queuedCount === 0 && chainWaiterCount === 0) {
+  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount } =
+    claudeService.getQueueStatus();
+  if (
+    runningCount === 0 &&
+    queuedCount === 0 &&
+    chainWaiterCount === 0 &&
+    waitingForInputCount === 0
+  ) {
     pendingRestart = false;
     serverLog.info('[Auto-DR] No running executions, restarting backend...');
     logStreamer.broadcastAll({
@@ -118,7 +162,7 @@ function triggerAutoDR() {
     });
     // Persist DR success to shell states so green button survives restart
     claudeService._setShellState('dr', true);
-    // Small delay to let WS message reach clients
+    // pm2 restart — EADDRINUSE handled by server.js polling retry
     setTimeout(() => {
       spawn('pm2', ['restart', 'dashboard-backend'], {
         stdio: 'ignore',
@@ -136,7 +180,7 @@ function triggerAutoDR() {
       });
     }
     serverLog.info(
-      `[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting`,
+      `[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting, ${waitingForInputCount} input-waiting`,
     );
   }
 }
@@ -164,8 +208,14 @@ autoDRWatcher.on('change', (filePath) => {
 // When an execution completes, check if restart was deferred
 claudeService.onExecutionComplete = () => {
   if (!pendingRestart) return;
-  const { runningCount, queuedCount, chainWaiterCount } = claudeService.getQueueStatus();
-  if (runningCount === 0 && queuedCount === 0 && chainWaiterCount === 0) {
+  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount } =
+    claudeService.getQueueStatus();
+  if (
+    runningCount === 0 &&
+    queuedCount === 0 &&
+    chainWaiterCount === 0 &&
+    waitingForInputCount === 0
+  ) {
     serverLog.info('[Auto-DR] All executions complete, executing deferred restart');
     triggerAutoDR();
   }
@@ -173,7 +223,19 @@ claudeService.onExecutionComplete = () => {
 
 // Express app
 const app = express();
-app.use(cors());
+const corsOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',')
+  : [
+      'http://localhost:5173',
+      'http://localhost:3001',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3001',
+    ];
+app.use(
+  cors({
+    origin: corsOrigins,
+  }),
+);
 app.use(express.json());
 
 // Request logging middleware
@@ -195,7 +257,7 @@ app.get('/api/health', async (req, res) => {
   const queueStatus = claudeService.getQueueStatus();
   const proxy = await claudeService.checkProxy();
 
-  // Git dirty check (5-repo monitoring)
+  // Git dirty check (5-repo split)
   const gitStatusOpts = { timeout: 5000, encoding: 'utf8', windowsHide: true };
   const countDirty = (cwd) => {
     try {
@@ -228,6 +290,7 @@ app.get('/api/health', async (req, res) => {
   // Trigger fresh rate limit capture if requested (e.g., on browser refresh)
   if (req.query.refresh) {
     rateLimitService.capture({ forceRefresh: true }).catch(() => {});
+    claudeStatusService.refresh();
   }
 
   res.json({
@@ -247,6 +310,7 @@ app.get('/api/health', async (req, res) => {
     git: { dirty: totalCount > 0, changedCount: totalCount, ...counts },
     pendingRestart,
     shellStates: claudeService.getShellStates(),
+    claudeStatus: claudeStatusService.getCached(),
   });
 });
 
@@ -272,6 +336,31 @@ app.post('/api/ratelimit/:profile', (req, res) => {
   rateLimitService.setManualCache(profile, data);
   const cached = rateLimitService.getCached();
   res.json({ ok: true, profile, data, cached });
+});
+
+// Insights: trigger /insights capture (fire-and-forget, client can poll status)
+app.post('/api/insights/capture', async (req, res) => {
+  if (insightsService.isRunning()) {
+    return res.status(409).json({ error: 'Insights capture already running' });
+  }
+  const sendEmail = req.body?.sendEmail !== false; // default true
+  insightsService.capture({ sendEmail }).catch((err) => {
+    serverLog.error(`[Insights] Unhandled: ${err.message}`);
+  });
+  res.json({ ok: true, message: 'Insights capture started', sendEmail });
+});
+
+// Update watcher: check last update status
+app.get('/api/update/status', (req, res) => {
+  res.json(updateWatcherService.getLastUpdate());
+});
+
+// Insights: check running status and last result
+app.get('/api/insights/status', (req, res) => {
+  res.json({
+    running: insightsService.isRunning(),
+    lastResult: insightsService.getLastResult(),
+  });
 });
 
 // HTTP + WebSocket server
@@ -309,17 +398,25 @@ function cleanupPort(port) {
   return killed;
 }
 
-// Layer 3: EADDRINUSE handler — retry with increasing delay after cleanup
-let eaddrinuseRetries = 0;
-const MAX_EADDRINUSE_RETRIES = 3;
+// EADDRINUSE handler — poll until port is free, cleanup after 10s, never exit
+// pm2 restart starts new process while old is still dying (kill_timeout: 3s).
+// On Windows, port release lags process death. We wait patiently instead of crashing.
+let eaddrinuseStart = 0;
 server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE' && eaddrinuseRetries < MAX_EADDRINUSE_RETRIES) {
-    eaddrinuseRetries++;
-    const delay = eaddrinuseRetries * 1000; // 1s, 2s, 3s
-    serverLog.error(
-      `Port ${PORT} already in use (attempt ${eaddrinuseRetries}/${MAX_EADDRINUSE_RETRIES}), retrying in ${delay}ms...`,
+  if (err.code === 'EADDRINUSE') {
+    if (!eaddrinuseStart) eaddrinuseStart = Date.now();
+    const elapsed = Date.now() - eaddrinuseStart;
+    if (elapsed > 10000) {
+      // After 10s, force-kill whatever holds the port
+      serverLog.warn(
+        `Port ${PORT} still in use after ${Math.round(elapsed / 1000)}s, forcing cleanup...`,
+      );
+      cleanupPort(PORT);
+    }
+    const delay = Math.min(2000, 500 + elapsed / 5); // 500ms → 2s adaptive
+    serverLog.info(
+      `Port ${PORT} in use, retrying in ${Math.round(delay)}ms (${Math.round(elapsed / 1000)}s elapsed)...`,
     );
-    cleanupPort(PORT);
     setTimeout(() => server.listen(PORT), delay);
   } else {
     serverLog.error(`Server error: ${err.message}`);
@@ -327,28 +424,19 @@ server.on('error', (err) => {
   }
 });
 
-// Start — kill stale processes, wait for port release, then listen
-const killed = cleanupPort(PORT);
-const startDelay = killed > 0 ? 1500 : 0; // Wait for Windows socket cleanup
-if (startDelay > 0) {
-  serverLog.info(
-    `[Port Cleanup] Killed ${killed} stale process(es), waiting ${startDelay}ms for port release...`,
-  );
-}
-setTimeout(
-  () =>
-    server.listen(PORT, () => {
-      serverLog.info(`Backend running on http://localhost:${PORT}`);
-      serverLog.info(`WebSocket on ws://localhost:${PORT}/ws`);
-      fileWatcher.start();
-      // Background rate limit capture on startup + periodic polling
-      rateLimitService.capture({ forceRefresh: true }).catch(() => {});
-      setInterval(() => rateLimitService.capture().catch(() => {}), RATE_LIMIT_POLL_INTERVAL_MS);
-      statusMailService.start();
-      cleanupService.start();
-    }),
-  startDelay,
-);
+// Start — listen immediately, EADDRINUSE handler polls until port is free
+const onListening = () => {
+  serverLog.info(`Backend running on http://localhost:${PORT}`);
+  serverLog.info(`WebSocket on ws://localhost:${PORT}/ws`);
+  fileWatcher.start();
+  rateLimitService.capture({ forceRefresh: true }).catch(() => {});
+  setInterval(() => rateLimitService.capture().catch(() => {}), RATE_LIMIT_POLL_INTERVAL_MS);
+  statusMailService.start();
+  cleanupService.start();
+  insightsService.startScheduler();
+  claudeStatusService.start();
+};
+server.listen(PORT, '127.0.0.1', onListening);
 
 // Error handling
 process.on('uncaughtException', (err) => {
@@ -369,6 +457,7 @@ process.on('SIGINT', async () => {
   }, 1500).unref();
   await statusMailService.stop();
   cleanupService.stop();
+  claudeStatusService.stop();
   claudeService.killAllRunning();
   fileWatcher.stop();
   autoDRWatcher.close();
@@ -384,6 +473,7 @@ process.on('SIGTERM', async () => {
   }, 1500).unref();
   await statusMailService.stop();
   cleanupService.stop();
+  claudeStatusService.stop();
   claudeService.killAllRunning();
   fileWatcher.stop();
   autoDRWatcher.close();

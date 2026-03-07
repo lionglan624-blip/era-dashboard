@@ -16,6 +16,7 @@ vi.mock('child_process', async (importOriginal) => {
     ...actual,
     spawn: vi.fn(() => ({
       pid: 12345,
+      stdin: { on: vi.fn(), end: vi.fn() },
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on: vi.fn(),
@@ -58,12 +59,14 @@ describe('validateCommand', () => {
     expect(validateCommand('fc')).toBe('fc');
     expect(validateCommand('fl')).toBe('fl');
     expect(validateCommand('run')).toBe('run');
+    expect(validateCommand('imp')).toBe('imp');
   });
 
   it('normalizes to lowercase', () => {
     expect(validateCommand('FC')).toBe('fc');
     expect(validateCommand('FL')).toBe('fl');
     expect(validateCommand('RUN')).toBe('run');
+    expect(validateCommand('IMP')).toBe('imp');
   });
 
   it('rejects invalid commands', () => {
@@ -122,7 +125,10 @@ function createService(overrides = {}) {
 
 describe('detectPhase', () => {
   it('detects PHASE N patterns', () => {
-    expect(detectPhase('PHASE 3: Implementation')).toEqual({ phase: 3, name: 'Implementation' });
+    expect(detectPhase('PHASE 3: Implementation')).toEqual({
+      phase: 3,
+      name: 'Implementation',
+    });
     expect(detectPhase('Phase 0: Dependency Check')).toEqual({
       phase: 0,
       name: 'Dependency Check',
@@ -284,7 +290,9 @@ describe('ClaudeService', () => {
       const { service } = createService();
       const event = {
         type: 'user',
-        message: { content: [{ type: 'tool_result', tool_use_id: '1', content: 'short result' }] },
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: '1', content: 'short result' }],
+        },
       };
       expect(service._extractStreamText(event)).toBe('[Tool result: short result]');
     });
@@ -294,7 +302,9 @@ describe('ClaudeService', () => {
       const longContent = 'x'.repeat(300);
       const event = {
         type: 'user',
-        message: { content: [{ type: 'tool_result', tool_use_id: '1', content: longContent }] },
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: '1', content: longContent }],
+        },
       };
       const result = service._extractStreamText(event);
       expect(result).toContain('...');
@@ -493,6 +503,108 @@ describe('ClaudeService', () => {
     });
   });
 
+  describe('_onComplete callback', () => {
+    it('fires _onComplete on execution completion', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      const onComplete = vi.fn();
+      execution._onComplete = onComplete;
+
+      service._handleCompletion(execution, 0);
+
+      expect(onComplete).toHaveBeenCalledWith(execution, 0);
+    });
+
+    it('does not crash if _onComplete throws', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      execution._onComplete = () => {
+        throw new Error('callback error');
+      };
+
+      expect(() => service._handleCompletion(execution, 0)).not.toThrow();
+      expect(execution.status).toBe('completed');
+    });
+  });
+
+  describe('executeUpdateAnalysis', () => {
+    it('creates execution with update-analysis command and _debugPrompt', () => {
+      const { service, logStreamer } = createService();
+      vi.spyOn(service, '_startExecution').mockImplementation(() => {});
+
+      const execId = service.executeUpdateAnalysis('test prompt');
+
+      const execution = service.executions.get(execId);
+      expect(execution.command).toBe('update-analysis');
+      expect(execution._debugPrompt).toBe('test prompt');
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'execution-started', command: 'update-analysis' }),
+      );
+    });
+
+    it('sets _onComplete callback when provided', () => {
+      const { service } = createService();
+      vi.spyOn(service, '_startExecution').mockImplementation(() => {});
+
+      const callback = vi.fn();
+      const execId = service.executeUpdateAnalysis('test prompt', callback);
+
+      const execution = service.executions.get(execId);
+      expect(execution._onComplete).toBe(callback);
+    });
+
+    it('auto-handoffs to terminal on successful completion', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ command: 'update-analysis' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.sessionId = 'test-session-123';
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.status).toBe('handed-off');
+    });
+
+    it('does not auto-handoff on failure', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ command: 'update-analysis' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.sessionId = 'test-session-123';
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 1);
+
+      expect(execution.status).toBe('failed');
+    });
+
+    it('does not auto-handoff without sessionId', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ command: 'update-analysis' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.status).toBe('completed');
+    });
+  });
+
   describe('_pushLog', () => {
     it('does not trim until margin exceeded (MAX_LOG_ENTRIES + 100)', () => {
       const { service } = createService();
@@ -500,7 +612,10 @@ describe('ClaudeService', () => {
 
       // Fill with exactly MAX_LOG_ENTRIES + 1 (5001) - should NOT trim yet (margin = 100)
       for (let i = 0; i < 5001; i++) {
-        service._pushLog(execution, { line: `line ${i}`, timestamp: new Date().toISOString() });
+        service._pushLog(execution, {
+          line: `line ${i}`,
+          timestamp: new Date().toISOString(),
+        });
       }
 
       expect(execution.logs.length).toBe(5001); // No trim yet
@@ -512,7 +627,10 @@ describe('ClaudeService', () => {
 
       // Fill with 5101 entries (exceeds MAX + 100 = 5100)
       for (let i = 0; i < 5101; i++) {
-        service._pushLog(execution, { line: `line ${i}`, timestamp: new Date().toISOString() });
+        service._pushLog(execution, {
+          line: `line ${i}`,
+          timestamp: new Date().toISOString(),
+        });
       }
 
       expect(execution.logs.length).toBe(5000);
@@ -528,7 +646,7 @@ describe('ClaudeService', () => {
     });
 
     it('returns null for terminal statuses', () => {
-      expect(getNextChainCommand('[DONE]')).toBeNull();
+      expect(getNextChainCommand('[DONE]')).toBe('imp');
       expect(getNextChainCommand('[WIP]')).toBeNull();
       expect(getNextChainCommand('[BLOCKED]')).toBeNull();
     });
@@ -543,7 +661,7 @@ describe('ClaudeService', () => {
     it('returns false for mismatched command→status pairs', () => {
       expect(isExpectedStatusAfterCommand('fc', '[REVIEWED]')).toBe(false);
       expect(isExpectedStatusAfterCommand('fl', '[PROPOSED]')).toBe(false);
-      expect(isExpectedStatusAfterCommand('run', '[DONE]')).toBe(false);
+      expect(isExpectedStatusAfterCommand('run', '[DONE]')).toBe(true);
     });
   });
 
@@ -557,7 +675,11 @@ describe('ClaudeService', () => {
         statusCache: new Map([['100', '[PROPOSED]']]),
       };
 
-      const execution = service._createExecution({ featureId: '100', command: 'fc', chain: true });
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fc',
+        chain: true,
+      });
       execution.status = 'completed';
       execution.resultSubtype = 'success';
 
@@ -583,7 +705,11 @@ describe('ClaudeService', () => {
         statusCache: new Map([['100', '[DRAFT]']]),
       };
 
-      const execution = service._createExecution({ featureId: '100', command: 'fc', chain: true });
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fc',
+        chain: true,
+      });
       execution.status = 'completed';
 
       service.chainExecutor.registerWaiter(execution);
@@ -600,7 +726,11 @@ describe('ClaudeService', () => {
       service.executeCommand = vi.fn();
       service.fileWatcher = null;
 
-      const execution = service._createExecution({ featureId: '100', command: 'fc', chain: true });
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fc',
+        chain: true,
+      });
 
       service.chainExecutor.registerWaiter(execution);
 
@@ -997,7 +1127,14 @@ describe('ClaudeService', () => {
                 type: 'tool_use',
                 id: 'tool-1',
                 name: 'TodoWrite',
-                input: { todos: [{ content: 'Iteration 4/10: Phase 3', status: 'in_progress' }] },
+                input: {
+                  todos: [
+                    {
+                      content: 'Iteration 4/10: Phase 3',
+                      status: 'in_progress',
+                    },
+                  ],
+                },
               },
             ],
           },
@@ -1280,7 +1417,47 @@ describe('ClaudeService', () => {
       if (execution.pendingHandoffTimeout) clearTimeout(execution.pendingHandoffTimeout);
     });
 
-    it('defers y/n handoff until result event arrives', () => {
+    it('skips assistant text with y/n pattern NOT in last line (false positive filter)', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._handoffToTerminal = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'run' });
+      execution.status = 'running';
+      execution.sessionId = 'sess-1';
+
+      // Long assistant text with (y/n) buried in middle — false positive
+      const longText =
+        'Only in a comment, not an actual TBD value. (y/n) reference in docs.\n\n=== Feature 823 Done ===\nTasks: 11/11\nAll ACs passed.';
+      service.streamParser.checkInputWaitPatterns(execution, longText, 'assistant');
+
+      expect(execution.waitingForInput).toBe(false);
+      expect(execution.pendingHandoff).toBeFalsy();
+    });
+
+    it('detects assistant text with y/n pattern in last line', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._handoffToTerminal = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'run' });
+      execution.status = 'running';
+      execution.sessionId = 'sess-1';
+
+      // y/n at end of assistant text — real prompt
+      service.streamParser.checkInputWaitPatterns(
+        execution,
+        'I found 3 issues.\nShould I proceed with the fix? (y/n)',
+        'assistant',
+      );
+
+      expect(execution.waitingForInput).toBe(true);
+
+      // Cleanup
+      if (execution.pendingHandoffTimeout) clearTimeout(execution.pendingHandoffTimeout);
+    });
+
+    it('defers y/n handoff — result event cancels auto-handoff (browser-first)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._handoffToTerminal = vi.fn();
@@ -1298,19 +1475,15 @@ describe('ClaudeService', () => {
       expect(execution.pendingHandoff).toBeTruthy();
       expect(service._handoffToTerminal).not.toHaveBeenCalled();
 
-      // 2. result event arrives - should trigger handoff
+      // 2. result event arrives - should cancel auto-handoff (browser answers first)
       service.streamParser.handleStreamEvent(execution, {
         type: 'result',
         subtype: 'success',
         is_error: false,
       });
-      expect(service._handoffToTerminal).toHaveBeenCalledWith(
-        execution,
-        expect.stringContaining('y/n'),
-      );
-
-      // Cleanup
-      if (execution.pendingHandoffTimeout) clearTimeout(execution.pendingHandoffTimeout);
+      expect(service._handoffToTerminal).not.toHaveBeenCalled();
+      expect(execution.pendingHandoff).toBeNull();
+      expect(execution.pendingHandoffTimeout).toBeNull();
     });
 
     it('forces handoff after timeout when result event never arrives', () => {
@@ -1457,7 +1630,10 @@ describe('ClaudeService', () => {
         type: 'assistant',
         message: {
           content: [
-            { type: 'text', text: 'Reference: designs/phases/phase-20-27-game-systems.md' },
+            {
+              type: 'text',
+              text: 'Reference: designs/phases/phase-20-27-game-systems.md',
+            },
           ],
         },
       });
@@ -1496,7 +1672,7 @@ describe('ClaudeService', () => {
   });
 
   describe('_handleStreamEvent - AskUserQuestion detection', () => {
-    it('detects AskUserQuestion and triggers handoff', () => {
+    it('detects AskUserQuestion and defers handoff (browser-first)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._broadcastInputRequired = vi.fn();
@@ -1523,7 +1699,11 @@ describe('ClaudeService', () => {
 
       expect(execution.inputRequired).toBeTruthy();
       expect(execution.inputRequired.toolUseId).toBe('ask-1');
-      expect(service._handoffToTerminal).toHaveBeenCalled();
+      // Should defer handoff, not trigger immediately
+      expect(service._handoffToTerminal).not.toHaveBeenCalled();
+      // No pendingHandoff — process blocks on stdin pipe, no auto-timeout
+      expect(execution.pendingHandoff).toBeFalsy();
+      expect(execution.pendingHandoffTimeout).toBeFalsy();
     });
   });
 
@@ -1549,7 +1729,7 @@ describe('ClaudeService', () => {
       expect(execution.resultExitCode).toBe(0);
     });
 
-    it('extracts final token usage from result modelUsage', () => {
+    it('extracts contextWindow from result modelUsage without overwriting per-turn usage', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
 
@@ -1559,21 +1739,40 @@ describe('ClaudeService', () => {
       execution.lastOutputTime = Date.now();
       service.executions.set(execution.id, execution);
 
+      // Simulate assistant event with per-turn usage first
+      service._handleStreamEvent(execution, {
+        type: 'assistant',
+        message: {
+          usage: {
+            input_tokens: 1,
+            output_tokens: 232,
+            cache_creation_input_tokens: 1393,
+            cache_read_input_tokens: 48707,
+          },
+        },
+      });
+      expect(execution.contextPercent).toBe(25); // (1+1393+48707)/200000
+
+      // Result event has cumulative usage (much larger) — should NOT overwrite
       service._handleStreamEvent(execution, {
         type: 'result',
         subtype: 'success',
         is_error: false,
         usage: {
-          input_tokens: 80000,
+          input_tokens: 50000,
           output_tokens: 5000,
-          cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 30000,
+          cache_read_input_tokens: 400000,
         },
         modelUsage: { 'claude-opus-4-5-20251101': { contextWindow: 200000 } },
       });
 
-      expect(execution.tokenUsage).toBeTruthy();
+      // contextWindow should be updated from modelUsage
       expect(execution.tokenUsage.contextWindow).toBe(200000);
+      // But per-turn token values should be preserved (NOT the cumulative result.usage)
+      expect(execution.tokenUsage.cacheRead).toBe(48707);
+      // contextPercent should stay at 25%, not jump to 100%
+      expect(execution.contextPercent).toBe(25);
     });
   });
 
@@ -1684,7 +1883,10 @@ describe('ClaudeService', () => {
       const exec = service.executions.get(id);
       exec.status = 'running';
       exec.process = { pid: 123 };
-      service.chainExecutor.chainWaiters.set('100', { executionId: id, registeredAt: Date.now() });
+      service.chainExecutor.chainWaiters.set('100', {
+        executionId: id,
+        registeredAt: Date.now(),
+      });
 
       service.killExecution(id);
       expect(service.chainExecutor.chainWaiters.has('100')).toBe(false);
@@ -1693,6 +1895,40 @@ describe('ClaudeService', () => {
     it('returns false for non-existent execution', () => {
       const { service } = createService();
       expect(service.killExecution('nonexistent')).toBe(false);
+    });
+  });
+
+  describe('removeExecution', () => {
+    it('removes completed execution and clears ring buffer', () => {
+      const { service } = createService();
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.completedAt = new Date().toISOString();
+      service.executions.set(exec.id, exec);
+      service.streamParser.clearRingBuffer = vi.fn();
+
+      const result = service.removeExecution(exec.id);
+
+      expect(result).toBe(true);
+      expect(service.executions.has(exec.id)).toBe(false);
+      expect(service.streamParser.clearRingBuffer).toHaveBeenCalledWith(exec.id);
+    });
+
+    it('refuses to remove running execution (no completedAt)', () => {
+      const { service } = createService();
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      // No completedAt set
+      service.executions.set(exec.id, exec);
+
+      const result = service.removeExecution(exec.id);
+
+      expect(result).toBe(false);
+      expect(service.executions.has(exec.id)).toBe(true);
+    });
+
+    it('returns false for non-existent execution', () => {
+      const { service } = createService();
+      expect(service.removeExecution('nonexistent')).toBe(false);
     });
   });
 
@@ -1891,11 +2127,17 @@ describe('ClaudeService', () => {
       expect(service._startExecution).not.toHaveBeenCalled();
     });
 
-    it('logs completion when no next command (e.g., [DONE])', () => {
+    it('triggers imp on [DONE] status change', () => {
       const { service } = createService();
       service._startExecution = vi.fn();
+      service.executeCommand = vi.fn().mockReturnValue('new-exec-id');
 
-      const exec = service._createExecution({ featureId: '100', command: 'run', chain: true });
+      const exec = service._createExecution({
+        featureId: '100',
+        command: 'run',
+        chain: true,
+      });
+      exec.chain = { enabled: true, history: [] };
       service.executions.set(exec.id, exec);
       service.chainExecutor.chainWaiters.set('100', {
         executionId: exec.id,
@@ -1904,8 +2146,8 @@ describe('ClaudeService', () => {
 
       service.handleFeatureStatusChanged('100', '[REVIEWED]', '[DONE]');
 
-      // No next command for [DONE], so no startExecution call
-      expect(service._startExecution).not.toHaveBeenCalled();
+      // [DONE] now triggers imp
+      expect(service.executeCommand).toHaveBeenCalledWith('100', 'imp', expect.any(Object));
       expect(service.chainExecutor.chainWaiters.has('100')).toBe(false);
     });
   });
@@ -1964,7 +2206,8 @@ describe('ClaudeService', () => {
       expect(service.queue).toHaveLength(0);
       expect(exec1.status).toBe('cancelled');
       expect(exec2.status).toBe('cancelled');
-      expect(logStreamer.broadcast).toHaveBeenCalledTimes(2);
+      // 2 status broadcasts (one per cancelled exec) + 1 queue-updated = 3
+      expect(logStreamer.broadcastAll).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -2105,6 +2348,7 @@ describe('ClaudeService', () => {
         enabled: true,
         retryCount: 2,
         contextRetryCount: 0,
+        incompleteRetryCount: 0,
         history: [],
       });
     });
@@ -2260,6 +2504,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -2330,6 +2575,7 @@ describe('ClaudeService', () => {
         chainParentId: parentId, // Should preserve parent, not use execution.id
         retryCount: 1,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -2381,7 +2627,7 @@ describe('ClaudeService', () => {
       expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
     });
 
-    it('sends email instead of registering waiter on chain /run completion (last step)', () => {
+    it('registers waiter on chain /run completion (not last step)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
@@ -2406,6 +2652,37 @@ describe('ClaudeService', () => {
       service._handleCompletion(execution, 0);
 
       expect(execution.status).toBe('completed');
+      // run is no longer the last step — it registers a waiter for imp
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
+      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+    });
+
+    it('sends email on chain /imp completion (last step)', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+      service.emailService = { sendCompletionNotification: vi.fn().mockResolvedValue() };
+
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'imp',
+        chain: true,
+        chainHistory: [
+          { command: 'fc', result: 'ok' },
+          { command: 'fl', result: 'ok' },
+          { command: 'run', result: 'ok' },
+        ],
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.status).toBe('completed');
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
       expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
         execution,
@@ -2415,6 +2692,7 @@ describe('ClaudeService', () => {
           { command: 'fc', result: 'ok' },
           { command: 'fl', result: 'ok' },
           { command: 'run', result: 'ok' },
+          { command: 'imp', result: 'ok' },
         ],
         null,
       );
@@ -2449,6 +2727,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [{ command: 'fl', result: 'retry', reason: 'Context limit (max_tokens)' }],
       });
     });
@@ -2481,8 +2760,13 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
-          { command: 'fl', result: 'retry', reason: 'Context limit (success with is_error)' },
+          {
+            command: 'fl',
+            result: 'retry',
+            reason: 'Context limit (success with is_error)',
+          },
         ],
       });
     });
@@ -2514,7 +2798,7 @@ describe('ClaudeService', () => {
     });
   });
 
-  describe('_handleCompletion - FL incomplete termination', () => {
+  describe('_handleCompletion - incomplete termination', () => {
     beforeEach(() => {
       vi.useFakeTimers();
     });
@@ -2554,12 +2838,14 @@ describe('ClaudeService', () => {
       // Waiter must NOT be registered — retry is handling it
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
 
-      // executeCommand should be called with fl retry
+      // executeCommand should be called with fl retry using incompleteRetryCount
       expect(service.executeCommand).toHaveBeenCalledWith('100', 'fl', {
         chain: true,
         chainParentId: execution.id,
         chainHistory: [{ command: 'fl', result: 'incomplete' }],
-        retryCount: 1,
+        retryCount: 0,
+        contextRetryCount: 0,
+        incompleteRetryCount: 1,
       });
 
       // chain-retry WS event must be broadcast
@@ -2636,6 +2922,190 @@ describe('ClaudeService', () => {
       expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
       expect(service.executeCommand).not.toHaveBeenCalled();
     });
+
+    it('auto-retries run when exit 0 success but status still [WIP]', () => {
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['200', '[WIP]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '200',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+
+      service._handleCompletion(execution, 0);
+      vi.advanceTimersByTime(5000);
+
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      expect(service.executeCommand).toHaveBeenCalledWith('200', 'run', {
+        chain: true,
+        chainParentId: execution.id,
+        chainHistory: [{ command: 'run', result: 'incomplete' }],
+        retryCount: 0,
+        contextRetryCount: 0,
+        incompleteRetryCount: 1,
+      });
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'chain-retry',
+          command: 'run',
+          retryType: 'incomplete',
+          retryCount: 1,
+        }),
+      );
+    });
+
+    it('auto-retries fc when exit 0 success but status still [DRAFT]', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['300', '[DRAFT]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '300',
+        command: 'fc',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+
+      service._handleCompletion(execution, 0);
+      vi.advanceTimersByTime(5000);
+
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      expect(service.executeCommand).toHaveBeenCalledWith('300', 'fc', {
+        chain: true,
+        chainParentId: execution.id,
+        chainHistory: [{ command: 'fc', result: 'incomplete' }],
+        retryCount: 0,
+        contextRetryCount: 0,
+        incompleteRetryCount: 1,
+      });
+    });
+
+    it('skips incomplete retry for run when status is [BLOCKED]', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['400', '[BLOCKED]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '400',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // [BLOCKED] is a legitimate status — register waiter, don't retry
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('sends email on incomplete retry exhaustion for run', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['500', '[WIP]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '500',
+        command: 'run',
+        chain: true,
+        incompleteRetryCount: 3, // already at max
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // Retry exhausted — waiter must NOT be registered (prevents dead waiter)
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      // executeCommand not called (no more retries)
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('incompleteRetryCount is independent from retryCount', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['600', '[PROPOSED]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '600',
+        command: 'fl',
+        chain: true,
+        retryCount: 2, // FL text-pattern retries already used
+        incompleteRetryCount: 0,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+
+      service._handleCompletion(execution, 0);
+      vi.advanceTimersByTime(5000);
+
+      // incompleteRetryCount incremented independently, retryCount preserved
+      expect(service.executeCommand).toHaveBeenCalledWith('600', 'fl', {
+        chain: true,
+        chainParentId: execution.id,
+        chainHistory: [{ command: 'fl', result: 'incomplete' }],
+        retryCount: 2, // preserved, not incremented
+        contextRetryCount: 0,
+        incompleteRetryCount: 1, // incremented independently
+      });
+    });
   });
 
   describe('_handleCompletion - context exhaustion retry', () => {
@@ -2676,6 +3146,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
           { command: 'fc', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -2721,6 +3192,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [{ command: 'run', result: 'retry', reason: 'Context limit (max_tokens)' }],
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
@@ -2763,8 +3235,13 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
-          { command: 'run', result: 'retry', reason: 'Prompt too long (context exhausted)' },
+          {
+            command: 'run',
+            result: 'retry',
+            reason: 'Prompt too long (context exhausted)',
+          },
         ],
       });
       // promptTooLong should prevent stale waiter registration
@@ -2802,8 +3279,13 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
-          { command: 'run', result: 'retry', reason: 'Prompt too long (context exhausted)' },
+          {
+            command: 'run',
+            result: 'retry',
+            reason: 'Prompt too long (context exhausted)',
+          },
         ],
       });
       // promptTooLong should prevent stale waiter registration
@@ -2841,6 +3323,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
           { command: 'run', result: 'retry', reason: 'Max turns reached (exit code 3)' },
         ],
@@ -2888,8 +3371,13 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
-          { command: 'run', result: 'retry', reason: 'Context limit (success with is_error)' },
+          {
+            command: 'run',
+            result: 'retry',
+            reason: 'Context limit (success with is_error)',
+          },
         ],
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
@@ -3039,6 +3527,7 @@ describe('ClaudeService', () => {
         chainParentId: execution.id,
         retryCount: 0,
         contextRetryCount: 1,
+        incompleteRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -3642,9 +4131,8 @@ describe('ClaudeService', () => {
       expect(exec.completedAt).toBeTruthy();
       expect(service.queue).toHaveLength(0);
       expect(service._killProcess).not.toHaveBeenCalled();
-      expect(logStreamer.broadcast).toHaveBeenCalledWith(
-        exec.id,
-        expect.objectContaining({ type: 'status', status: 'cancelled' }),
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'status', executionId: exec.id, status: 'cancelled' }),
       );
     });
 
@@ -3697,6 +4185,31 @@ describe('ClaudeService', () => {
       const result = service.resumeInBrowser('nonexistent');
 
       expect(result.error).toBe('No session ID available for resume');
+    });
+  });
+
+  describe('answerInBrowser', () => {
+    it('clears _killedForAskUser so resumed process can complete normally', () => {
+      const { service } = createService();
+      service._killProcess = vi.fn();
+      service._attachStdoutHandler = vi.fn();
+      service._attachStderrHandler = vi.fn();
+      service._broadcastState = vi.fn();
+      service._checkStall = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'running';
+      exec.sessionId = 'sess-1';
+      exec.inputRequired = { toolUseId: 'ask-1', questions: [] };
+      exec._killedForAskUser = true;
+      exec.process = null; // Already killed
+      service.executions.set(exec.id, exec);
+
+      service.answerInBrowser(exec.id, 'Option A');
+
+      expect(exec._killedForAskUser).toBe(false);
+      expect(exec.inputRequired).toBeNull();
+      expect(exec.waitingForInput).toBe(false);
     });
   });
 
@@ -3775,7 +4288,11 @@ describe('ClaudeService', () => {
       // dr delays spawn by 500ms to let shell-complete WS message reach clients first
       vi.advanceTimersByTime(500);
 
-      expect(mockSpawn).toHaveBeenCalledWith('pm2', ['restart', 'all'], expect.any(Object));
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'pm2',
+        ['restart', 'all'],
+        expect.objectContaining({ stdio: 'ignore', shell: true, windowsHide: true }),
+      );
       vi.useRealTimers();
     });
 
@@ -3981,6 +4498,2310 @@ describe('ClaudeService', () => {
 
       expect(service.executions.has(exec.id)).toBe(false);
       expect(service.streamParser.getRingBufferSnapshot(exec.id)).toEqual([]);
+    });
+  });
+
+  describe('_detectFlRerunRequest', () => {
+    it('returns false when lastAssistantText is empty', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = '';
+      expect(service._detectFlRerunRequest(execution)).toBe(false);
+    });
+
+    it('returns false when lastAssistantText is null', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = null;
+      expect(service._detectFlRerunRequest(execution)).toBe(false);
+    });
+
+    it('returns true for 再実行してください pattern', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = '修正完了しました。再実行してください。';
+      expect(service._detectFlRerunRequest(execution)).toBe(true);
+    });
+
+    it('returns true for /fl {ID} を再実行 pattern', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = '/fl 808 を再実行してください。';
+      expect(service._detectFlRerunRequest(execution)).toBe(true);
+    });
+
+    it('returns true for markdown /fl {ID} code pattern', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = '次のコマンドを実行してください: `/fl 808`';
+      expect(service._detectFlRerunRequest(execution)).toBe(true);
+    });
+
+    it('returns true for Forward-Only 再検証 pattern', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = 'Forward-Only Modeで再検証を行います。';
+      expect(service._detectFlRerunRequest(execution)).toBe(true);
+    });
+
+    it('returns false for unrelated text', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastAssistantText = '処理が完了しました。問題は見つかりませんでした。';
+      expect(service._detectFlRerunRequest(execution)).toBe(false);
+    });
+  });
+
+  describe('_saveSessionId', () => {
+    it('saves session ID to the session map', () => {
+      const { service } = createService();
+      service._saveSessionId('exec-1', 'session-abc', '100', 'fl');
+      expect(service._sessionMap['exec-1']).toMatchObject({
+        sessionId: 'session-abc',
+        featureId: '100',
+        command: 'fl',
+      });
+      expect(service._sessionMap['exec-1'].savedAt).toBeTruthy();
+    });
+
+    it('prunes entries older than 7 days', () => {
+      const { service } = createService();
+      // Inject a stale entry
+      const eightDaysAgo = new Date(Date.now() - 8 * 24 * 3600000).toISOString();
+      service._sessionMap['old-exec'] = {
+        sessionId: 'old-session',
+        featureId: '50',
+        command: 'fl',
+        savedAt: eightDaysAgo,
+      };
+
+      service._saveSessionId('new-exec', 'new-session', '100', 'run');
+
+      expect(service._sessionMap['old-exec']).toBeUndefined();
+      expect(service._sessionMap['new-exec']).toBeDefined();
+    });
+
+    it('keeps entries within 7 days', () => {
+      const { service } = createService();
+      const sixDaysAgo = new Date(Date.now() - 6 * 24 * 3600000).toISOString();
+      service._sessionMap['recent-exec'] = {
+        sessionId: 'recent-session',
+        featureId: '50',
+        command: 'fl',
+        savedAt: sixDaysAgo,
+      };
+
+      service._saveSessionId('new-exec', 'new-session', '100', 'run');
+
+      expect(service._sessionMap['recent-exec']).toBeDefined();
+    });
+  });
+
+  describe('_lookupSessionId', () => {
+    it('returns session info for known execution', () => {
+      const { service } = createService();
+      service._sessionMap['exec-1'] = {
+        sessionId: 'sess-abc',
+        featureId: '100',
+        command: 'fl',
+        savedAt: new Date().toISOString(),
+      };
+
+      const result = service._lookupSessionId('exec-1');
+      expect(result).toEqual({
+        sessionId: 'sess-abc',
+        featureId: '100',
+        command: 'fl',
+        savedAt: expect.any(String),
+      });
+    });
+
+    it('returns null for unknown execution', () => {
+      const { service } = createService();
+      expect(service._lookupSessionId('nonexistent')).toBeNull();
+    });
+  });
+
+  describe('_scanDebugLogForRateLimit', () => {
+    it('returns false when debugLogPath is not set on execution', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.debugLogPath = null;
+      // With null debugLogPath, existsSync won't be called → returns false
+      const result = service._scanDebugLogForRateLimit(execution);
+      expect(result).toBe(false);
+      expect(execution.accountLimitHit).toBe(false);
+    });
+
+    it('returns false when debug log file does not exist (nonexistent path)', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      // Use a path that definitely doesn't exist
+      execution.debugLogPath = '/nonexistent/path/that/does/not/exist/debug.log';
+      const result = service._scanDebugLogForRateLimit(execution);
+      expect(result).toBe(false);
+      expect(execution.accountLimitHit).toBe(false);
+    });
+
+    it('does not set accountLimitHit when returning false', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.debugLogPath = null;
+      execution.accountLimitHit = false;
+      service._scanDebugLogForRateLimit(execution);
+      expect(execution.accountLimitHit).toBe(false);
+    });
+  });
+
+  describe('_broadcastState - field values', () => {
+    it('broadcasts correct state fields for running execution', () => {
+      const { service, logStreamer } = createService();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.currentPhase = 3;
+      execution.currentPhaseName = 'Implementation';
+      execution.currentIteration = 2;
+      execution.sessionId = 'sess-123';
+      execution.isStalled = false;
+      execution.taskDepth = 1;
+      execution.contextPercent = 45;
+      execution.inputRequired = { toolUseId: 'ask-1', questions: [] };
+      execution.waitingForInput = false;
+      execution.waitingInputPattern = null;
+
+      service._broadcastState(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          type: 'state',
+          executionId: execution.id,
+          status: 'running',
+          phase: 3,
+          phaseName: 'Implementation',
+          totalPhases: 8, // fl has 8 phases
+          iteration: 2,
+          sessionId: 'sess-123',
+          inputRequired: true,
+          waitingForInput: false,
+          isStalled: false,
+          taskDepth: 1,
+          contextPercent: 45,
+        }),
+      );
+    });
+
+    it('broadcasts inputRequired as false when null', () => {
+      const { service, logStreamer } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'run' });
+      execution.status = 'running';
+      execution.inputRequired = null;
+
+      service._broadcastState(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          inputRequired: false,
+          totalPhases: 10, // run has 10 phases
+        }),
+      );
+    });
+
+    it('broadcasts pendingTool name when pendingToolUse is set', () => {
+      const { service, logStreamer } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.pendingToolUse = { name: 'AskUserQuestion', id: 'ask-1', input: {} };
+
+      service._broadcastState(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          pendingTool: 'AskUserQuestion',
+        }),
+      );
+    });
+
+    it('broadcasts null pendingTool when no pendingToolUse', () => {
+      const { service, logStreamer } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.pendingToolUse = null;
+
+      service._broadcastState(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          pendingTool: null,
+        }),
+      );
+    });
+  });
+
+  describe('_broadcastInputRequired - field values', () => {
+    it('broadcasts correct fields for input required event', () => {
+      const { service, logStreamer } = createService();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.inputRequired = {
+        toolUseId: 'ask-1',
+        questions: [{ question: 'Which option?' }],
+      };
+      execution.inputContext = 'Some context for the user';
+
+      service._broadcastInputRequired(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          type: 'input-required',
+          executionId: execution.id,
+          context: 'Some context for the user',
+          questions: [{ question: 'Which option?' }],
+          toolUseId: 'ask-1',
+        }),
+      );
+    });
+
+    it('broadcasts empty questions array when inputRequired has none', () => {
+      const { service, logStreamer } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.inputRequired = { toolUseId: 'ask-1', questions: [] };
+      execution.inputContext = null;
+
+      service._broadcastInputRequired(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          questions: [],
+          context: null,
+        }),
+      );
+    });
+  });
+
+  describe('_handleCompletion - specific broadcast assertions', () => {
+    it('broadcasts status event with correct executionId and exitCode', () => {
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'status',
+          executionId: execution.id,
+          status: 'completed',
+          exitCode: 0,
+        }),
+      );
+    });
+
+    it('broadcasts failed status for non-zero exit', () => {
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 1);
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'status',
+          status: 'failed',
+          exitCode: 1,
+        }),
+      );
+    });
+
+    it('sets completedAt timestamp on completion', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const before = new Date().toISOString();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.completedAt).toBeTruthy();
+      expect(execution.completedAt >= before).toBe(true);
+    });
+
+    it('sets exitCode on execution', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 42);
+
+      expect(execution.exitCode).toBe(42);
+    });
+
+    it('fl-retry-exhausted event includes correct maxRetries', async () => {
+      vi.useFakeTimers();
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const { MAX_FL_RETRIES } = await import('../config.js');
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fl',
+        chain: true,
+        retryCount: MAX_FL_RETRIES, // exhausted
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 1);
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'fl-retry-exhausted',
+          featureId: '100',
+          retryCount: MAX_FL_RETRIES,
+          maxRetries: MAX_FL_RETRIES,
+        }),
+      );
+
+      vi.useRealTimers();
+    });
+  });
+
+  describe('_checkStall - elapsed time boundary', () => {
+    it('does not stall before STALL_TIMEOUT_MS', async () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      const { STALL_TIMEOUT_MS } = await import('../config.js');
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.lastOutputTime = Date.now() - (STALL_TIMEOUT_MS - 1000); // just under threshold
+
+      service._checkStall(execution);
+
+      expect(execution.isStalled).toBe(false);
+      expect(service._broadcastState).not.toHaveBeenCalled();
+    });
+
+    it('does not stall when taskDepth > 0 (subagent running)', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.lastOutputTime = Date.now() - 120000;
+      execution.taskDepth = 1; // subagent running
+
+      service._checkStall(execution);
+
+      expect(execution.isStalled).toBe(false);
+    });
+
+    it('broadcasts stalled event with elapsed time', () => {
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.status = 'running';
+      execution.lastOutputTime = Date.now() - 120000;
+
+      service._checkStall(execution);
+
+      expect(logStreamer.broadcast).toHaveBeenCalledWith(
+        execution.id,
+        expect.objectContaining({
+          type: 'stalled',
+          executionId: execution.id,
+          elapsed: expect.any(Number),
+        }),
+      );
+      const call = logStreamer.broadcast.mock.calls.find(([, msg]) => msg.type === 'stalled');
+      expect(call[1].elapsed).toBeGreaterThan(60000);
+    });
+  });
+
+  describe('getQueueStatus - detailed fields', () => {
+    it('returns correct queue status with all fields', () => {
+      const { service } = createService();
+      service._startExecution = vi.fn();
+
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'running';
+      exec1.currentPhase = 3;
+      exec1.currentPhaseName = 'Implementation';
+      exec1.currentIteration = 2;
+      exec1.contextPercent = 45;
+      exec1.startedAt = new Date().toISOString();
+      service.executions.set(exec1.id, exec1);
+
+      const exec2 = service._createExecution({ featureId: '101', command: 'fc' });
+      exec2.status = 'queued';
+      service.executions.set(exec2.id, exec2);
+      service.queue.push(exec2.id);
+
+      const status = service.getQueueStatus();
+
+      expect(status.maxConcurrent).toBe(99);
+      expect(status.runningCount).toBe(1);
+      expect(status.running).toHaveLength(1);
+      expect(status.running[0]).toMatchObject({
+        featureId: '100',
+        command: 'fl',
+        phase: 3,
+        phaseName: 'Implementation',
+      });
+      expect(status.queued).toHaveLength(1);
+      expect(status.queued[0].featureId).toBe('101');
+    });
+  });
+
+  describe('clearQueue - broadcast assertions', () => {
+    it('broadcasts queue-updated after clearing', () => {
+      const { service, logStreamer } = createService();
+
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      service.clearQueue();
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'queue-updated' }),
+      );
+    });
+  });
+
+  describe('executeCommand - queue broadcast', () => {
+    it('broadcasts queue-updated when execution is queued', () => {
+      const { service, logStreamer } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn();
+
+      // Create a running execution to fill the slot
+      const runningExec = service._createExecution({ featureId: '999', command: 'fl' });
+      runningExec.status = 'running';
+      service.executions.set(runningExec.id, runningExec);
+
+      service.executeCommand('101', 'fl');
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'queue-updated' }),
+      );
+    });
+
+    it('includes position in queued execution log', () => {
+      const { service } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn();
+
+      const runningExec = service._createExecution({ featureId: '999', command: 'fl' });
+      runningExec.status = 'running';
+      service.executions.set(runningExec.id, runningExec);
+
+      const execId = service.executeCommand('101', 'fl');
+      const exec = service.executions.get(execId);
+
+      expect(exec.logs[0].line).toContain('Queued');
+      expect(exec.logs[0].line).toContain('1'); // position 1
+    });
+  });
+
+  describe('_handleCompletion - chain state computation', () => {
+    it('sets completed status when exitCode 0 and no chain issues', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fc' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.status).toBe('completed');
+      expect(execution.exitCode).toBe(0);
+      expect(execution.process).toBeNull();
+    });
+
+    it('sets failed status when exitCode non-zero without chain retry', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fc' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 1);
+
+      expect(execution.status).toBe('failed');
+      expect(execution.exitCode).toBe(1);
+    });
+
+    it('calls dequeueNext after completion', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      const dequeueNext = vi.fn();
+      service._dequeueNext = dequeueNext;
+
+      const execution = service._createExecution({ featureId: '100', command: 'fc' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(dequeueNext).toHaveBeenCalled();
+    });
+
+    it('calls onExecutionComplete callback after completion', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      const onComplete = vi.fn();
+      service.onExecutionComplete = onComplete;
+
+      const execution = service._createExecution({ featureId: '100', command: 'fc' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(onComplete).toHaveBeenCalledWith(execution);
+    });
+
+    it('clears stallCheckInterval on completion', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fc' });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.stallCheckInterval = setInterval(() => {}, 999999);
+      service.executions.set(execution.id, execution);
+
+      service._handleCompletion(execution, 0);
+
+      expect(execution.stallCheckInterval).toBeNull();
+    });
+  });
+
+  describe('_createExecution - default values', () => {
+    it('creates execution with correct defaults', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+
+      expect(execution.featureId).toBe('100');
+      expect(execution.command).toBe('fl');
+      expect(execution.status).toBe('queued');
+      expect(execution.logs).toEqual([]);
+      expect(execution.currentPhase).toBeNull();
+      expect(execution.currentPhaseName).toBeNull();
+      expect(execution.currentIteration).toBeNull();
+      expect(execution.sessionId).toBeNull();
+      expect(execution.taskDepth).toBe(0);
+      expect(execution.isStalled).toBe(false);
+      expect(execution.killedByUser).toBe(false);
+      expect(execution.accountLimitHit).toBe(false);
+      expect(execution.promptTooLong).toBe(false);
+      expect(execution.chain).toBeNull();
+    });
+
+    it('creates execution with chain enabled', () => {
+      const { service } = createService();
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fl',
+        chain: true,
+        retryCount: 2,
+        contextRetryCount: 1,
+        chainHistory: [{ command: 'fc', result: 'ok' }],
+      });
+
+      expect(execution.chain).toEqual({
+        enabled: true,
+        retryCount: 2,
+        contextRetryCount: 1,
+        incompleteRetryCount: 0,
+        history: [{ command: 'fc', result: 'ok' }],
+      });
+    });
+
+    it('creates execution with chainParentId', () => {
+      const { service } = createService();
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fl',
+        chain: true,
+        chainParentId: 'parent-exec-id',
+      });
+
+      expect(execution.chainParentId).toBe('parent-exec-id');
+    });
+  });
+
+  describe('_attachStderrHandler - log level', () => {
+    it('logs stderr ERROR lines as error level', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+
+      const handlers = {};
+      const mockProc = {
+        stderr: {
+          on: (event, handler) => {
+            handlers[event] = handler;
+          },
+        },
+      };
+
+      service._attachStderrHandler(execution, mockProc);
+      handlers.data(Buffer.from('[ERROR] Something failed\n'));
+
+      const errLog = execution.logs.find((l) => l.level === 'error');
+      expect(errLog).toBeDefined();
+      expect(errLog.line).toContain('[stderr]');
+      expect(errLog.line).toContain('[ERROR] Something failed');
+    });
+
+    it('logs stderr non-ERROR lines as debug level', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+
+      const handlers = {};
+      const mockProc = {
+        stderr: {
+          on: (event, handler) => {
+            handlers[event] = handler;
+          },
+        },
+      };
+
+      service._attachStderrHandler(execution, mockProc);
+      handlers.data(Buffer.from('Debug info\n'));
+
+      const debugLog = execution.logs.find((l) => l.level === 'debug');
+      expect(debugLog).toBeDefined();
+      expect(debugLog.line).toContain('[stderr]');
+      expect(debugLog.line).toContain('Debug info');
+    });
+
+    it('updates lastOutputTime from stderr', () => {
+      const { service } = createService();
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastOutputTime = 0;
+
+      const handlers = {};
+      const mockProc = {
+        stderr: {
+          on: (event, handler) => {
+            handlers[event] = handler;
+          },
+        },
+      };
+
+      service._attachStderrHandler(execution, mockProc);
+      const before = Date.now();
+      handlers.data(Buffer.from('some output\n'));
+      expect(execution.lastOutputTime).toBeGreaterThanOrEqual(before);
+    });
+  });
+
+  describe('_handleStreamEvent - system events', () => {
+    it('does not set sessionId from system non-init event', () => {
+      const { service } = createService();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      expect(execution.sessionId).toBeNull();
+
+      service._handleStreamEvent(execution, {
+        type: 'system',
+        subtype: 'something-else',
+        session_id: 'should-not-be-set',
+      });
+
+      expect(execution.sessionId).toBeNull();
+    });
+
+    it('does not modify sessionId when init event has no session_id', () => {
+      const { service } = createService();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+
+      service._handleStreamEvent(execution, {
+        type: 'system',
+        subtype: 'init',
+        // no session_id field
+      });
+
+      expect(execution.sessionId).toBeNull();
+    });
+  });
+
+  describe('_handleStreamEvent - lastOutputTime update', () => {
+    it('does not update lastOutputTime on non-assistant events', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const execution = service._createExecution({ featureId: '100', command: 'fl' });
+      execution.lastOutputTime = 12345; // fixed value
+
+      // system/init doesn't update lastOutputTime
+      service._handleStreamEvent(execution, {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'abc',
+      });
+
+      // lastOutputTime should not have changed (only process stream does that)
+      expect(execution.lastOutputTime).toBe(12345);
+    });
+  });
+
+  describe('isIdle detection', () => {
+    it('reports idle when no running or queued executions', () => {
+      const { service } = createService();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'completed';
+      service.executions.set(exec.id, exec);
+
+      expect(service.runningCount).toBe(0);
+      expect(service.queue.length).toBe(0);
+    });
+
+    it('reports not idle when execution is running', () => {
+      const { service } = createService();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'running';
+      service.executions.set(exec.id, exec);
+
+      expect(service.runningCount).toBe(1);
+    });
+  });
+});
+
+// =============================================================================
+// Scenario Tests — multi-step state machine flows
+// =============================================================================
+
+describe('Scenario Tests', () => {
+  function createScenarioService() {
+    const { service, logStreamer } = createService();
+    service._broadcastState = vi.fn();
+    service._handoffToTerminal = vi.fn();
+    service._killProcess = vi.fn();
+    service._dequeueNext = vi.fn();
+    service._saveSessionId = vi.fn();
+    service._saveHistoryEntry = vi.fn();
+    service._attachStdoutHandler = vi.fn();
+    service._attachStderrHandler = vi.fn();
+    service._checkStall = vi.fn();
+    service._buildClaudeEnv = vi.fn(() => ({}));
+    service.executeCommand = vi.fn().mockReturnValue('new-exec-id');
+    service.fileWatcher = { statusCache: new Map() };
+    service.emailService = {
+      sendCompletionNotification: vi.fn().mockResolvedValue(undefined),
+      sendHandoffNotification: vi.fn().mockResolvedValue(undefined),
+    };
+    service.rateLimitService = {
+      getSafeProfile: vi.fn().mockReturnValue(null),
+      getEarliestResetTime: vi.fn().mockReturnValue(null),
+      capture: vi.fn().mockResolvedValue(undefined),
+      recomputeRefreshTimes: vi.fn(),
+    };
+    service.getCcsProfile = vi.fn().mockReturnValue('default');
+    return { service, logStreamer };
+  }
+
+  function createRunningChainExecution(service, overrides = {}) {
+    const exec = service._createExecution({
+      featureId: '100',
+      command: 'run',
+      chain: true,
+      chainHistory: [],
+      ...overrides,
+    });
+    exec.status = 'running';
+    exec.startedAt = new Date().toISOString();
+    exec.lastOutputTime = Date.now();
+    exec.sessionId = overrides.sessionId || 'session-abc';
+    exec.resultSubtype = 'success';
+    exec.debugLogPath = null;
+    service.executions.set(exec.id, exec);
+    return exec;
+  }
+
+  // =========================================================================
+  // S1: Input-Wait → Answer → Resume → Chain
+  // =========================================================================
+  describe('S1: Input-Wait → Answer → Resume → Chain', () => {
+    it('registers chain waiter only once when input-wait → answer → resume → complete', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      // Step 1: Input-wait detected
+      service.streamParser.checkInputWaitPatterns(exec, 'Finalize? (y/n)', 'assistant');
+      expect(exec.waitingForInput).toBe(true);
+      expect(exec._hadInputWait).toBe(true);
+
+      // Step 2: Result event cancels pending handoff
+      service.streamParser.handleStreamEvent(exec, { type: 'result', subtype: 'success' });
+      expect(exec.pendingHandoff).toBeNull();
+
+      // Step 3: First completion (input-wait exit) — does NOT register chain waiter
+      service._handleCompletion(exec, 0);
+      expect(registerSpy).toHaveBeenCalledTimes(0);
+
+      // Step 4: answerInBrowser clears state, sets _resumedAnswer
+      // Reset exec to running for answerInBrowser
+      exec.status = 'running';
+      exec.waitingForInput = true;
+      service.answerInBrowser(exec.id, 'y');
+      expect(exec._resumedAnswer).toBe(true);
+
+      // Step 5: Resumed process completes — registers chain waiter
+      exec.status = 'running';
+      exec.resultSubtype = 'success';
+      service._handleCompletion(exec, 0);
+      expect(registerSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips chain waiter when non-chain execution has input-wait', () => {
+      const { service } = createScenarioService();
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec.sessionId = 'session-abc';
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.executions.set(exec.id, exec);
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      service.streamParser.checkInputWaitPatterns(exec, 'Finalize? (y/n)', 'assistant');
+      service.streamParser.handleStreamEvent(exec, { type: 'result', subtype: 'success' });
+      service._handleCompletion(exec, 0);
+
+      // Non-chain execution: chain is null, so registerWaiter never called
+      expect(registerSpy).not.toHaveBeenCalled();
+    });
+
+    it('completion email skipped when _hadInputWait is true', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec._hadInputWait = true;
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      service._handleCompletion(exec, 0);
+
+      // Email should NOT be sent because _hadInputWait is true
+      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S2: AskUserQuestion → Kill → Answer → Resume → Chain
+  // =========================================================================
+  describe('S2: AskUserQuestion → Kill → Answer → Resume → Chain', () => {
+    it('AskUserQuestion kill suppresses completion, resume completes normally', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      // Step 1: AskUserQuestion detected — sets inputRequired + _killedForAskUser
+      service.streamParser.handleStreamEvent(exec, {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'I have a question.' },
+            {
+              type: 'tool_use',
+              id: 'tool-123',
+              name: 'AskUserQuestion',
+              input: { questions: [{ question: 'Which option?' }] },
+            },
+          ],
+        },
+      });
+      expect(exec.inputRequired).toBeTruthy();
+      expect(exec._killedForAskUser).toBe(true);
+
+      // Step 2: Process killed
+      exec.process = null;
+
+      // Step 3: _handleCompletion early returns (because _killedForAskUser)
+      service._handleCompletion(exec, null);
+      expect(exec.status).toBe('running');
+      expect(registerSpy).not.toHaveBeenCalled();
+
+      // Step 4: answerInBrowser → clears flags, sets _resumedAnswer
+      service.answerInBrowser(exec.id, 'Option A');
+      expect(exec._resumedAnswer).toBe(true);
+      expect(exec._killedForAskUser).toBe(false);
+
+      // Step 5: Resumed process completes — registers waiter (_hadInputWait=false, _resumedAnswer=true → register)
+      exec.status = 'running';
+      exec.resultSubtype = 'success';
+      // Simulate fc completed successfully: status advanced to [PROPOSED]
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+      service._handleCompletion(exec, 0);
+      expect(registerSpy).toHaveBeenCalledTimes(1);
+      expect(exec.status).toBe('completed');
+    });
+
+    it('buffered tool_result after kill is ignored', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+
+      // AskUserQuestion detected
+      service.streamParser.handleStreamEvent(exec, {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Question.' },
+            {
+              type: 'tool_use',
+              id: 'tool-456',
+              name: 'AskUserQuestion',
+              input: { questions: [{ question: 'Choose' }] },
+            },
+          ],
+        },
+      });
+      expect(exec._killedForAskUser).toBe(true);
+      const toolUseId = exec.inputRequired.toolUseId;
+
+      // Buffered tool_result arrives after kill
+      service.streamParser.handleStreamEvent(exec, {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: '' }],
+        },
+      });
+
+      // inputRequired should NOT be cleared (guard in streamParser line 344)
+      expect(exec.inputRequired).toBeTruthy();
+      expect(exec.inputRequired.toolUseId).toBe('tool-456');
+    });
+  });
+
+  // =========================================================================
+  // S3: Chain Waiter Race Condition
+  // =========================================================================
+  describe('S3: Chain Waiter Race Condition', () => {
+    it('status already changed → immediate trigger', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      // Status already advanced to [PROPOSED]
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      service._handleCompletion(exec, 0);
+
+      // registerWaiter detects status already [PROPOSED] → immediately starts fl
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({ chain: true }),
+      );
+      // No deferred waiter stored
+      expect(service.chainExecutor.hasWaiter('100')).toBe(false);
+    });
+
+    it('status not yet changed → deferred waiter → trigger on change', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      // No status in cache yet → skips incomplete detection, registers waiter
+
+      service._handleCompletion(exec, 0);
+
+      // Waiter stored (status doesn't match yet)
+      expect(service.chainExecutor.hasWaiter('100')).toBe(true);
+      expect(service.executeCommand).not.toHaveBeenCalled();
+
+      // Now status changes
+      service.chainExecutor.handleStatusChanged('100', '[DRAFT]', '[PROPOSED]');
+
+      // Waiter consumed, next command started
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({ chain: true }),
+      );
+      expect(service.chainExecutor.hasWaiter('100')).toBe(false);
+    });
+
+    it('full chain fc → fl → run progression', () => {
+      const { service } = createScenarioService();
+
+      // FC execution completes
+      const fcExec = createRunningChainExecution(service, { command: 'fc' });
+      fcExec.resultSubtype = 'success';
+      fcExec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+      service._handleCompletion(fcExec, 0);
+
+      // FC → FL triggered immediately
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({
+          chain: true,
+          chainHistory: [{ command: 'fc', result: 'ok' }],
+        }),
+      );
+
+      // FL execution completes
+      const flExec = createRunningChainExecution(service, { command: 'fl' });
+      flExec.resultSubtype = 'success';
+      flExec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[REVIEWED]');
+      service._handleCompletion(flExec, 0);
+
+      // FL → run triggered immediately
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'run',
+        expect.objectContaining({
+          chain: true,
+          chainHistory: [{ command: 'fl', result: 'ok' }],
+        }),
+      );
+    });
+  });
+
+  // =========================================================================
+  // S4: Rate Limit → Queue → Retry
+  // =========================================================================
+  describe('S4: Rate Limit → Queue → Retry', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('429 detection triggers retry after delay', () => {
+      const { service } = createScenarioService();
+      service.rateLimitService.getSafeProfile.mockReturnValue('profile-b');
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.accountLimitHit = true;
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+
+      service._handleCompletion(exec, 1);
+
+      expect(exec.status).toBe('failed');
+      expect(exec.rateLimitSwitchedTo).toBe('profile-b');
+
+      // Advance past retry delay
+      vi.advanceTimersByTime(15000);
+
+      // _processNextInQueue should have been called → which calls executeCommand
+      // (via internal _processRateLimitQueue or _processNextInQueue)
+      // The scheduling happened via setTimeout in _scheduleRateLimitRetry
+    });
+
+    it('two concurrent 429s queue sequentially', () => {
+      const { service } = createScenarioService();
+      service.rateLimitService.getSafeProfile.mockReturnValue('profile-b');
+
+      const exec1 = createRunningChainExecution(service, { command: 'fc' });
+      exec1.accountLimitHit = true;
+      exec1.debugLogPath = null;
+      service._handleCompletion(exec1, 1);
+
+      const exec2 = createRunningChainExecution(service, { command: 'fl', featureId: '200' });
+      exec2.accountLimitHit = true;
+      exec2.debugLogPath = null;
+      service._handleCompletion(exec2, 1);
+
+      // Both should be in the retry queue
+      expect(service._rateLimitRetryQueue.length).toBe(2);
+    });
+  });
+
+  // =========================================================================
+  // S5: Incomplete Termination → Retry → Success
+  // =========================================================================
+  describe('S5: Incomplete Termination → Retry → Success', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('retries on incomplete, succeeds on second attempt', () => {
+      const { service } = createScenarioService();
+      // FC completed exit 0 + success, but status still [DRAFT] (incomplete)
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+
+      service._handleCompletion(exec, 0);
+
+      // Incomplete detected → retry scheduled
+      vi.advanceTimersByTime(15000);
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fc',
+        expect.objectContaining({ incompleteRetryCount: 1 }),
+      );
+
+      // Second attempt: status now [PROPOSED]
+      const exec2 = createRunningChainExecution(service, { command: 'fc' });
+      exec2.resultSubtype = 'success';
+      exec2.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      service._handleCompletion(exec2, 0);
+
+      // Status matches → registerWaiter triggers immediate chain
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({ chain: true }),
+      );
+    });
+
+    it('retry exhaustion sends email', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, {
+        command: 'fc',
+        incompleteRetryCount: 3,
+      });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+
+      service._handleCompletion(exec, 0);
+
+      // Exhausted → falls through to email
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        exec,
+        'completed',
+        0,
+        expect.arrayContaining([expect.objectContaining({ result: 'incomplete-retry-exhausted' })]),
+        null, // no featureService → getFeature not available
+      );
+    });
+  });
+
+  // =========================================================================
+  // S6: Stall Detection
+  // =========================================================================
+  describe('S6: Stall Detection', () => {
+    it('marks stalled after 60s, broadcasts only once', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.lastOutputTime = Date.now() - 61000;
+      service.executions.set(exec.id, exec);
+
+      // First check → stalled
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(true);
+      expect(service._broadcastState).toHaveBeenCalledTimes(1);
+
+      // Second check → no additional broadcast
+      service._checkStall(exec);
+      expect(service._broadcastState).toHaveBeenCalledTimes(1);
+    });
+
+    it('not stalled when inputRequired is set', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.lastOutputTime = Date.now() - 120000;
+      exec.inputRequired = { toolUseId: 'tool-1', questions: [] };
+
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(false);
+    });
+
+    it('not stalled when taskDepth > 0', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.lastOutputTime = Date.now() - 120000;
+      exec.taskDepth = 1;
+
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // S7: Context Retry + FL Retry Counter Independence
+  // =========================================================================
+  describe('S7: Context Retry + FL Retry Counter Independence', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('context and FL retry counters are independent', () => {
+      const { service } = createScenarioService();
+
+      // Step 1: Context exhaustion → context retry
+      const exec1 = createRunningChainExecution(service, { command: 'fl' });
+      exec1.resultSubtype = 'error_max_turns';
+      exec1.debugLogPath = null;
+
+      service._handleCompletion(exec1, 1);
+
+      vi.advanceTimersByTime(15000);
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({
+          contextRetryCount: 1,
+          retryCount: 0,
+        }),
+      );
+
+      // Step 2: New exec with those counts, now FL failure (non-context)
+      service.executeCommand.mockClear();
+      const exec2 = createRunningChainExecution(service, {
+        command: 'fl',
+        retryCount: 0,
+        contextRetryCount: 1,
+      });
+      exec2.resultSubtype = null;
+      exec2.debugLogPath = null;
+
+      service._handleCompletion(exec2, 1);
+
+      vi.advanceTimersByTime(15000);
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({
+          retryCount: 1,
+          contextRetryCount: 1,
+        }),
+      );
+    });
+
+    it('context exhaustion takes precedence over FL retry', () => {
+      const { service } = createScenarioService();
+
+      // error_max_turns + non-zero exit → context retry path (checked first)
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'error_max_turns';
+      exec.debugLogPath = null;
+
+      service._handleCompletion(exec, 1);
+
+      vi.advanceTimersByTime(15000);
+      // Should use context retry, not FL retry
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({ contextRetryCount: 1 }),
+      );
+    });
+  });
+
+  // =========================================================================
+  // S8: Stall Recovery Cycle (isStalled: false→true→false→true)
+  // =========================================================================
+  describe('S8: Stall Recovery Cycle', () => {
+    it('stall → output resumes → unstall → re-stall on silence', () => {
+      const { service, logStreamer } = createService();
+      service._broadcastState = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.lastOutputTime = Date.now() - 120000;
+      service.executions.set(exec.id, exec);
+
+      // Phase 1: Stall detected
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(true);
+      expect(service._broadcastState).toHaveBeenCalledTimes(1);
+
+      // Phase 2: Output resumes — _attachStdoutHandler resets isStalled
+      // Simulate the stdout handler logic (line 722-726 in claudeService.js)
+      exec.lastOutputTime = Date.now();
+      exec.isStalled = false;
+      service._broadcastState.mockClear();
+      service._broadcastState(exec); // stdout handler broadcasts on unstall
+
+      // Phase 3: Verify not stalled immediately after recovery
+      service._broadcastState.mockClear();
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(false);
+      expect(service._broadcastState).not.toHaveBeenCalled();
+
+      // Phase 4: Silence again → re-stall
+      exec.lastOutputTime = Date.now() - 120000;
+      service._checkStall(exec);
+      expect(exec.isStalled).toBe(true);
+      expect(service._broadcastState).toHaveBeenCalledTimes(1);
+
+      // Phase 5: Re-stall doesn't double-broadcast
+      service._broadcastState.mockClear();
+      service._checkStall(exec);
+      expect(service._broadcastState).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S9: Handoff Race (running→handed-off→process close)
+  // =========================================================================
+  describe('S9: Handoff Race', () => {
+    it('_handleCompletion is suppressed after handoff', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      // Step 1: Handoff to terminal changes status
+      service._handoffToTerminal.mockImplementation((e, _reason) => {
+        e.status = 'handed-off';
+      });
+      service._handoffToTerminal(exec, 'Input required: y/n prompt');
+      expect(exec.status).toBe('handed-off');
+
+      // Step 2: Process close fires _handleCompletion after handoff
+      // Guard: status !== 'running' → early return
+      service._handleCompletion(exec, 0);
+
+      // Should NOT have progressed (no chain waiter, no status change)
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect(exec.status).toBe('handed-off'); // unchanged
+    });
+
+    it('process close after handoff cleans up and dequeues', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.stallCheckInterval = setInterval(() => {}, 30000);
+
+      // Simulate handoff
+      exec.status = 'handed-off';
+
+      // Simulate the proc.on('close') handler logic (line 670-677)
+      // When status is 'handed-off', close handler skips _handleCompletion,
+      // clears interval, nulls process, and dequeues
+      if (exec.stallCheckInterval) {
+        clearInterval(exec.stallCheckInterval);
+        exec.stallCheckInterval = null;
+      }
+      exec.process = null;
+      service._dequeueNext();
+
+      expect(exec.stallCheckInterval).toBeNull();
+      expect(exec.process).toBeNull();
+      expect(service._dequeueNext).toHaveBeenCalled();
+    });
+
+    it('double handoff is idempotent', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.sessionId = 'session-abc';
+      service.executions.set(exec.id, exec);
+
+      // First handoff succeeds
+      service._handoffToTerminal(exec, 'First handoff');
+      expect(exec.status).toBe('handed-off');
+      const callCount = service._broadcastState.mock.calls.length;
+
+      // Second handoff is no-op (guard: status === 'handed-off')
+      service._handoffToTerminal(exec, 'Second handoff');
+      expect(service._broadcastState.mock.calls.length).toBe(callCount);
+    });
+  });
+
+  // =========================================================================
+  // S10: Update Analysis → _onComplete + auto-handoff
+  // =========================================================================
+  describe('S10: Update Analysis → _onComplete + auto-handoff', () => {
+    it('full flow: _onComplete fires, then auto-handoff to terminal', () => {
+      const { service } = createScenarioService();
+      // Restore real _handoffToTerminal for this test
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+
+      const onComplete = vi.fn();
+      const exec = service._createExecution({ command: 'update-analysis' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec.sessionId = 'update-session-1';
+      exec._onComplete = onComplete;
+      exec.debugLogPath = null;
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 0);
+
+      // _onComplete fires with analysis result
+      expect(onComplete).toHaveBeenCalledWith(exec, 0);
+      // Auto-handoff triggers after _onComplete
+      expect(exec.status).toBe('handed-off');
+    });
+
+    it('no auto-handoff on analysis failure, _onComplete still fires', () => {
+      const { service } = createScenarioService();
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+
+      const onComplete = vi.fn();
+      const exec = service._createExecution({ command: 'update-analysis' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec.sessionId = 'update-session-2';
+      exec._onComplete = onComplete;
+      exec.debugLogPath = null;
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 1);
+
+      expect(onComplete).toHaveBeenCalledWith(exec, 1);
+      expect(exec.status).toBe('failed');
+    });
+
+    it('non-update-analysis commands do not auto-handoff on success', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'imp' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec.lastAssistantText = 'Analysis complete.';
+
+      service._handleCompletion(exec, 0);
+
+      // imp is last chain step → email, NOT handoff
+      expect(exec.status).toBe('completed');
+      expect(service._handoffToTerminal).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S11: endsWithQuestion → handoff stops chain
+  // =========================================================================
+  describe('S11: endsWithQuestion → handoff stops chain', () => {
+    it('chain execution ending with question → handoff, no chain waiter', () => {
+      const { service } = createScenarioService();
+      // Restore real _handoffToTerminal
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec.lastAssistantText = 'Would you like me to proceed?';
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      service._handleCompletion(exec, 0);
+
+      // endsWithQuestion → handoff fires, skipping chain entirely
+      expect(exec.status).toBe('handed-off');
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('non-chain execution ending with question → handoff', () => {
+      const { service } = createScenarioService();
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec.sessionId = 'session-q1';
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec.lastAssistantText = 'どちらにしますか？';
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 0);
+
+      expect(exec.status).toBe('handed-off');
+    });
+
+    it('question text with input-wait active → no double handoff', () => {
+      const { service } = createScenarioService();
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec.lastAssistantText = 'Continue? (y/n)';
+      exec.waitingForInput = true;
+
+      service._handleCompletion(exec, 0);
+
+      // waitingForInput guard prevents endsWithQuestion handoff
+      expect(exec.status).not.toBe('handed-off');
+    });
+  });
+
+  // =========================================================================
+  // S12: Chain [BLOCKED] → stop chain + email
+  // =========================================================================
+  describe('S12: Chain [BLOCKED] → waiter registered, no incomplete retry', () => {
+    it('FL sets [BLOCKED] → waiter registered (deferred until unblock)', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      // FL completed successfully but set status to [BLOCKED]
+      service.fileWatcher.statusCache.set('100', '[BLOCKED]');
+
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      service._handleCompletion(exec, 0);
+
+      // chainContinues is true (exit 0, success, chain.enabled)
+      // registerWaiter is called — waiter sits until status changes
+      expect(registerSpy).toHaveBeenCalled();
+      expect(exec.status).toBe('completed');
+      // No immediate next command (BLOCKED has no mapping)
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      // No email (chainContinues = true, waiter handles it)
+      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+    });
+
+    it('[BLOCKED] waiter triggers when status changes to [REVIEWED]', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[BLOCKED]');
+
+      service._handleCompletion(exec, 0);
+
+      // Waiter registered
+      expect(service.chainExecutor.hasWaiter('100')).toBe(true);
+
+      // Later, status changes from [BLOCKED] → [REVIEWED]
+      service.chainExecutor.handleStatusChanged('100', '[BLOCKED]', '[REVIEWED]');
+
+      // Now chain continues: run triggered
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'run',
+        expect.objectContaining({ chain: true }),
+      );
+    });
+
+    it('[BLOCKED] skips incomplete retry (legitimate status)', () => {
+      const { service } = createScenarioService();
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[BLOCKED]');
+
+      service._handleCompletion(exec, 0);
+
+      // Should NOT trigger incomplete retry (BLOCKED is legitimate)
+      expect(service.executeCommand).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'fl',
+        expect.objectContaining({ incompleteRetryCount: expect.any(Number) }),
+      );
+    });
+  });
+
+  // =========================================================================
+  // S13: FL Retry Exhausted — Chain Stops, Email Sent
+  // =========================================================================
+  describe('S13: FL Retry Exhausted — Chain Stops, Email Sent', () => {
+    it('FL retry exhausted: status=failed, fl-retry-exhausted broadcast, email sent, no further retry', async () => {
+      const { service, logStreamer } = createScenarioService();
+      const { MAX_FL_RETRIES } = await import('../config.js');
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      // FL execution with retryCount already at maximum
+      const exec = createRunningChainExecution(service, {
+        command: 'fl',
+        retryCount: MAX_FL_RETRIES,
+      });
+      exec.resultSubtype = null; // non-context FL failure
+      exec.debugLogPath = null;
+      // Set expected status so isExpectedStatusAfterCommand does not interfere
+      service.fileWatcher.statusCache.set('100', '[REVIEWED]');
+
+      service._handleCompletion(exec, 1);
+
+      // isFlRetryExhausted path: status must be 'failed'
+      expect(exec.status).toBe('failed');
+      expect(exec.exitCode).toBe(1);
+
+      // fl-retry-exhausted broadcast
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'fl-retry-exhausted' }),
+      );
+
+      // Email sent with retry-exhausted result
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        exec,
+        'failed',
+        1,
+        expect.arrayContaining([expect.objectContaining({ result: 'retry-exhausted' })]),
+        null,
+      );
+
+      // No further retry scheduled
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      // Chain waiter NOT registered (isFlRetryExhausted blocks it)
+      expect(registerSpy).not.toHaveBeenCalled();
+      // Queue management
+      expect(service._dequeueNext).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S14: Deferred Rate Limit Detection Cancels Context Retry Timer
+  // =========================================================================
+  describe('S14: Deferred Rate Limit Detection Cancels Context Retry Timer', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('deferred scan cancels in-flight context retry timer when 429 detected late', () => {
+      const { service } = createScenarioService();
+
+      // Set up a chain execution that looks like context exhaustion
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'error_max_turns';
+      exec.debugLogPath = '/fake/debug.log';
+      exec.accountLimitHit = false;
+
+      // First scan returns false (file still locked), second returns true (429 found)
+      let scanCallCount = 0;
+      service._scanDebugLogForRateLimit = vi.fn().mockImplementation((execution) => {
+        scanCallCount++;
+        if (scanCallCount === 2) {
+          execution.accountLimitHit = true;
+          return true;
+        }
+        return false;
+      });
+      service._scheduleRateLimitRetry = vi
+        .fn()
+        .mockReturnValue({ message: 'Rate limit retry scheduled' });
+
+      service._handleCompletion(exec, 1);
+
+      // Context retry timer should have been set (error_max_turns triggers needsContextRetry)
+      expect(exec._contextRetryTimer).toBeTruthy();
+
+      // Advance 500ms to trigger the deferred scan
+      vi.advanceTimersByTime(500);
+
+      // Deferred scan detects 429 → cancels context retry timer
+      expect(exec._contextRetryTimer).toBeNull();
+      expect(service._scheduleRateLimitRetry).toHaveBeenCalled();
+      // State updated by deferred scan
+      expect(exec.accountLimitHit).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // S15: killedByUser Suppresses All Retry Paths
+  // =========================================================================
+  describe('S15: killedByUser Suppresses All Retry Paths', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('killedByUser with context exhaustion: no context retry, no FL retry, falls to terminal', () => {
+      const { service } = createScenarioService();
+
+      // FL command with context exhaustion, but killedByUser=true
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'error_max_turns';
+      exec.debugLogPath = null;
+      exec.killedByUser = true;
+
+      service._handleCompletion(exec, 1);
+
+      vi.advanceTimersByTime(15000);
+
+      // No retry of any kind
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      // Falls through to terminal path
+      expect(exec.status).toBe('failed');
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalled();
+    });
+
+    it('killedByUser with accountLimitHit: no rate limit retry scheduled', () => {
+      const { service } = createScenarioService();
+      service.rateLimitService.getSafeProfile.mockReturnValue('profile-b');
+      service._scheduleRateLimitRetry = vi.fn();
+
+      // Non-FL command, accountLimitHit=true, killedByUser=true
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec.accountLimitHit = true;
+      exec.killedByUser = true;
+
+      service._handleCompletion(exec, 1);
+
+      // killedByUser guard at source line 1376: `accountLimitHit && !killedByUser`
+      // With killedByUser=true, the rate limit block is skipped entirely
+      expect(service._scheduleRateLimitRetry).not.toHaveBeenCalled();
+      expect(exec.status).toBe('failed');
+      // Email sent via terminal path (not rate limit path)
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S16: _processNextInQueue — Sequential Queue Drain
+  // =========================================================================
+  describe('S16: _processNextInQueue — Sequential Queue Drain', () => {
+    it('drains queue sequentially, dequeues when empty', () => {
+      const { service } = createScenarioService();
+      service._startRateLimitRetry = vi.fn();
+
+      // Manually populate the queue with two entries
+      const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      const exec2 = createRunningChainExecution(service, { command: 'fl', featureId: '200' });
+      service._rateLimitRetryQueue.push(
+        { execution: exec1, queuedAt: Date.now() },
+        { execution: exec2, queuedAt: Date.now() },
+      );
+
+      // First drain: shifts exec1, calls _startRateLimitRetry
+      service._processNextInQueue();
+      expect(service._startRateLimitRetry).toHaveBeenCalledWith(exec1);
+      expect(service._rateLimitRetryQueue.length).toBe(1);
+
+      // Second drain: shifts exec2
+      service._processNextInQueue();
+      expect(service._startRateLimitRetry).toHaveBeenCalledWith(exec2);
+      expect(service._rateLimitRetryQueue.length).toBe(0);
+
+      // Third call with empty queue: _rateLimitRetryAt cleared, _dequeueNext called
+      service._processNextInQueue();
+      expect(service._rateLimitRetryAt).toBeNull();
+      expect(service._dequeueNext).toHaveBeenCalled();
+    });
+
+    it('skips killed executions and continues to next', () => {
+      const { service } = createScenarioService();
+      service._startRateLimitRetry = vi.fn();
+
+      const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      const exec2 = createRunningChainExecution(service, { command: 'fl', featureId: '200' });
+      exec1.killedByUser = true; // This one should be skipped
+      service._rateLimitRetryQueue.push(
+        { execution: exec1, queuedAt: Date.now() },
+        { execution: exec2, queuedAt: Date.now() },
+      );
+
+      // First call: skips exec1 (killed), processes exec2
+      service._processNextInQueue();
+      expect(service._startRateLimitRetry).toHaveBeenCalledWith(exec2);
+      expect(service._startRateLimitRetry).not.toHaveBeenCalledWith(exec1);
+    });
+  });
+
+  // =========================================================================
+  // S17: _processRateLimitQueue — Still Limited After Timer
+  // =========================================================================
+  describe('S17: _processRateLimitQueue — Still Limited After Timer', () => {
+    it('still limited: pushes error logs, broadcasts rate-limit-exhausted, clears queue', async () => {
+      const { service, logStreamer } = createScenarioService();
+      service.emailService.sendRateLimitExhaustedNotification = vi
+        .fn()
+        .mockResolvedValue(undefined);
+      service._processNextInQueue = vi.fn();
+
+      const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      const exec2 = createRunningChainExecution(service, { command: 'fl', featureId: '200' });
+      service._rateLimitRetryQueue.push(
+        { execution: exec1, queuedAt: Date.now() },
+        { execution: exec2, queuedAt: Date.now() },
+      );
+
+      // getSafeProfile returns null → no profile switch available
+      service.rateLimitService.getSafeProfile.mockReturnValue(null);
+      // getCached returns data showing 98% usage (above RATE_LIMIT_SAFE_THRESHOLD=95)
+      service.rateLimitService.getCached = vi.fn().mockReturnValue({
+        default: { weekly: { percent: 98 }, session: { percent: 90 } },
+      });
+      service.getCcsProfile.mockReturnValue('default');
+
+      await service._processRateLimitQueue();
+
+      // Error logs pushed to all entries
+      expect(exec1.logs.some((log) => log.line.includes('Rate limit retry failed'))).toBe(true);
+      expect(exec2.logs.some((log) => log.line.includes('Rate limit retry failed'))).toBe(true);
+
+      // rate-limit-exhausted broadcast
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'rate-limit-exhausted' }),
+      );
+
+      // Email sent
+      expect(service.emailService.sendRateLimitExhaustedNotification).toHaveBeenCalled();
+
+      // Queue cleared
+      expect(service._rateLimitRetryQueue.length).toBe(0);
+      expect(service._rateLimitRetryAt).toBeNull();
+      expect(service._dequeueNext).toHaveBeenCalled();
+
+      // _processNextInQueue NOT called (gave up)
+      expect(service._processNextInQueue).not.toHaveBeenCalled();
+    });
+
+    it('safe profile available: calls _processNextInQueue to drain queue', async () => {
+      const { service } = createScenarioService();
+      service._processNextInQueue = vi.fn();
+
+      const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      service._rateLimitRetryQueue.push({ execution: exec1, queuedAt: Date.now() });
+
+      // getSafeProfile returns a safe profile → percent will be below threshold
+      service.rateLimitService.getSafeProfile.mockReturnValue('profile-b');
+      service.rateLimitService.getCached = vi.fn().mockReturnValue({
+        'profile-b': { weekly: { percent: 50 }, session: { percent: 40 } },
+      });
+      service.getCcsProfile.mockReturnValue('profile-b');
+
+      await service._processRateLimitQueue();
+
+      // Under threshold → proceed with drain
+      expect(service._processNextInQueue).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S18: FL Rerun Request (exit 0) Triggers FL Retry
+  // =========================================================================
+  describe('S18: FL Rerun Request (exit 0) Triggers FL Retry', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('exit 0 with rerun request triggers FL retry, not chain progression', () => {
+      const { service } = createScenarioService();
+
+      // FL chain execution that exits 0 but requests re-run
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      // lastAssistantText contains a rerun trigger pattern
+      exec.lastAssistantText = '再実行してください';
+      // Expected status for FL completion (so isExpectedStatusAfterCommand matches)
+      service.fileWatcher.statusCache.set('100', '[REVIEWED]');
+
+      service._handleCompletion(exec, 0);
+
+      // FL retry path sets status to 'failed' before scheduling retry
+      expect(exec.status).toBe('failed');
+
+      // Advance past retry delay
+      vi.advanceTimersByTime(15000);
+
+      // FL retry triggered (not chain progression to 'run')
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '100',
+        'fl',
+        expect.objectContaining({ retryCount: 1 }),
+      );
+      // Chain did NOT progress to 'run'
+      expect(service.executeCommand).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'run',
+        expect.anything(),
+      );
+    });
+  });
+
+  // =========================================================================
+  // S19: Context Retry Exhausted — Email with 'context-retry-exhausted'
+  // =========================================================================
+  describe('S19: Context Retry Exhausted — Email with context-retry-exhausted', () => {
+    it('context retry count at MAX_RETRIES: falls to terminal with context-retry-exhausted result', async () => {
+      const { service } = createScenarioService();
+      const { MAX_RETRIES } = await import('../config.js');
+
+      // FC execution with contextRetryCount already at MAX_RETRIES
+      const exec = createRunningChainExecution(service, {
+        command: 'fc',
+        contextRetryCount: MAX_RETRIES,
+      });
+      // error_max_turns triggers isContextExhausted=true
+      exec.resultSubtype = 'error_max_turns';
+      exec.debugLogPath = null;
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+
+      service._handleCompletion(exec, 1);
+
+      // needsContextRetry = false (contextRetryCount >= MAX_RETRIES)
+      // Falls to terminal path: status = 'failed' (exitCode=1)
+      expect(exec.status).toBe('failed');
+
+      // Email sent with context-retry-exhausted result
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        exec,
+        'failed',
+        1,
+        expect.arrayContaining([expect.objectContaining({ result: 'context-retry-exhausted' })]),
+        null,
+      );
+
+      // No retry scheduled
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S20: _rateLimitQueueContinue — Drain After Successful Retry
+  // =========================================================================
+  describe('S20: _rateLimitQueueContinue — Drain After Successful Retry', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('_rateLimitQueueContinue=true: schedules _processNextInQueue after RETRY_DELAY_MS', async () => {
+      const { service } = createScenarioService();
+      const { RETRY_DELAY_MS } = await import('../config.js');
+      service._processNextInQueue = vi.fn();
+
+      // Exit 0 success with _rateLimitQueueContinue set
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec._rateLimitQueueContinue = true;
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      service._handleCompletion(exec, 0);
+
+      // Not yet called (scheduled via setTimeout)
+      expect(service._processNextInQueue).not.toHaveBeenCalled();
+
+      // Advance past RETRY_DELAY_MS
+      vi.advanceTimersByTime(RETRY_DELAY_MS);
+
+      expect(service._processNextInQueue).toHaveBeenCalled();
+    });
+
+    it('_rateLimitQueueContinue=false: _processNextInQueue NOT scheduled', async () => {
+      const { service } = createScenarioService();
+      const { RETRY_DELAY_MS } = await import('../config.js');
+      service._processNextInQueue = vi.fn();
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec._rateLimitQueueContinue = false;
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
+
+      service._handleCompletion(exec, 0);
+
+      vi.advanceTimersByTime(RETRY_DELAY_MS + 1000);
+
+      expect(service._processNextInQueue).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S21: /imp as Last Chain Step — Email Sent, No Chain Waiter Registered
+  // =========================================================================
+  describe('S21: imp Last Chain Step — Email Sent, No Chain Waiter', () => {
+    it('imp exit 0 success: email sent with ok result, no registerWaiter, no executeCommand', () => {
+      const { service } = createScenarioService();
+      const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+
+      // imp is defined as isLastChainStep=true in the source
+      const exec = createRunningChainExecution(service, { command: 'imp' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+
+      service._handleCompletion(exec, 0);
+
+      // Chain waiter NOT registered (isLastChainStep=true blocks registerWaiter)
+      expect(registerSpy).not.toHaveBeenCalled();
+
+      // Email sent (isLastChainStep triggers terminal path)
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        exec,
+        'completed',
+        0,
+        expect.arrayContaining([expect.objectContaining({ result: 'ok' })]),
+        null,
+      );
+
+      // No further command scheduled
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S22: _cleanupOldExecutions — Stuck Detection + Stale Waiter Interaction
+  // =========================================================================
+  describe('S22: _cleanupOldExecutions — Stuck Detection + Stale Waiter Interaction', () => {
+    it('detects stuck execution AND cleans stale waiter in same pass', () => {
+      const { service } = createScenarioService();
+      service._killProcess = vi.fn();
+      service._broadcastState = vi.fn();
+      service.onExecutionComplete = vi.fn();
+
+      // Stuck running execution (no output for STUCK_RUNNING_TIMEOUT_MS+)
+      const stuckExec = service._createExecution({ featureId: '100', command: 'fc' });
+      stuckExec.status = 'running';
+      stuckExec.lastOutputTime = Date.now() - 7300000; // >2hr (STUCK_RUNNING_TIMEOUT_MS=7200000)
+      stuckExec.process = { pid: 999 };
+      stuckExec.stallCheckInterval = setInterval(() => {}, 999999);
+      service.executions.set(stuckExec.id, stuckExec);
+
+      // Old completed execution referenced by stale waiter
+      const oldExec = service._createExecution({ featureId: '200', command: 'fc' });
+      oldExec.status = 'completed';
+      oldExec.exitCode = 0;
+      service.executions.set(oldExec.id, oldExec);
+
+      // Stale chain waiter for different feature (>CHAIN_WAITER_TIMEOUT_MS=300000)
+      service.chainExecutor.chainWaiters.set('200', {
+        executionId: oldExec.id,
+        registeredAt: Date.now() - 400000, // >5min
+        command: 'fc',
+        expectedStatus: '[PROPOSED]',
+        history: [],
+      });
+
+      service._cleanupOldExecutions();
+
+      // Stuck execution: killed and set to failed
+      expect(stuckExec.status).toBe('failed');
+      expect(service._killProcess).toHaveBeenCalled();
+      expect(stuckExec.stallCheckInterval).toBeNull();
+
+      // Stale waiter: removed
+      expect(service.chainExecutor.hasWaiter('200')).toBe(false);
+
+      // onExecutionComplete fires for stale waiter cleanup
+      expect(service.onExecutionComplete).toHaveBeenCalled();
+
+      // Email sent for stale waiter
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalled();
+
+      // Cleanup intervals
+      clearInterval(stuckExec.stallCheckInterval);
+    });
+  });
+
+  // =========================================================================
+  // S23: _dequeueNext Blocked by _rateLimitPaused
+  // =========================================================================
+  describe('S23: _dequeueNext Blocked by _rateLimitPaused', () => {
+    it('_dequeueNext blocked when rate limit retry queue is non-empty', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+
+      // Create a queued execution
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'queued';
+      service.executions.set(exec.id, exec);
+      service.queue.push(exec.id);
+
+      // Populate rate limit queue to block dequeue
+      const dummyExec = service._createExecution({ featureId: '200', command: 'fl' });
+      service._rateLimitRetryQueue.push({ execution: dummyExec, queuedAt: Date.now() });
+
+      // _dequeueNext should be blocked
+      service._dequeueNext();
+
+      // Queued execution should NOT have started
+      expect(exec.status).toBe('queued');
+      expect(service.queue.length).toBe(1);
+    });
+
+    it('_dequeueNext unblocked after rate limit queue drains', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      vi.spyOn(service, '_startExecution').mockImplementation(() => {});
+
+      // Create a queued execution
+      const exec = service._createExecution({ featureId: '100', command: 'fc' });
+      exec.status = 'queued';
+      service.executions.set(exec.id, exec);
+      service.queue.push(exec.id);
+
+      // Rate limit queue empty — dequeue works
+      service._dequeueNext();
+      expect(service._startExecution).toHaveBeenCalledWith(exec);
+      expect(service.queue.length).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // S24: _broadcastInputWait Email Delay → answerInBrowser Cancellation
+  // =========================================================================
+  describe('S24: Input Email Delay → answerInBrowser Cancellation', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('answering in browser cancels pending input email', () => {
+      const { service } = createScenarioService();
+      // Restore real _broadcastInputWait for this test
+      service._broadcastInputWait = ClaudeService.prototype._broadcastInputWait.bind(service);
+      service.logStreamer = { broadcast: vi.fn(), broadcastAll: vi.fn() };
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.waitingForInput = true;
+      exec.sessionId = 'session-s24';
+
+      // Step 1: Input wait triggers delayed email
+      service._broadcastInputWait(exec, 'Continue? (y/n)', 'y/n prompt');
+      expect(exec._pendingInputEmailTimeout).toBeTruthy();
+
+      // Step 2: User answers before email delay expires
+      service.answerInBrowser(exec.id, 'y');
+
+      // Step 3: Email timer cancelled
+      expect(exec._pendingInputEmailTimeout).toBeNull();
+
+      // Step 4: Advance past the delay — email should NOT fire
+      vi.advanceTimersByTime(400000);
+      expect(service.emailService.sendHandoffNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S25: endsWithQuestion Handoff → Auto resumeInTerminal
+  // =========================================================================
+  describe('S25: endsWithQuestion Handoff → Auto resumeInTerminal', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('_handoffToTerminal auto-triggers resumeInTerminal after delay', () => {
+      const { service } = createScenarioService();
+      // Restore real _handoffToTerminal for this test
+      service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
+      service.resumeInTerminal = vi.fn();
+      service.logStreamer = { broadcast: vi.fn(), broadcastAll: vi.fn() };
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.sessionId = 'session-s25';
+
+      service._handoffToTerminal(exec, 'Question detected');
+      expect(exec.status).toBe('handed-off');
+
+      // Auto-resume NOT yet called
+      expect(service.resumeInTerminal).not.toHaveBeenCalled();
+
+      // Advance past HANDOFF_DELAY_MS (300ms from config)
+      vi.advanceTimersByTime(1000);
+
+      // Now resumeInTerminal should have been called
+      expect(service.resumeInTerminal).toHaveBeenCalledWith(exec.id);
+    });
+  });
+
+  // =========================================================================
+  // S27: killExecution on AskUserQuestion-Paused Execution
+  // =========================================================================
+  describe('S27: killExecution on AskUserQuestion-Paused (No Process)', () => {
+    it('kills paused execution with no process, cleans up state', () => {
+      const { service } = createScenarioService();
+      // Restore real killExecution (not mocked by createScenarioService)
+      service.killExecution = ClaudeService.prototype.killExecution.bind(service);
+
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      // Simulate AskUserQuestion pause: process killed, status still running, no process ref
+      exec._killedForAskUser = true;
+      exec.process = null;
+      exec.stdin = null;
+      exec.inputRequired = { toolUseId: 'tool-1', questions: [{ question: 'Which?' }] };
+      exec.waitingForInput = false;
+
+      const result = service.killExecution(exec.id);
+
+      expect(result).toBe(true);
+      expect(exec.status).toBe('cancelled');
+      expect(exec.killedByUser).toBe(true);
+      expect(exec._killedForAskUser).toBe(false);
+      expect(exec.inputRequired).toBeNull();
+      expect(service._dequeueNext).toHaveBeenCalled();
     });
   });
 });

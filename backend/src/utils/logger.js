@@ -4,9 +4,11 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// From utils/ -> src/ -> backend/ -> feature-dashboard/ -> tools/ -> erakoumakanNTR/
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
-const LOG_DIR = path.join(PROJECT_ROOT, '_out', 'logs', 'dashboard');
+// From utils/ -> src/ -> backend/ -> feature-dashboard/ -> node/ -> tools/ -> src/ -> devkit/
+const PROJECT_ROOT =
+  process.env.PROJECT_ROOT || path.resolve(__dirname, '..', '..', '..', '..', '..');
+const LOG_DIR =
+  process.env.DASHBOARD_LOG_DIR || path.join(PROJECT_ROOT, '_out', 'tmp', 'dashboard', 'logs');
 
 // Detect test environment
 const IS_TEST = !!process.env.VITEST;

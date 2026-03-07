@@ -56,7 +56,7 @@ async function main() {
   console.log(`Email sent: ${subject}`);
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(`Failed: ${err.message}`);
   process.exit(1);
 });

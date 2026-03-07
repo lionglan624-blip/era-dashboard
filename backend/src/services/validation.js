@@ -20,12 +20,12 @@ export function validateFeatureId(featureId) {
 
 /**
  * Validate command to prevent injection
- * @param {string} command - The command to validate (fc, fl, run)
+ * @param {string} command - The command to validate (fc, fl, run, imp)
  * @returns {string} - The validated command
  * @throws {Error} - If command is invalid
  */
 export function validateCommand(command) {
-  const allowed = ['fc', 'fl', 'run'];
+  const allowed = ['fc', 'fl', 'run', 'imp'];
   const cmd = String(command).toLowerCase();
   if (!allowed.includes(cmd)) {
     throw new Error(`Invalid command: ${command}. Must be one of: ${allowed.join(', ')}`);

@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Go up 3 levels: frontend -> feature-dashboard -> tools -> erakoumakanNTR
+// Go up 4 levels: frontend -> feature-dashboard -> node -> tools -> src -> devkit
 const LOG_DIR = path.resolve(__dirname, '..', '..', '..', '_out', 'tmp', 'dashboard', 'logs');
 const date = new Date().toISOString().slice(0, 10);
 const LOG_PATH = path.join(LOG_DIR, `frontend-${date}.log`);

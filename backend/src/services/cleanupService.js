@@ -75,12 +75,53 @@ export class CleanupService {
     totalDeleted += execResult.count;
     totalBytes += execResult.bytes;
 
+    // 5. Execution history JSONL — prune entries older than 7 days
+    const historyPath = path.join(this.dashboardTmpDir, 'execution-history.jsonl');
+    const historyPruned = await this._pruneHistoryJsonl(historyPath, DAILY_LOG_RETENTION_DAYS);
+    if (historyPruned > 0) {
+      this.logger.info(`Pruned ${historyPruned} old history entries`);
+    }
+
     if (totalDeleted > 0) {
       const mb = (totalBytes / 1048576).toFixed(1);
       this.logger.info(`Purged ${totalDeleted} files (${mb} MB freed)`);
     }
 
     return { count: totalDeleted, bytes: totalBytes };
+  }
+
+  async _pruneHistoryJsonl(filePath, maxAgeDays) {
+    try {
+      const raw = await fs.readFile(filePath, 'utf8');
+      if (!raw.trim()) return 0;
+      const cutoff = Date.now() - maxAgeDays * 86400000;
+      const lines = raw.trim().split('\n');
+      const kept = [];
+      let pruned = 0;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          const ts = entry.completedAt || entry.startedAt;
+          if (ts && new Date(ts).getTime() >= cutoff) {
+            kept.push(line);
+          } else {
+            pruned++;
+          }
+        } catch {
+          pruned++;
+        }
+      }
+      if (pruned > 0) {
+        await fs.writeFile(filePath, kept.join('\n') + (kept.length ? '\n' : ''), 'utf8');
+      }
+      return pruned;
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        this.logger.warn(`Failed to prune history JSONL: ${err.message}`);
+      }
+      return 0;
+    }
   }
 
   async _purgeByAge(dir, pattern, maxAgeDays) {

@@ -73,8 +73,8 @@ describe('useWebSocket', () => {
       host: 'localhost:3000',
     };
 
-    // Mock console.log to avoid noise
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Mock console.debug to avoid noise
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -255,29 +255,7 @@ describe('useWebSocket', () => {
       expect(MockWebSocket.instances).toHaveLength(4);
     });
 
-    it('does not reconnect on page unload (beforeunload)', () => {
-      renderHook(() => useWebSocket(vi.fn()));
-
-      act(() => {
-        MockWebSocket.instances[0].simulateOpen();
-      });
-
-      // Simulate page unload
-      act(() => {
-        window.dispatchEvent(new Event('beforeunload'));
-      });
-
-      act(() => {
-        MockWebSocket.instances[0].simulateClose();
-      });
-
-      act(() => {
-        vi.advanceTimersByTime(10000);
-      });
-      expect(MockWebSocket.instances).toHaveLength(1); // No reconnection after beforeunload
-    });
-
-    it('reconnects after unmount (HMR support)', () => {
+    it('does not reconnect after unmount', () => {
       const { unmount } = renderHook(() => useWebSocket(vi.fn()));
 
       act(() => {
@@ -287,11 +265,10 @@ describe('useWebSocket', () => {
       unmount();
 
       act(() => {
-        vi.advanceTimersByTime(2000);
+        vi.advanceTimersByTime(10000);
       });
-      // Reconnection is attempted because unmount alone doesn't set closingRef
-      // (closingRef is only set by beforeunload for page navigation)
-      expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+      // Cleanup sets closingRef=true and nulls onclose, preventing reconnection
+      expect(MockWebSocket.instances).toHaveLength(1);
     });
   });
 
@@ -418,7 +395,7 @@ describe('useWebSocket', () => {
       expect(closeSpy).toHaveBeenCalled();
     });
 
-    it('clears reconnect timer on unmount but onclose schedules new one', () => {
+    it('clears reconnect timer and prevents new reconnect on unmount', () => {
       const { unmount } = renderHook(() => useWebSocket(vi.fn()));
 
       act(() => {
@@ -426,14 +403,13 @@ describe('useWebSocket', () => {
       });
 
       unmount();
-      // Unmount clears pending timer, but close() in cleanup triggers onclose
-      // which schedules a new reconnection (for HMR support)
+      // Cleanup sets closingRef=true and nulls onclose, preventing any reconnection
 
       act(() => {
         vi.advanceTimersByTime(10000);
       });
-      // Reconnection happens because closingRef is only set by beforeunload
-      expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+      // No reconnection: cleanup nulled onclose before calling close()
+      expect(MockWebSocket.instances).toHaveLength(1);
     });
   });
 

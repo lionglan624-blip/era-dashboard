@@ -33,6 +33,9 @@ export const MAX_RETRIES = 3;
 /** Maximum auto-retries for FL workflow re-run requests (text pattern detection, separate from context retries) */
 export const MAX_FL_RETRIES = 3;
 
+/** Maximum auto-retries for incomplete termination (exit 0 + success but status didn't advance) — applies to fc, fl, run */
+export const MAX_INCOMPLETE_RETRIES = 3;
+
 /** Delay before retry on context exhaustion or FL re-run (milliseconds) */
 export const RETRY_DELAY_MS = 5000;
 
@@ -50,6 +53,9 @@ export const SHELL_STATE_TTL_MS = 300000; // 5 minutes
 
 /** Delay before auto-handoff to terminal */
 export const HANDOFF_DELAY_MS = 300;
+
+/** Delay before sending email for browser-answerable input prompts (5 minutes) */
+export const INPUT_EMAIL_DELAY_MS = 300000;
 
 /** Timeout for deferred y/n handoff — fallback if result event never arrives (ms) */
 export const PENDING_HANDOFF_TIMEOUT_MS = 10000;
@@ -132,9 +138,13 @@ export const RATE_LIMIT_SAFE_THRESHOLD = 95;
 /** Threshold (percent) at which auto-switch to a safe profile triggers */
 export const AUTO_SWITCH_THRESHOLD = 80;
 
+/** Maximum number of profile switches allowed per execution chain (prevents ping-pong loops) */
+export const MAX_PROFILE_SWITCHES = 2;
+
 // =============================================================================
 // Auto-DR (Auto Dashboard Restart) Configuration
 // =============================================================================
+// Auto-DR uses pm2 restart directly — EADDRINUSE handled by server.js polling retry
 
 /** Debounce delay for auto-DR file change detection (ms) */
 export const AUTO_DR_DEBOUNCE_MS = 2000;
@@ -151,3 +161,19 @@ export const DEBUG_LOG_RETENTION_DAYS = 3;
 
 /** Retention period for daily rotated logs and other artifacts */
 export const DAILY_LOG_RETENTION_DAYS = 7;
+
+// =============================================================================
+// Claude Status Monitoring Configuration
+// =============================================================================
+
+/** Polling interval for Claude platform status (5 minutes) */
+export const CLAUDE_STATUS_POLL_INTERVAL_MS = 300000;
+
+/** Atlassian Statuspage API URL for Claude */
+export const CLAUDE_STATUS_URL = 'https://status.claude.com/api/v2/components.json';
+
+/** Timeout for status API fetch (10 seconds) */
+export const CLAUDE_STATUS_TIMEOUT_MS = 10000;
+
+/** Component IDs to monitor: Claude Code, Claude API */
+export const CLAUDE_STATUS_COMPONENT_IDS = ['yyzkbfz2thpt', 'k8w3r06qmzrp'];

@@ -170,7 +170,10 @@ describe('FileWatcher', () => {
       const onStatusChanged = vi.fn();
       watcher.onStatusChanged = onStatusChanged;
 
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[PROPOSED]', newStatus: '[REVIEWED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[PROPOSED]',
+        newStatus: '[REVIEWED]',
+      });
       watcher.debouncedStatusBroadcast();
 
       // Not yet fired
@@ -213,7 +216,10 @@ describe('FileWatcher', () => {
       const { watcher } = createWatcher();
       watcher.watcher = { close: vi.fn() };
       watcher.statusCache.set('100', '[PROPOSED]');
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[PROPOSED]', newStatus: '[REVIEWED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[PROPOSED]',
+        newStatus: '[REVIEWED]',
+      });
 
       await watcher.stop();
 
@@ -318,12 +324,18 @@ describe('FileWatcher', () => {
       vi.useFakeTimers();
       const { watcher, logStreamer } = createWatcher();
 
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[DRAFT]', newStatus: '[PROPOSED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[DRAFT]',
+        newStatus: '[PROPOSED]',
+      });
       watcher.debouncedStatusBroadcast();
 
       // New change before debounce fires
       vi.advanceTimersByTime(100);
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[PROPOSED]', newStatus: '[REVIEWED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[PROPOSED]',
+        newStatus: '[REVIEWED]',
+      });
       watcher.debouncedStatusBroadcast();
 
       // After full debounce
@@ -345,8 +357,14 @@ describe('FileWatcher', () => {
       vi.useFakeTimers();
       const { watcher, logStreamer } = createWatcher();
 
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[DRAFT]', newStatus: '[PROPOSED]' });
-      watcher.pendingStatusChanges.set('200', { oldStatus: '[PROPOSED]', newStatus: '[REVIEWED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[DRAFT]',
+        newStatus: '[PROPOSED]',
+      });
+      watcher.pendingStatusChanges.set('200', {
+        oldStatus: '[PROPOSED]',
+        newStatus: '[REVIEWED]',
+      });
       watcher.debouncedStatusBroadcast();
 
       vi.advanceTimersByTime(300);
@@ -361,7 +379,10 @@ describe('FileWatcher', () => {
       const featureService = { invalidateCache: vi.fn() };
       const watcher = new FileWatcher('C:\\test\\project', featureService, null);
 
-      watcher.pendingStatusChanges.set('100', { oldStatus: '[DRAFT]', newStatus: '[PROPOSED]' });
+      watcher.pendingStatusChanges.set('100', {
+        oldStatus: '[DRAFT]',
+        newStatus: '[PROPOSED]',
+      });
 
       expect(() => {
         watcher.debouncedStatusBroadcast();

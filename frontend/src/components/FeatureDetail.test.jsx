@@ -58,8 +58,20 @@ describe('FeatureDetail', () => {
   it('renders AC table with progress bar', () => {
     const feature = createFeature({
       acceptanceCriteria: [
-        { ac: 1, description: 'AC 1', type: 'output', matcher: 'contains', completed: true },
-        { ac: 2, description: 'AC 2', type: 'variable', matcher: 'equals', completed: false },
+        {
+          ac: 1,
+          description: 'AC 1',
+          type: 'output',
+          matcher: 'contains',
+          completed: true,
+        },
+        {
+          ac: 2,
+          description: 'AC 2',
+          type: 'variable',
+          matcher: 'equals',
+          completed: false,
+        },
       ],
     });
     render(<FeatureDetail feature={feature} onClose={vi.fn()} />);
@@ -71,8 +83,20 @@ describe('FeatureDetail', () => {
   it('completed AC rows have row-done class and checkmark', () => {
     const feature = createFeature({
       acceptanceCriteria: [
-        { ac: 1, description: 'AC 1', type: 'output', matcher: 'contains', completed: true },
-        { ac: 2, description: 'AC 2', type: 'variable', matcher: 'equals', completed: false },
+        {
+          ac: 1,
+          description: 'AC 1',
+          type: 'output',
+          matcher: 'contains',
+          completed: true,
+        },
+        {
+          ac: 2,
+          description: 'AC 2',
+          type: 'variable',
+          matcher: 'equals',
+          completed: false,
+        },
       ],
     });
     const { container } = render(<FeatureDetail feature={feature} onClose={vi.fn()} />);

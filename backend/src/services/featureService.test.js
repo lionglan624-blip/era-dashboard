@@ -142,7 +142,13 @@ describe('FeatureService', () => {
               {
                 name: 'Layer 1',
                 features: [
-                  { id: '100', status: '[WIP]', name: 'Feature 100', dependsOn: '', link: '' },
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'Feature 100',
+                    dependsOn: '',
+                    link: '',
+                  },
                 ],
               },
             ],
@@ -183,8 +189,20 @@ describe('FeatureService', () => {
               {
                 name: 'Layer 1',
                 features: [
-                  { id: '101', status: '[DONE]', name: 'F101', dependsOn: '', link: '' },
-                  { id: '102', status: '[CANCELLED]', name: 'F102', dependsOn: '', link: '' },
+                  {
+                    id: '101',
+                    status: '[DONE]',
+                    name: 'F101',
+                    dependsOn: '',
+                    link: '',
+                  },
+                  {
+                    id: '102',
+                    status: '[CANCELLED]',
+                    name: 'F102',
+                    dependsOn: '',
+                    link: '',
+                  },
                   {
                     id: '103',
                     status: '[WIP]',
@@ -228,8 +246,20 @@ describe('FeatureService', () => {
               {
                 name: 'Layer 1',
                 features: [
-                  { id: '101', status: '[WIP]', name: 'F101', dependsOn: '', link: '' },
-                  { id: '102', status: '[REVIEWED]', name: 'F102', dependsOn: '', link: '' },
+                  {
+                    id: '101',
+                    status: '[WIP]',
+                    name: 'F101',
+                    dependsOn: '',
+                    link: '',
+                  },
+                  {
+                    id: '102',
+                    status: '[REVIEWED]',
+                    name: 'F102',
+                    dependsOn: '',
+                    link: '',
+                  },
                   {
                     id: '103',
                     status: '[PROPOSED]',
@@ -293,9 +323,27 @@ describe('FeatureService', () => {
                     dependsOn: 'F101, F102, 103',
                     link: '',
                   },
-                  { id: '101', status: '[WIP]', name: 'F101', dependsOn: '', link: '' },
-                  { id: '102', status: '[WIP]', name: 'F102', dependsOn: '', link: '' },
-                  { id: '103', status: '[WIP]', name: 'F103', dependsOn: '', link: '' },
+                  {
+                    id: '101',
+                    status: '[WIP]',
+                    name: 'F101',
+                    dependsOn: '',
+                    link: '',
+                  },
+                  {
+                    id: '102',
+                    status: '[WIP]',
+                    name: 'F102',
+                    dependsOn: '',
+                    link: '',
+                  },
+                  {
+                    id: '103',
+                    status: '[WIP]',
+                    name: 'F103',
+                    dependsOn: '',
+                    link: '',
+                  },
                 ],
               },
             ],
@@ -327,7 +375,13 @@ describe('FeatureService', () => {
       const mockIndexData = {
         phases: [],
         recentlyCompleted: [
-          { id: '200', status: '[DONE]', name: 'Completed Feature', dependsOn: '', link: '' },
+          {
+            id: '200',
+            status: '[DONE]',
+            name: 'Completed Feature',
+            dependsOn: '',
+            link: '',
+          },
         ],
       };
 
@@ -485,7 +539,13 @@ describe('FeatureService', () => {
               {
                 name: 'Layer 1',
                 features: [
-                  { id: '100', status: '[WIP]', name: 'Feature 100', dependsOn: '', link: '' },
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'Feature 100',
+                    dependsOn: '',
+                    link: '',
+                  },
                 ],
               },
             ],
@@ -569,7 +629,13 @@ describe('FeatureService', () => {
                 name: 'Layer 1',
                 features: [
                   // F100 depends on F50, which is not in the index (archived)
-                  { id: '100', status: '[WIP]', name: 'F100', dependsOn: 'F50', link: '' },
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'F100',
+                    dependsOn: 'F50',
+                    link: '',
+                  },
                 ],
               },
             ],
@@ -604,11 +670,27 @@ describe('FeatureService', () => {
             layers: [
               {
                 name: 'Layer A',
-                features: [{ id: '100', status: '[WIP]', name: 'F100', dependsOn: '', link: '' }],
+                features: [
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'F100',
+                    dependsOn: '',
+                    link: '',
+                  },
+                ],
               },
               {
                 name: 'Layer B',
-                features: [{ id: '101', status: '[WIP]', name: 'F101', dependsOn: '', link: '' }],
+                features: [
+                  {
+                    id: '101',
+                    status: '[WIP]',
+                    name: 'F101',
+                    dependsOn: '',
+                    link: '',
+                  },
+                ],
               },
             ],
           },
@@ -642,7 +724,15 @@ describe('FeatureService', () => {
             layers: [
               {
                 name: 'Layer 1',
-                features: [{ id: '100', status: '[WIP]', name: 'F100', dependsOn: '', link: '' }],
+                features: [
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'F100',
+                    dependsOn: '',
+                    link: '',
+                  },
+                ],
               },
             ],
           },
@@ -652,7 +742,15 @@ describe('FeatureService', () => {
             layers: [
               {
                 name: 'Layer 2',
-                features: [{ id: '200', status: '[WIP]', name: 'F200', dependsOn: '', link: '' }],
+                features: [
+                  {
+                    id: '200',
+                    status: '[WIP]',
+                    name: 'F200',
+                    dependsOn: '',
+                    link: '',
+                  },
+                ],
               },
             ],
           },
@@ -696,8 +794,20 @@ describe('FeatureService', () => {
                     dependsOn: '  F101 ,  F102  ',
                     link: '',
                   },
-                  { id: '101', status: '[WIP]', name: 'F101', dependsOn: '', link: '' },
-                  { id: '102', status: '[DONE]', name: 'F102', dependsOn: '', link: '' },
+                  {
+                    id: '101',
+                    status: '[WIP]',
+                    name: 'F101',
+                    dependsOn: '',
+                    link: '',
+                  },
+                  {
+                    id: '102',
+                    status: '[DONE]',
+                    name: 'F102',
+                    dependsOn: '',
+                    link: '',
+                  },
                 ],
               },
             ],
@@ -732,7 +842,15 @@ describe('FeatureService', () => {
             layers: [
               {
                 name: 'Layer 1',
-                features: [{ id: '100', status: '[WIP]', name: 'F100', dependsOn: '', link: '' }],
+                features: [
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'F100',
+                    dependsOn: '',
+                    link: '',
+                  },
+                ],
               },
             ],
           },
@@ -766,7 +884,13 @@ describe('FeatureService', () => {
               {
                 name: 'Layer 1',
                 features: [
-                  { id: '100', status: '[WIP]', name: 'F100', dependsOn: 'F200', link: '' },
+                  {
+                    id: '100',
+                    status: '[WIP]',
+                    name: 'F100',
+                    dependsOn: 'F200',
+                    link: '',
+                  },
                 ],
               },
             ],

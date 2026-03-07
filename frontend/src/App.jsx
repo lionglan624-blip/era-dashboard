@@ -61,11 +61,16 @@ export default function App() {
     addLog,
     updateStatus,
     fetchExecutions,
+    fetchHistory,
   } = useExecution();
 
   const [selectedFeatureId, setSelectedFeatureId] = useState(null);
   const [activeExecutionId, setActiveExecutionId] = useState(null);
   const [showExecutionPanel, setShowExecutionPanel] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const headerRef = useRef(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
   const [notifications, setNotifications] = useState([]);
   const [shellStates, setShellStates] = useState({});
   const [drPending, setDrPending] = useState(false);
@@ -80,6 +85,7 @@ export default function App() {
     gitDirty: false,
     gitChangedCount: 0,
     rateLimit: null,
+    claudeStatus: null,
   });
   const healthCheckRef = useRef(null);
   const recentNotificationsRef = useRef(new Set()); // Track recent notification keys for deduplication
@@ -89,6 +95,20 @@ export default function App() {
 
   // CCS enabled status (read-only, managed via ~/.ccs/)
   const [ccsProfile, setCcsProfile] = useState(null);
+
+  // Measure header height for execution panel positioning
+  useEffect(() => {
+    if (!headerRef.current) return;
+    const measure = () => {
+      if (headerRef.current) {
+        setHeaderHeight(headerRef.current.offsetHeight);
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(() => requestAnimationFrame(measure));
+    ro.observe(headerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   // Keep refs in sync
   useEffect(() => {
@@ -109,7 +129,7 @@ export default function App() {
         setActiveExecutionId(remaining[0]);
       } else {
         setActiveExecutionId(null);
-        // Don't setShowExecutionPanel(false) - let ExecutionPanel handle visibility
+        setShowExecutionPanel(false);
       }
     }
   }, [executions, activeExecutionId]);
@@ -167,6 +187,19 @@ export default function App() {
     [dispatch, addNotification],
   );
 
+  const reconcileOldExecution = useCallback(
+    (oldExecutionId) => {
+      if (!oldExecutionId) return;
+      fetch(`/api/execution/${oldExecutionId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((exec) => {
+          if (exec) dispatch({ type: 'RECONCILE_EXECUTION', exec });
+        })
+        .catch(() => {}); // Silent: old exec may be TTL-cleaned (404 expected)
+    },
+    [dispatch],
+  );
+
   // Health check function (extracted for reuse, before wsHandlers which references it)
   const checkHealth = useCallback(async (refreshRateLimit = false) => {
     try {
@@ -183,6 +216,7 @@ export default function App() {
           gitDirty: data.git?.dirty || false,
           gitChangedCount: data.git?.changedCount || 0,
           rateLimit: data.rateLimit || null,
+          claudeStatus: data.claudeStatus || null,
           ccsProfiles: data.ccsProfiles || [],
         });
         // Sync CCS profile
@@ -236,7 +270,10 @@ export default function App() {
       },
       status: (msg) => {
         updateStatus(msg.executionId, msg.status, msg.exitCode);
-        if (msg.status === 'completed' || msg.status === 'failed') {
+        if (
+          (msg.status === 'completed' || msg.status === 'failed') &&
+          executionsRef.current.has(msg.executionId)
+        ) {
           setTimeout(refetch, 1000);
           // Re-check git status after commit completes
           const completedExec = executionsRef.current.get(msg.executionId);
@@ -297,8 +334,8 @@ export default function App() {
         dispatch({ type: 'WS_INPUT_WAIT', msg });
         addNotification({
           type: 'attention',
-          title: 'Terminal Input Required',
-          message: `Detected: ${msg.pattern}. Continue in Terminal.`,
+          title: 'Input Required',
+          message: `${msg.pattern} — answer in panel`,
           executionId: msg.executionId,
           persistent: true,
         });
@@ -321,6 +358,7 @@ export default function App() {
           persistent: true,
         });
         subscribeAndFetchExecution(msg.newExecutionId, 'Chain');
+        reconcileOldExecution(msg.oldExecutionId);
       },
       'chain-retry': (msg) => {
         const cmd = (msg.command || 'fl').toUpperCase();
@@ -335,6 +373,7 @@ export default function App() {
           persistent: true,
         });
         subscribeAndFetchExecution(msg.newExecutionId, 'Retry');
+        reconcileOldExecution(msg.oldExecutionId);
       },
       'fl-retry-exhausted': (msg) => {
         addNotification({
@@ -351,6 +390,35 @@ export default function App() {
           type: 'warning',
           title: `F${msg.featureId} Account Limit`,
           message: `${cmd} stopped — usage limit hit. Retry will not help.`,
+          featureId: msg.featureId,
+          persistent: true,
+        });
+      },
+      'rate-limit-retry': (msg) => {
+        addNotification({
+          type: 'info',
+          title: `F${msg.featureId} Rate Limit Retry`,
+          message: msg.resumed ? 'Resuming after rate limit' : 'Retrying with profile switch',
+          featureId: msg.featureId,
+          persistent: true,
+        });
+        subscribeAndFetchExecution(msg.newExecutionId, 'Rate Limit');
+        reconcileOldExecution(msg.oldExecutionId);
+      },
+      'rate-limit-waiting': (msg) => {
+        addNotification({
+          type: 'info',
+          title: `F${msg.featureId} Rate Limit`,
+          message: `Waiting until ${new Date(msg.retryAt).toLocaleTimeString()} (${Math.round(msg.delayMs / 60000)}min)`,
+          featureId: msg.featureId,
+          persistent: true,
+        });
+      },
+      'rate-limit-exhausted': (msg) => {
+        addNotification({
+          type: 'warning',
+          title: `F${msg.featureId} Rate Limit Exhausted`,
+          message: `Still at ${msg.percent}% usage. Manual re-run needed.`,
           featureId: msg.featureId,
           persistent: true,
         });
@@ -400,6 +468,7 @@ export default function App() {
       addNotification,
       dispatch,
       subscribeAndFetchExecution,
+      reconcileOldExecution,
       checkHealth,
     ],
   );
@@ -527,6 +596,19 @@ export default function App() {
         if (state?.contextPercent != null) contextPercent.set(exec.featureId, state.contextPercent);
         if (exec.startedAt != null) startedAt.set(exec.featureId, exec.startedAt);
         if (state?.waitingForInput) inputWaiting.add(exec.featureId);
+        // Also store executionId for running executions so input-waiting click can navigate
+        sessionIds.set(exec.featureId, {
+          executionId: execId,
+          sessionId: exec.sessionId,
+          startedAt: exec.startedAt,
+        });
+      }
+
+      // Check waitingForInput for completed executions too (browser-first y/n design):
+      // CLI exits after emitting y/n text, but user still needs to answer via resume.
+      if (isStopped) {
+        const state = executionStates.get(execId);
+        if (state?.waitingForInput) inputWaiting.add(exec.featureId);
       }
 
       if (isStopped && exec.sessionId) {
@@ -615,7 +697,11 @@ export default function App() {
           });
           if (!res.ok) {
             const err = await res.json();
-            addNotification({ type: 'warning', title: 'Resume Failed', message: err.error });
+            addNotification({
+              type: 'warning',
+              title: 'Resume Failed',
+              message: err.error,
+            });
           }
         } else {
           // Open new terminal
@@ -632,6 +718,61 @@ export default function App() {
     [addNotification],
   );
 
+  const handleAnswer = useCallback(
+    async (executionId, answer) => {
+      try {
+        const res = await fetch(`/api/execution/${executionId}/answer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answer }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          addNotification({
+            type: 'warning',
+            title: 'Answer Failed',
+            message: err.error,
+          });
+        } else {
+          const data = await res.json();
+          // Clear input state for old execution
+          dispatch({ type: 'CLEAR_INPUT', executionId });
+          // Select the new execution tab
+          if (data.executionId) {
+            setActiveExecutionId(data.executionId);
+          }
+        }
+      } catch (err) {
+        addNotification({ type: 'warning', title: 'Answer Error', message: err.message });
+      }
+    },
+    [dispatch, addNotification],
+  );
+
+  const handleResumeBrowser = useCallback(
+    async (executionId) => {
+      try {
+        const res = await fetch(`/api/execution/${executionId}/resume/browser`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: 'continue' }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Resume failed' }));
+          addNotification({
+            type: 'warning',
+            title: 'Resume Failed',
+            message: err.error,
+          });
+        }
+        // execution-started WS event will auto-add the new execution tab
+      } catch (err) {
+        addNotification({ type: 'warning', title: 'Resume Error', message: err.message });
+      }
+    },
+    [addNotification],
+  );
+
   const handleResumeTerminal = useCallback(
     async (executionId) => {
       try {
@@ -641,10 +782,18 @@ export default function App() {
         });
         if (!res.ok) {
           const err = await res.json();
-          addNotification({ type: 'warning', title: 'Resume Failed', message: err.error });
+          addNotification({
+            type: 'warning',
+            title: 'Resume Failed',
+            message: err.error,
+          });
         } else {
           // Mark execution as handed-off so TreeView shows orange state instead of stale green
-          dispatch({ type: 'UPDATE_EXECUTION', executionId, updates: { status: 'handed-off' } });
+          dispatch({
+            type: 'UPDATE_EXECUTION',
+            executionId,
+            updates: { status: 'handed-off' },
+          });
         }
       } catch (err) {
         addNotification({ type: 'warning', title: 'Terminal Error', message: err.message });
@@ -670,6 +819,45 @@ export default function App() {
     [featureSessionIds, handleResumeTerminal, addNotification],
   );
 
+  const handleResumeBrowserByFeature = useCallback(
+    (featureId) => {
+      const info = featureSessionIds.get(featureId);
+      if (info?.executionId) {
+        handleResumeBrowser(info.executionId);
+      } else {
+        addNotification({
+          type: 'warning',
+          title: 'Resume',
+          message: `No session found for F${featureId}`,
+        });
+      }
+    },
+    [featureSessionIds, handleResumeBrowser, addNotification],
+  );
+
+  // Navigate to ExecutionPanel when input-waiting tile clicked
+  const handleInputWaitingClick = useCallback(
+    (featureId) => {
+      const info = featureSessionIds.get(featureId);
+      if (info?.executionId) {
+        setActiveExecutionId(info.executionId);
+        setShowExecutionPanel(true);
+        subscribe(info.executionId);
+      }
+    },
+    [featureSessionIds, subscribe],
+  );
+
+  const handleOpenHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const entries = await fetchHistory();
+      setHistoryEntries(entries);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [fetchHistory]);
+
   const handleShellCommand = useCallback(
     async (command, profile) => {
       setShellStates((prev) => ({ ...prev, [command]: 'running' }));
@@ -683,7 +871,11 @@ export default function App() {
         if (!res.ok) {
           const err = await res.json();
           setShellStates((prev) => ({ ...prev, [command]: 'failed' }));
-          addNotification({ type: 'warning', title: 'Command Failed', message: err.error });
+          addNotification({
+            type: 'warning',
+            title: 'Command Failed',
+            message: err.error,
+          });
         } else {
           const msg = profile !== undefined ? `Switched to ${profile}` : 'Launched';
           addNotification({ type: 'info', title: `${command}`, message: msg });
@@ -710,7 +902,11 @@ export default function App() {
         });
         if (!res.ok) {
           const err = await res.json();
-          addNotification({ type: 'warning', title: 'Command Failed', message: err.error });
+          addNotification({
+            type: 'warning',
+            title: 'Command Failed',
+            message: err.error,
+          });
           return;
         }
         const data = await res.json();
@@ -726,6 +922,13 @@ export default function App() {
 
   const handleCloseTab = useCallback(
     (executionId) => {
+      const exec = executionsRef.current.get(executionId);
+      if (exec && exec.status === 'running') {
+        killExecution(executionId); // Internal DELETE → killExecution path
+      } else {
+        // Remove finished execution from backend memory
+        fetch(`/api/execution/${executionId}`, { method: 'DELETE' }).catch(() => {});
+      }
       unsubscribe(executionId);
       dispatch({ type: 'CLOSE_TAB', executionId });
       // If this was the last tab, close panel synchronously (don't wait for useEffect)
@@ -736,15 +939,16 @@ export default function App() {
         setShowExecutionPanel(false);
       }
     },
-    [unsubscribe, dispatch],
+    [unsubscribe, dispatch, killExecution],
   );
 
   const handleCloseFinishedTabs = useCallback(() => {
-    // Unsubscribe from all finished executions before dispatching
     let hasRemaining = false;
     for (const [execId, exec] of executionsRef.current) {
       if (exec.status === 'completed' || exec.status === 'failed' || exec.status === 'handed-off') {
         unsubscribe(execId);
+        // Remove finished execution from backend memory
+        fetch(`/api/execution/${execId}`, { method: 'DELETE' }).catch(() => {});
       } else {
         hasRemaining = true;
       }
@@ -757,7 +961,7 @@ export default function App() {
   }, [unsubscribe, dispatch]);
 
   // Show floating button when panel is closed but executions exist
-  const hasActiveExecutions = useMemo(() => {
+  const _hasActiveExecutions = useMemo(() => {
     for (const [, exec] of executions) {
       if (exec.status === 'running') {
         return true;
@@ -808,7 +1012,7 @@ export default function App() {
         </div>
       )}
 
-      <header className="app-header">
+      <header className="app-header" ref={headerRef}>
         <div className="header-left">
           <h1>
             <a
@@ -881,6 +1085,36 @@ export default function App() {
                     PX {healthStatus.proxy.status === 'online' ? '●' : '✗'}
                   </span>
                 )}
+                {(() => {
+                  const cs = healthStatus.claudeStatus;
+                  const worst = cs?.worst || 'unknown';
+                  const statusClass =
+                    worst === 'major_outage'
+                      ? 'error'
+                      : worst === 'degraded_performance' || worst === 'partial_outage'
+                        ? 'warning'
+                        : worst === 'under_maintenance'
+                          ? 'maintenance'
+                          : '';
+                  const statusIcon =
+                    worst === 'major_outage'
+                      ? '✗'
+                      : worst === 'degraded_performance' || worst === 'partial_outage'
+                        ? '▲'
+                        : worst === 'under_maintenance'
+                          ? '⚙'
+                          : worst === 'operational'
+                            ? '●'
+                            : '?';
+                  const title = cs?.components
+                    ? cs.components.map((c) => `${c.name}: ${c.status}`).join('\n')
+                    : 'Claude platform status unknown';
+                  return (
+                    <span className={`status-item ${statusClass}`} title={title}>
+                      API {statusIcon}
+                    </span>
+                  );
+                })()}
               </div>
               <div className="rate-limit-group">
                 {(healthStatus.ccsProfiles?.length > 0
@@ -917,16 +1151,18 @@ export default function App() {
                     .filter(Boolean)
                     .join('\n');
                   const handleProfileClick = () => {
-                    if (isActive || hasActiveExecutions) return;
+                    if (isActive) return;
                     handleShellCommand('cs', profile);
                   };
                   return (
                     <div
                       key={profile}
-                      className={`rate-limit-entry ${rateClass} ${isActive ? 'rate-active' : ''} ${!isActive && !hasActiveExecutions ? 'rate-clickable' : ''}`}
+                      className={`rate-limit-entry ${rateClass} ${isActive ? 'rate-active' : ''} ${!isActive ? 'rate-clickable' : ''}`}
                       title={tooltip}
                       onClick={handleProfileClick}
-                      style={{ cursor: isActive || hasActiveExecutions ? 'default' : 'pointer' }}
+                      style={{
+                        cursor: isActive ? 'default' : 'pointer',
+                      }}
                     >
                       <span className="rate-profile-name">{profile}</span>
                       <span className="rate-values">
@@ -963,7 +1199,9 @@ export default function App() {
           featureInputWaiting={featureInputWaiting}
           onRunCommand={handleRunCommand}
           onOpenTerminal={handleOpenTerminal}
+          onResumeBrowser={handleResumeBrowserByFeature}
           onResumeTerminal={handleResumeByFeature}
+          onInputWaitingClick={handleInputWaitingClick}
           onSelect={setSelectedFeatureId}
         />
       </main>
@@ -984,16 +1222,22 @@ export default function App() {
           executionStates={executionStates}
           inputRequests={inputRequests}
           projectRoot={healthStatus.projectRoot}
+          headerHeight={headerHeight}
+          historyEntries={historyEntries}
+          historyLoading={historyLoading}
           onSelectExecution={setActiveExecutionId}
           onKill={killExecution}
           onClose={() => setShowExecutionPanel(false)}
           onCloseTab={handleCloseTab}
           onCloseFinishedTabs={handleCloseFinishedTabs}
+          onResumeBrowser={handleResumeBrowser}
           onResumeTerminal={handleResumeTerminal}
+          onAnswer={handleAnswer}
+          onOpenHistory={handleOpenHistory}
         />
       )}
 
-      {!showExecutionPanel && hasActiveExecutions && (
+      {!showExecutionPanel && (
         <button className="floating-panel-btn" onClick={() => setShowExecutionPanel(true)}>
           <span className="fpb-icon">&#9654;</span>
           <span className="fpb-label">

@@ -30,7 +30,9 @@ function createTreeProps(features = [], overrides = {}) {
     featureInputWaiting: new Set(),
     onRunCommand: vi.fn(),
     onOpenTerminal: vi.fn(),
+    onResumeBrowser: vi.fn(),
     onResumeTerminal: vi.fn(),
+    onInputWaitingClick: vi.fn(),
     onSelect: vi.fn(),
     ...overrides,
   };
@@ -230,7 +232,7 @@ describe('TreeView', () => {
   });
 
   describe('Buttons', () => {
-    it('shows Resume (R) button when feature has sessionId and is not running', () => {
+    it('shows Continue (C) and Terminal (T) buttons when feature has sessionId and is not running', () => {
       const features = [createFeature({ id: '100' })];
       const featureSessionIds = new Map([
         ['100', { executionId: 'exec-1', sessionId: 'session-1' }],
@@ -238,9 +240,13 @@ describe('TreeView', () => {
       const props = createTreeProps(features, { featureSessionIds });
       const { container } = render(<TreeView {...props} />);
 
-      const resumeBtn = container.querySelector('.btn-tree-resume');
-      expect(resumeBtn).toBeInTheDocument();
-      expect(resumeBtn).toHaveTextContent('R');
+      const continueBtn = container.querySelector('.btn-tree-resume');
+      expect(continueBtn).toBeInTheDocument();
+      expect(continueBtn).toHaveTextContent('C');
+
+      const terminalBtn = container.querySelector('.btn-tree-terminal');
+      expect(terminalBtn).toBeInTheDocument();
+      expect(terminalBtn).toHaveTextContent('T');
     });
 
     it('does not show Resume button when feature is running', () => {
@@ -313,7 +319,23 @@ describe('TreeView', () => {
       expect(onSelect).toHaveBeenCalledWith('100');
     });
 
-    it('calls onResumeTerminal when R button clicked', async () => {
+    it('calls onResumeBrowser when C button clicked', async () => {
+      const user = userEvent.setup();
+      const features = [createFeature({ id: '100' })];
+      const featureSessionIds = new Map([
+        ['100', { executionId: 'exec-1', sessionId: 'session-1' }],
+      ]);
+      const onResumeBrowser = vi.fn();
+      const props = createTreeProps(features, { featureSessionIds, onResumeBrowser });
+      const { container } = render(<TreeView {...props} />);
+
+      const continueBtn = container.querySelector('.btn-tree-resume');
+      await user.click(continueBtn);
+
+      expect(onResumeBrowser).toHaveBeenCalledWith('100');
+    });
+
+    it('calls onResumeTerminal when T button clicked', async () => {
       const user = userEvent.setup();
       const features = [createFeature({ id: '100' })];
       const featureSessionIds = new Map([
@@ -323,10 +345,32 @@ describe('TreeView', () => {
       const props = createTreeProps(features, { featureSessionIds, onResumeTerminal });
       const { container } = render(<TreeView {...props} />);
 
-      const resumeBtn = container.querySelector('.btn-tree-resume');
-      await user.click(resumeBtn);
+      const terminalBtn = container.querySelector('.btn-tree-terminal');
+      await user.click(terminalBtn);
 
       expect(onResumeTerminal).toHaveBeenCalledWith('100');
+    });
+
+    it('calls onInputWaitingClick when input-waiting tile clicked', async () => {
+      const user = userEvent.setup();
+      const features = [createFeature({ id: '100', status: '[PROPOSED]' })];
+      const featureInputWaiting = new Set(['100']);
+      const runningFeatures = new Set(['100']);
+      const onInputWaitingClick = vi.fn();
+      const onRunCommand = vi.fn();
+      const props = createTreeProps(features, {
+        featureInputWaiting,
+        runningFeatures,
+        onInputWaitingClick,
+        onRunCommand,
+      });
+      render(<TreeView {...props} />);
+
+      const tile = screen.getByText('Test Feature').closest('.tree-item');
+      await user.click(tile);
+
+      expect(onInputWaitingClick).toHaveBeenCalledWith('100');
+      expect(onRunCommand).not.toHaveBeenCalled();
     });
 
     it('button clicks do not trigger tile click (stopPropagation)', async () => {

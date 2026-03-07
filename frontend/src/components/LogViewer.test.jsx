@@ -31,7 +31,11 @@ describe('LogViewer', () => {
 
   it('renders log entries with timestamp and line text', () => {
     const logs = [
-      createLog({ id: 1, line: 'first log', timestamp: new Date('2024-01-01T12:00:00').getTime() }),
+      createLog({
+        id: 1,
+        line: 'first log',
+        timestamp: new Date('2024-01-01T12:00:00').getTime(),
+      }),
       createLog({
         id: 2,
         line: 'second log',

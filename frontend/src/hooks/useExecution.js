@@ -3,6 +3,8 @@ import { useReducer, useCallback, useRef, useEffect } from 'react';
 const API_BASE = '/api';
 const MAX_LOG_ENTRIES = 5000; // Match backend limit to prevent unbounded browser memory growth
 let logIdCounter = 0; // Module-scope: survives HMR, monotonically increments across renders
+// Module-scope: track last flushed entry per execution for cross-frame dedup
+const lastFlushedEntry = new Map(); // executionId -> { line, timestamp }
 
 /**
  * @typedef {Object} LogEntry
@@ -78,19 +80,15 @@ function reducer(state, action) {
       nextExec.set(executionId, { ...exec, status, exitCode });
       changes.executions = nextExec;
 
-      // Clear input-related state on terminal status
+      // Clear AskUserQuestion input requests on terminal status.
+      // Note: waitingForInput (y/n) is intentionally preserved so FE shows
+      // Yes/No buttons on completed executions (browser-first design).
       const isTerminal = status === 'completed' || status === 'failed';
       if (isTerminal) {
         if (state.inputRequests.has(executionId)) {
           const nextIR = new Map(state.inputRequests);
           nextIR.delete(executionId);
           changes.inputRequests = nextIR;
-        }
-        const es = state.executionStates.get(executionId);
-        if (es?.waitingForInput) {
-          const nextES = new Map(state.executionStates);
-          nextES.set(executionId, { ...es, waitingForInput: false });
-          changes.executionStates = nextES;
         }
       }
 
@@ -130,7 +128,11 @@ function reducer(state, action) {
         const newSessionId = msg.sessionId || exec.sessionId;
         if (exec.status !== msg.status || exec.sessionId !== newSessionId) {
           const nextExec = new Map(changes.executions || state.executions);
-          nextExec.set(msg.executionId, { ...exec, status: msg.status, sessionId: newSessionId });
+          nextExec.set(msg.executionId, {
+            ...exec,
+            status: msg.status,
+            sessionId: newSessionId,
+          });
           changes.executions = nextExec;
         }
         // Update featurePhases (include iteration for FL workflow)
@@ -249,8 +251,12 @@ function reducer(state, action) {
     }
 
     case 'INIT_EXECUTION_STATES': {
-      const { executionStates: initES, featurePhases: initFP } = action;
-      return { ...state, executionStates: initES, featurePhases: initFP };
+      const { executionStates: initES, featurePhases: initFP, inputRequests: initIR } = action;
+      const changes = { executionStates: initES, featurePhases: initFP };
+      if (initIR && initIR.size > 0) {
+        changes.inputRequests = initIR;
+      }
+      return { ...state, ...changes };
     }
 
     case 'ADD_EXECUTION': {
@@ -261,6 +267,14 @@ function reducer(state, action) {
       const nextFP = new Map(state.featurePhases);
       nextFP.delete(exec.featureId);
       return { ...state, executions: next, featurePhases: nextFP };
+    }
+
+    case 'RECONCILE_EXECUTION': {
+      const { exec } = action;
+      const next = new Map(state.executions);
+      next.set(exec.id, normalizeExec(exec));
+      // Do NOT reset featurePhases — the new execution owns it
+      return { ...state, executions: next };
     }
 
     case 'UPDATE_EXECUTION': {
@@ -292,6 +306,27 @@ function reducer(state, action) {
         }
       }
       return changed ? { ...state, executions: next } : state;
+    }
+
+    case 'CLEAR_INPUT': {
+      const { executionId } = action;
+      const changes = {};
+      if (state.inputRequests.has(executionId)) {
+        const nextIR = new Map(state.inputRequests);
+        nextIR.delete(executionId);
+        changes.inputRequests = nextIR;
+      }
+      const es = state.executionStates.get(executionId);
+      if (es?.waitingForInput) {
+        const nextES = new Map(state.executionStates);
+        nextES.set(executionId, { ...es, waitingForInput: false });
+        changes.executionStates = nextES;
+      }
+      return Object.keys(changes).length > 0 ? { ...state, ...changes } : state;
+    }
+
+    case 'SELECT_EXECUTION': {
+      return { ...state, selectedExecutionId: action.executionId };
     }
 
     default:
@@ -329,6 +364,17 @@ export function useExecution() {
   }, []);
 
   const addLog = useCallback((executionId, logEntry) => {
+    // Dedup: check against buffer (same frame) and lastFlushed (cross frame)
+    const buf = logBufferRef.current.get(executionId);
+    const lastInBuf = buf?.[buf.length - 1];
+    const lastFlushed = lastFlushedEntry.get(executionId);
+    const isDup = (ref) =>
+      ref && ref.line === logEntry.line && ref.timestamp === logEntry.timestamp;
+
+    if (isDup(lastInBuf) || isDup(lastFlushed)) {
+      return; // Duplicate from multiple WS connections
+    }
+
     if (!logBufferRef.current.has(executionId)) {
       logBufferRef.current.set(executionId, []);
     }
@@ -339,6 +385,13 @@ export function useExecution() {
         const buffer = logBufferRef.current;
         logBufferRef.current = new Map();
         rafIdRef.current = null;
+        // Track last flushed entry per execution for cross-frame dedup
+        for (const [eid, entries] of buffer) {
+          if (entries.length > 0) {
+            const last = entries[entries.length - 1];
+            lastFlushedEntry.set(eid, { line: last.line, timestamp: last.timestamp });
+          }
+        }
         dispatch({ type: 'BATCH_LOGS', buffer });
       });
     }
@@ -350,7 +403,8 @@ export function useExecution() {
 
   // API calls
   const startCommand = useCallback(async (featureId, command, { chain = false } = {}) => {
-    const endpoint = command === 'run' ? 'run' : command === 'fc' ? 'fc' : 'fl';
+    const endpointMap = { run: 'run', fc: 'fc', imp: 'imp' };
+    const endpoint = endpointMap[command] || 'fl';
     const res = await fetch(`${API_BASE}/execution/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -402,7 +456,10 @@ export function useExecution() {
                   ...exec,
                   featureId: exec.featureId != null ? String(exec.featureId) : null,
                   executionId: exec.id,
-                  logs: (data.logs || []).map((l) => ({ ...l, id: ++logIdCounter })),
+                  logs: (data.logs || []).map((l) => ({
+                    ...l,
+                    id: ++logIdCounter,
+                  })),
                 });
               }
             })
@@ -416,6 +473,7 @@ export function useExecution() {
       // Initialize executionStates and featurePhases from API data
       const initES = new Map();
       const initFP = new Map();
+      const initIR = new Map();
       for (const exec of list) {
         if (exec.status === 'running' || exec.phase != null) {
           initES.set(exec.id, {
@@ -423,15 +481,22 @@ export function useExecution() {
             phase: exec.phase ?? null,
             phaseName: exec.phaseName ?? null,
             sessionId: exec.sessionId ?? null,
-            inputRequired: false,
-            waitingForInput: false,
-            waitingInputPattern: null,
+            inputRequired: !!exec.inputRequired,
+            waitingForInput: exec.waitingForInput || false,
+            waitingInputPattern: exec.waitingInputPattern || null,
             pendingTool: null,
             contextPercent: exec.contextPercent ?? null,
             tokenUsage: exec.tokenUsage ?? null,
-            isStalled: false,
-            taskDepth: 0,
+            isStalled: exec.isStalled || false,
+            taskDepth: exec.taskDepth || 0,
             lastActivityTime: null,
+          });
+        }
+        // Restore AskUserQuestion input requests
+        if (exec.inputRequired) {
+          initIR.set(exec.id, {
+            context: exec.inputRequired.context,
+            questions: exec.inputRequired.questions,
           });
         }
         // Build featurePhases for running executions
@@ -446,13 +511,29 @@ export function useExecution() {
           });
         }
       }
-      if (initES.size > 0 || initFP.size > 0) {
-        dispatch({ type: 'INIT_EXECUTION_STATES', executionStates: initES, featurePhases: initFP });
+      if (initES.size > 0 || initFP.size > 0 || initIR.size > 0) {
+        dispatch({
+          type: 'INIT_EXECUTION_STATES',
+          executionStates: initES,
+          featurePhases: initFP,
+          inputRequests: initIR,
+        });
       }
     } catch (err) {
       console.warn('Failed to fetch executions:', err);
     }
     return activeIds;
+  }, []);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/execution/history`);
+      if (!res.ok) return [];
+      return await res.json();
+    } catch (err) {
+      console.warn('Failed to fetch execution history:', err);
+      return [];
+    }
   }, []);
 
   return {
@@ -463,5 +544,6 @@ export function useExecution() {
     addLog,
     updateStatus,
     fetchExecutions,
+    fetchHistory,
   };
 }

@@ -86,7 +86,7 @@ describe('EmailService', () => {
       const call = sendMail.mock.calls[0][0];
       expect(call.from).toBe('test@gmail.com');
       expect(call.to).toBe('test@gmail.com');
-      expect(call.subject).toBe('FL 123 askuserquestion');
+      expect(call.subject).toBe('[ERA] FL 123 askuserquestion');
       expect(call.text).toContain('FL handoff: AskUserQuestion requires input');
       expect(call.text).toContain('test-session-id');
     });
@@ -96,7 +96,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 ok');
+      expect(call.subject).toBe('[ERA] FL 123 ok');
       expect(call.text).toContain('FL ok (exit 0)');
     });
 
@@ -105,7 +105,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 fail');
+      expect(call.subject).toBe('[ERA] FL 123 fail');
       expect(call.text).toContain('FL fail (exit 1)');
     });
 
@@ -116,7 +116,7 @@ describe('EmailService', () => {
       );
 
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('commit test');
+      expect(call.subject).toMatch(/^\[ERA\] commit test \d{2}:\d{2}$/);
       expect(call.text).toContain('COMMIT handoff: test');
     });
 
@@ -159,7 +159,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 ok');
+      expect(call.subject).toBe('[ERA] FL 123 ok');
       expect(call.text).toContain('Chain: fc(ok) → fl(retry:tokens) → fl(ok) → fl(ok)');
     });
 
@@ -168,7 +168,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 ok');
+      expect(call.subject).toBe('[ERA] FL 123 ok');
       expect(call.text).toContain('FL ok (exit 0)');
       expect(call.text).not.toContain('Chain:');
     });
@@ -182,7 +182,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 fail');
+      expect(call.subject).toBe('[ERA] FL 123 fail');
       expect(call.text).toContain('Chain: fc(ok) → fl(fail) → fl(fail)');
     });
 
@@ -192,11 +192,13 @@ describe('EmailService', () => {
         { command: 'fl', result: 'retry', reason: 'Context limit (success with is_error)' },
         { command: 'fl', result: 'context-retry-exhausted' },
       ];
-      const exec = makeExecution({ chain: { enabled: true, retryCount: 0, contextRetryCount: 3 } });
+      const exec = makeExecution({
+        chain: { enabled: true, retryCount: 0, contextRetryCount: 3 },
+      });
       await service.sendCompletionNotification(exec, 'failed', 1, chainHistory);
 
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 context-limit 3/3');
+      expect(call.subject).toBe('[ERA] FL 123 context-limit 3/3');
       expect(call.text).toContain('context-retry-exhausted (3/3)');
     });
 
@@ -208,7 +210,7 @@ describe('EmailService', () => {
       await service.sendCompletionNotification(makeExecution(), 'failed', 1, chainHistory);
 
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 account-limit');
+      expect(call.subject).toBe('[ERA] FL 123 account-limit');
       expect(call.text).toContain('account-limit — API rate limit (429)');
     });
 
@@ -218,11 +220,13 @@ describe('EmailService', () => {
         { command: 'fl', result: 'retry', reason: 'FL failed (exit=1)' },
         { command: 'fl', result: 'retry-exhausted' },
       ];
-      const exec = makeExecution({ chain: { enabled: true, retryCount: 3, contextRetryCount: 0 } });
+      const exec = makeExecution({
+        chain: { enabled: true, retryCount: 3, contextRetryCount: 0 },
+      });
       await service.sendCompletionNotification(exec, 'failed', 1, chainHistory);
 
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 fl-retry 3/3');
+      expect(call.subject).toBe('[ERA] FL 123 fl-retry 3/3');
       expect(call.text).toContain('retry-exhausted (3/3)');
     });
 
@@ -232,7 +236,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 askuserquestion');
+      expect(call.subject).toBe('[ERA] FL 123 askuserquestion');
       expect(call.text).toContain('Chain: fc(ok) → fl(handoff)');
     });
 
@@ -241,7 +245,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 test reason');
+      expect(call.subject).toBe('[ERA] FL 123 test reason');
       expect(call.subject).not.toContain('→');
       expect(call.text).not.toContain('Chain:');
     });
@@ -298,7 +302,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 askuserquestion');
+      expect(call.subject).toBe('[ERA] FL 123 askuserquestion');
       expect(call.text).toContain('F123 テスト機能 [WIP]');
     });
 
@@ -322,7 +326,7 @@ describe('EmailService', () => {
 
       expect(sendMail).toHaveBeenCalledOnce();
       const call = sendMail.mock.calls[0][0];
-      expect(call.subject).toBe('FL 123 ok');
+      expect(call.subject).toBe('[ERA] FL 123 ok');
       expect(call.text).toContain('F123 別の機能 [DONE]');
     });
 
@@ -395,6 +399,12 @@ describe('EmailService', () => {
       expect(service._simplifyReason('Should we continue?')).toBe('question');
     });
 
+    it('simplifies "completed with unanswered question" to unanswered-question', () => {
+      expect(service._simplifyReason('Completed with unanswered question')).toBe(
+        'unanswered-question',
+      );
+    });
+
     it('truncates long reasons to 30 chars', () => {
       const longReason = 'This is a very long reason that exceeds thirty characters';
       expect(service._simplifyReason(longReason)).toBe('this is a very long reason tha');
@@ -403,6 +413,35 @@ describe('EmailService', () => {
     it('lowercases and returns short reasons as-is', () => {
       expect(service._simplifyReason('Timeout')).toBe('timeout');
       expect(service._simplifyReason('ERROR')).toBe('error');
+    });
+  });
+
+  describe('resume normalization', () => {
+    let sendMail;
+    let service;
+
+    beforeEach(() => {
+      sendMail = vi.fn().mockResolvedValue({ messageId: 'test' });
+      service = new EmailService({
+        configLoader: () => ({ enabled: true, user: 'test@gmail.com', pass: 'secret' }),
+        transportFactory: () => ({ sendMail }),
+      });
+    });
+
+    it('strips resume: prefix from handoff notification subject', async () => {
+      await service.sendHandoffNotification(makeExecution({ command: 'resume:run' }), 'test');
+      const call = sendMail.mock.calls[0][0];
+      expect(call.subject).toBe('[ERA] RUN 123 test');
+    });
+
+    it('strips RESUME: prefix (case-insensitive) from completion notification', async () => {
+      await service.sendCompletionNotification(
+        makeExecution({ command: 'RESUME:debug', featureId: null }),
+        'completed',
+        0,
+      );
+      const call = sendMail.mock.calls[0][0];
+      expect(call.subject).toMatch(/^\[ERA\] debug ok \d{2}:\d{2}$/);
     });
   });
 

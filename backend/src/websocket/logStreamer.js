@@ -55,7 +55,11 @@ export class LogStreamer {
       // Send welcome message
       try {
         ws.send(
-          JSON.stringify({ type: 'connected', clientId, timestamp: new Date().toISOString() }),
+          JSON.stringify({
+            type: 'connected',
+            clientId,
+            timestamp: new Date().toISOString(),
+          }),
         );
       } catch (err) {
         wsLog.debug(`Failed to send welcome to client ${clientId}: ${err.message}`);
@@ -121,5 +125,16 @@ export class LogStreamer {
         subscriptionCount: c.subscriptions.size,
       })),
     };
+  }
+
+  /** Get subscriber info for a specific execution */
+  getSubscribers(executionId) {
+    const subscribers = [];
+    for (const [ws, client] of this.clients) {
+      if (client.subscriptions.has(executionId)) {
+        subscribers.push({ clientId: client.id, readyState: ws.readyState });
+      }
+    }
+    return { count: subscribers.length, clients: subscribers };
   }
 }

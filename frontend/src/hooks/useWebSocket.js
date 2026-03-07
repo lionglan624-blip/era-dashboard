@@ -15,6 +15,14 @@ export function useWebSocket(onMessage) {
   }, [onMessage]);
 
   const connect = useCallback(() => {
+    // Guard: close existing connection before creating new one
+    if (wsRef.current) {
+      const old = wsRef.current;
+      wsRef.current = null;
+      old.onclose = null; // Prevent reconnect from old connection's close event
+      old.close();
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
 
@@ -25,7 +33,6 @@ export function useWebSocket(onMessage) {
       setConnected(true);
       setReconnecting(false);
       reconnectAttempts.current = 0;
-      console.log('WebSocket connected');
     };
 
     ws.onmessage = (event) => {
@@ -39,7 +46,8 @@ export function useWebSocket(onMessage) {
 
     ws.onclose = () => {
       setConnected(false);
-      if (!closingRef.current) {
+      // Only reconnect if this is still the active connection and not intentionally closing
+      if (wsRef.current === ws && !closingRef.current) {
         setReconnecting(true);
         // Exponential backoff: 1s, 2s, 4s, 8s, max 10s
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
@@ -53,20 +61,17 @@ export function useWebSocket(onMessage) {
     };
   }, []);
 
-  // Set closingRef only on actual page unload (not HMR)
   useEffect(() => {
-    const handleUnload = () => {
-      closingRef.current = true;
-    };
-    window.addEventListener('beforeunload', handleUnload);
-    return () => window.removeEventListener('beforeunload', handleUnload);
-  }, []);
-
-  useEffect(() => {
+    closingRef.current = false; // Reset on mount (StrictMode re-mount)
     connect();
     return () => {
+      closingRef.current = true;
       clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // Prevent reconnect trigger from close event
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 

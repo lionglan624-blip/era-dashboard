@@ -181,8 +181,14 @@ describe('UsageService', () => {
           { date: beforeWeekStr, messageCount: 5, sessionCount: 1, toolCallCount: 2 },
         ],
         dailyModelTokens: [
-          { date: withinWeek, tokensByModel: { 'claude-sonnet': 1000, 'claude-opus': 500 } },
-          { date: now.toISOString().slice(0, 10), tokensByModel: { 'claude-sonnet': 800 } },
+          {
+            date: withinWeek,
+            tokensByModel: { 'claude-sonnet': 1000, 'claude-opus': 500 },
+          },
+          {
+            date: now.toISOString().slice(0, 10),
+            tokensByModel: { 'claude-sonnet': 800 },
+          },
         ],
         totalSessions: 10,
         totalMessages: 100,

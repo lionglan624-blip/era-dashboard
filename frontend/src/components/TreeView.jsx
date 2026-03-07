@@ -220,7 +220,9 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
               : '';
 
   const handleClick = () => {
-    if (executableCommand) {
+    if (isInputWaiting) {
+      callbacks.onInputWaitingClick(id);
+    } else if (executableCommand) {
       callbacks.onTileClick(id, executableCommand);
     }
   };
@@ -255,16 +257,28 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
           </div>
           <div className="tree-item-row2">
             {canResume && (
-              <button
-                className="btn-tree-resume"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  callbacks.onResume(id);
-                }}
-                title="Resume in Terminal"
-              >
-                R
-              </button>
+              <>
+                <button
+                  className="btn-tree-resume"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    callbacks.onResumeBrowser(id);
+                  }}
+                  title="Continue in Dashboard"
+                >
+                  C
+                </button>
+                <button
+                  className="btn-tree-terminal"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    callbacks.onResume(id);
+                  }}
+                  title="Open in Terminal"
+                >
+                  T
+                </button>
+              </>
             )}
             {isRunning ? (
               <>
@@ -273,7 +287,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
                   currentPhase.command === 'fl' &&
                   currentPhase.iteration !== null &&
                   currentPhase.iteration !== undefined
-                    ? `iter${currentPhase.iteration}`
+                    ? `i${currentPhase.iteration}${currentPhase.phase != null ? ` P${currentPhase.phase}` : ''}`
                     : currentPhase &&
                         currentPhase.phase !== null &&
                         currentPhase.phase !== undefined
@@ -383,7 +397,9 @@ export default function TreeView({
   featureInputWaiting,
   onRunCommand,
   onOpenTerminal,
+  onResumeBrowser,
   onResumeTerminal,
+  onInputWaitingClick,
   onSelect,
 }) {
   // Note: buildTree returns new objects each time, so TreeNode memo only helps when
@@ -438,17 +454,40 @@ export default function TreeView({
     [onResumeTerminal],
   );
 
+  const handleResumeBrowser = useCallback(
+    (featureId) => {
+      onResumeBrowser(featureId);
+    },
+    [onResumeBrowser],
+  );
+
   // Split context: callbacks (stable) vs data (dynamic)
   // Callbacks context rarely changes (useCallback deps are stable), so TreeNode memo
   // can often skip re-renders when only data changes trigger re-renders.
+  const handleInputWaitingClick = useCallback(
+    (id) => {
+      onInputWaitingClick(id);
+    },
+    [onInputWaitingClick],
+  );
+
   const callbacksValue = useMemo(
     () => ({
       onTileClick: handleTileClick,
       onMenuClick: handleMenuClick,
       onTerminal: onOpenTerminal,
       onResume: handleResume,
+      onResumeBrowser: handleResumeBrowser,
+      onInputWaitingClick: handleInputWaitingClick,
     }),
-    [handleTileClick, handleMenuClick, onOpenTerminal, handleResume],
+    [
+      handleTileClick,
+      handleMenuClick,
+      onOpenTerminal,
+      handleResume,
+      handleResumeBrowser,
+      handleInputWaitingClick,
+    ],
   );
 
   const dataValue = useMemo(

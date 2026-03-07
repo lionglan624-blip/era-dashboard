@@ -50,6 +50,7 @@ function createMockClaudeService() {
       status: 'running',
     })),
     getExecutionLogs: vi.fn(() => []),
+    removeExecution: vi.fn(() => false),
     killExecution: vi.fn(() => true),
     openTerminal: vi.fn(() => ({ tabTitle: 'FL F100', command: '/fl 100' })),
     resumeInBrowser: vi.fn(() => ({ executionId: 'new-uuid', sessionId: 'session-1' })),
@@ -57,6 +58,14 @@ function createMockClaudeService() {
     listExecutions: vi.fn(() => []),
     runShellCommand: vi.fn(() => ({ command: 'cs', status: 'launched' })),
     executeSlashCommand: vi.fn(() => 'slash-uuid'),
+    getHistory: vi.fn(() => []),
+    clearHistory: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      execution: { id: 'test-uuid', status: 'running' },
+      subscribers: { count: 1, clients: [{ clientId: 1, readyState: 1 }] },
+      chain: { parentId: null, retryCount: 0, contextRetryCount: 0, history: [] },
+      queuePosition: -1,
+    })),
   };
 }
 
@@ -173,7 +182,11 @@ describe('Execution Routes', () => {
 
     it('accepts commit command', async () => {
       const mock = createMockClaudeService();
-      mock.getExecution.mockReturnValue({ id: 'slash-uuid', command: 'commit', status: 'running' });
+      mock.getExecution.mockReturnValue({
+        id: 'slash-uuid',
+        command: 'commit',
+        status: 'running',
+      });
       const app = createApp(mock);
       const res = await request(app, 'POST', '/api/execution/slash', { command: 'commit' });
       expect(res.status).toBe(200);
@@ -188,7 +201,9 @@ describe('Execution Routes', () => {
         status: 'running',
       });
       const app = createApp(mock);
-      const res = await request(app, 'POST', '/api/execution/slash', { command: 'sync-deps' });
+      const res = await request(app, 'POST', '/api/execution/slash', {
+        command: 'sync-deps',
+      });
       expect(res.status).toBe(200);
     });
   });
@@ -213,9 +228,97 @@ describe('Execution Routes', () => {
     });
   });
 
-  describe('DELETE /:id', () => {
-    it('kills running execution', async () => {
+  describe('GET /history', () => {
+    it('returns empty array when no history', async () => {
       const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'GET', '/api/execution/history');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+      expect(mock.getHistory).toHaveBeenCalled();
+    });
+
+    it('returns history entries from service', async () => {
+      const mock = createMockClaudeService();
+      const entries = [
+        {
+          executionId: 'exec-1',
+          featureId: '100',
+          command: 'fl',
+          status: 'completed',
+          exitCode: 0,
+          sessionId: 'session-1',
+          startedAt: '2026-03-04T10:00:00.000Z',
+          completedAt: '2026-03-04T10:05:00.000Z',
+          contextPercent: 42,
+        },
+        {
+          executionId: 'exec-2',
+          featureId: '200',
+          command: 'run',
+          status: 'failed',
+          exitCode: 1,
+          sessionId: null,
+          startedAt: '2026-03-04T09:00:00.000Z',
+          completedAt: '2026-03-04T09:30:00.000Z',
+          contextPercent: 85,
+        },
+      ];
+      mock.getHistory.mockReturnValue(entries);
+      const app = createApp(mock);
+      const res = await request(app, 'GET', '/api/execution/history');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.body[0].executionId).toBe('exec-1');
+      expect(res.body[1].command).toBe('run');
+    });
+
+    it('is not intercepted by UUID param validator', async () => {
+      // "history" is not a UUID, ensure it routes to GET /history not GET /:id
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'GET', '/api/execution/history');
+      expect(res.status).toBe(200);
+      expect(mock.getExecution).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /history', () => {
+    it('clears history', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'DELETE', '/api/execution/history');
+      expect(res.status).toBe(200);
+      expect(res.body.cleared).toBe(true);
+      expect(mock.clearHistory).toHaveBeenCalled();
+    });
+
+    it('behavior: clear then get returns empty', async () => {
+      const mock = createMockClaudeService();
+      // Simulate: getHistory returns data before clear, empty after
+      mock.getHistory
+        .mockReturnValueOnce([{ executionId: 'e1', status: 'completed' }])
+        .mockReturnValueOnce([]);
+      const app = createApp(mock);
+
+      // Step 1: History has entries
+      const before = await request(app, 'GET', '/api/execution/history');
+      expect(before.body).toHaveLength(1);
+
+      // Step 2: Clear
+      const del = await request(app, 'DELETE', '/api/execution/history');
+      expect(del.status).toBe(200);
+
+      // Step 3: History is empty
+      const after = await request(app, 'GET', '/api/execution/history');
+      expect(after.body).toHaveLength(0);
+    });
+  });
+
+  describe('DELETE /:id', () => {
+    it('removes finished execution via removeExecution', async () => {
+      const mock = createMockClaudeService();
+      mock.removeExecution.mockReturnValue(true);
       const app = createApp(mock);
       const res = await request(
         app,
@@ -223,11 +326,30 @@ describe('Execution Routes', () => {
         '/api/execution/12345678-1234-1234-1234-123456789abc',
       );
       expect(res.status).toBe(200);
+      expect(res.body.status).toBe('removed');
+      expect(mock.removeExecution).toHaveBeenCalledWith('12345678-1234-1234-1234-123456789abc');
+      expect(mock.killExecution).not.toHaveBeenCalled();
+    });
+
+    it('falls back to killExecution for running execution', async () => {
+      const mock = createMockClaudeService();
+      // removeExecution returns false (not finished), killExecution returns true
+      mock.removeExecution.mockReturnValue(false);
+      mock.killExecution.mockReturnValue(true);
+      const app = createApp(mock);
+      const res = await request(
+        app,
+        'DELETE',
+        '/api/execution/12345678-1234-1234-1234-123456789abc',
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('killed');
       expect(mock.killExecution).toHaveBeenCalledWith('12345678-1234-1234-1234-123456789abc');
     });
 
-    it('returns 404 for non-existent execution', async () => {
+    it('returns 404 when neither remove nor kill succeeds', async () => {
       const mock = createMockClaudeService();
+      mock.removeExecution.mockReturnValue(false);
       mock.killExecution.mockReturnValue(false);
       const app = createApp(mock);
       const res = await request(
@@ -314,6 +436,35 @@ describe('Execution Routes', () => {
         app,
         'GET',
         '/api/execution/12345678-1234-1234-1234-123456789abc/logs',
+      );
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('GET /:id/diag', () => {
+    it('returns diagnostics for existing execution', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(
+        app,
+        'GET',
+        '/api/execution/12345678-1234-1234-1234-123456789abc/diag',
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.execution).toBeDefined();
+      expect(res.body.subscribers).toBeDefined();
+      expect(res.body.chain).toBeDefined();
+      expect(res.body.queuePosition).toBe(-1);
+    });
+
+    it('returns 404 for non-existent execution', async () => {
+      const mock = createMockClaudeService();
+      mock.getDiagnostics.mockReturnValue(null);
+      const app = createApp(mock);
+      const res = await request(
+        app,
+        'GET',
+        '/api/execution/12345678-1234-1234-1234-123456789abc/diag',
       );
       expect(res.status).toBe(404);
     });

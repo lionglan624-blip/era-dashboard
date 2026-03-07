@@ -115,6 +115,39 @@ describe('useExecution', () => {
 
       expect(result.current.state).toBe(prevState);
     });
+
+    it('preserves waitingForInput on completion (browser-first y/n design)', () => {
+      const { result } = renderHook(() => useExecution());
+
+      act(() => {
+        result.current.dispatch({
+          type: 'ADD_EXECUTION',
+          exec: { id: 'exec1', featureId: 100, status: 'running', logs: [] },
+        });
+      });
+
+      // Set waitingForInput via WS_INPUT_WAIT
+      act(() => {
+        result.current.dispatch({
+          type: 'WS_INPUT_WAIT',
+          msg: { executionId: 'exec1', pattern: 'y/n prompt' },
+        });
+      });
+
+      expect(result.current.state.executionStates.get('exec1').waitingForInput).toBe(true);
+
+      // Completion should NOT clear waitingForInput
+      act(() => {
+        result.current.dispatch({
+          type: 'UPDATE_STATUS',
+          executionId: 'exec1',
+          status: 'completed',
+          exitCode: 0,
+        });
+      });
+
+      expect(result.current.state.executionStates.get('exec1').waitingForInput).toBe(true);
+    });
   });
 
   describe('reducer: WS_STATE', () => {
@@ -151,7 +184,13 @@ describe('useExecution', () => {
       act(() => {
         result.current.dispatch({
           type: 'ADD_EXECUTION',
-          exec: { id: 'exec1', featureId: 100, status: 'pending', sessionId: null, logs: [] },
+          exec: {
+            id: 'exec1',
+            featureId: 100,
+            status: 'pending',
+            sessionId: null,
+            logs: [],
+          },
         });
       });
 
@@ -205,7 +244,13 @@ describe('useExecution', () => {
       act(() => {
         result.current.dispatch({
           type: 'ADD_EXECUTION',
-          exec: { id: 'exec1', featureId: 100, status: 'running', sessionId: 'sess1', logs: [] },
+          exec: {
+            id: 'exec1',
+            featureId: 100,
+            status: 'running',
+            sessionId: 'sess1',
+            logs: [],
+          },
         });
       });
 
@@ -503,6 +548,25 @@ describe('useExecution', () => {
       });
     });
 
+    it('POSTs to imp endpoint for imp command', async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: 'exec4', featureId: 103, logs: [] }),
+      });
+
+      const { result } = renderHook(() => useExecution());
+
+      await act(async () => {
+        await result.current.startCommand(103, 'imp');
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/execution/imp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureId: 103, chain: false }),
+      });
+    });
+
     it('throws with status 409 for conflict', async () => {
       global.fetch.mockResolvedValueOnce({
         ok: false,
@@ -546,8 +610,16 @@ describe('useExecution', () => {
       });
 
       act(() => {
-        result.current.addLog('exec1', { line: 'log1', timestamp: Date.now(), level: 'info' });
-        result.current.addLog('exec1', { line: 'log2', timestamp: Date.now(), level: 'info' });
+        result.current.addLog('exec1', {
+          line: 'log1',
+          timestamp: Date.now(),
+          level: 'info',
+        });
+        result.current.addLog('exec1', {
+          line: 'log2',
+          timestamp: Date.now(),
+          level: 'info',
+        });
       });
 
       act(() => {

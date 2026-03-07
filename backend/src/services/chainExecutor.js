@@ -6,7 +6,7 @@
  * automatically triggered based on the feature's new status.
  *
  * Chain flow:
- *   [DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE]
+ *   [DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE] → imp → [DONE]
  */
 
 import { claudeLog } from '../utils/logger.js';
@@ -37,15 +37,17 @@ import { claudeLog } from '../utils/logger.js';
 const STATUS_TO_COMMAND = {
   '[PROPOSED]': 'fl', // FC done → start FL
   '[REVIEWED]': 'run', // FL done → start Run
+  '[DONE]': 'imp', // Run done → start Imp
 };
 
 /**
  * Expected status after each command completes
  * @type {Record<string, string>}
  */
-const EXPECTED_STATUS_AFTER_COMMAND = {
+export const EXPECTED_STATUS_AFTER_COMMAND = {
   fc: '[PROPOSED]', // fc → [PROPOSED]
   fl: '[REVIEWED]', // fl → [REVIEWED]
+  run: '[DONE]', // run → [DONE]
 };
 
 /**
@@ -173,9 +175,21 @@ export class ChainExecutor {
     const waiter = this.chainWaiters.get(featureId);
     if (!waiter) return;
 
-    this.chainWaiters.delete(featureId);
     const execution = this.deps.getExecution(waiter.executionId);
-    if (!execution) return;
+    if (!execution) {
+      this.chainWaiters.delete(featureId);
+      return;
+    }
+
+    // Guard against running execution (resumed process still active)
+    if (execution.status === 'running') {
+      claudeLog.info(
+        `[Chain] F${featureId}: ${oldStatus} → ${newStatus}, but exec ${waiter.executionId} still running — deferring to process exit`,
+      );
+      return; // Keep waiter, defer to Path B (registerWaiter on process exit)
+    }
+
+    this.chainWaiters.delete(featureId);
 
     const nextCommand = getNextChainCommand(newStatus);
     if (!nextCommand) {

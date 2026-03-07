@@ -7,6 +7,8 @@ vi.mock('fs/promises', () => {
     readdir: vi.fn(),
     stat: vi.fn(),
     unlink: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
   };
   return { ...fns, default: fns };
 });
@@ -21,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { readdir, stat, unlink } from 'fs/promises';
+import { readdir, stat, unlink, readFile, writeFile } from 'fs/promises';
 
 function createService() {
   return new CleanupService('C:\\test\\project');
@@ -36,6 +38,11 @@ describe('CleanupService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     readdir.mockResolvedValue([]);
+    // Default: history JSONL doesn't exist
+    const enoent = new Error('ENOENT');
+    enoent.code = 'ENOENT';
+    readFile.mockRejectedValue(enoent);
+    writeFile.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -227,6 +234,41 @@ describe('CleanupService', () => {
       // One failed, one succeeded
       expect(result.count).toBe(1);
       expect(svc.logger.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('_pruneHistoryJsonl', () => {
+    it('removes entries older than maxAgeDays', async () => {
+      const svc = createService();
+      const old = new Date(Date.now() - 10 * 86400000).toISOString();
+      const recent = new Date().toISOString();
+      const content = [
+        JSON.stringify({ executionId: 'old', completedAt: old }),
+        JSON.stringify({ executionId: 'new', completedAt: recent }),
+      ].join('\n');
+      readFile.mockResolvedValueOnce(content);
+      writeFile.mockResolvedValueOnce(undefined);
+
+      const pruned = await svc._pruneHistoryJsonl('/test/history.jsonl', 7);
+      expect(pruned).toBe(1);
+      expect(writeFile).toHaveBeenCalledWith(
+        '/test/history.jsonl',
+        expect.stringContaining('"new"'),
+        'utf8',
+      );
+    });
+
+    it('returns 0 when file does not exist', async () => {
+      const svc = createService();
+      const pruned = await svc._pruneHistoryJsonl('/test/history.jsonl', 7);
+      expect(pruned).toBe(0);
+    });
+
+    it('returns 0 when file is empty', async () => {
+      const svc = createService();
+      readFile.mockResolvedValueOnce('');
+      const pruned = await svc._pruneHistoryJsonl('/test/history.jsonl', 7);
+      expect(pruned).toBe(0);
     });
   });
 

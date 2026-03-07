@@ -30,6 +30,7 @@ function createPanelProps(executions = new Map(), overrides = {}) {
     onClose: vi.fn(),
     onCloseTab: vi.fn(),
     onCloseFinishedTabs: vi.fn(),
+    onResumeBrowser: vi.fn(),
     onResumeTerminal: vi.fn(),
     ...overrides,
   };
@@ -37,24 +38,29 @@ function createPanelProps(executions = new Map(), overrides = {}) {
 
 describe('ExecutionPanel', () => {
   describe('Rendering - Visibility', () => {
-    it('returns null when no visible executions (empty map)', () => {
+    it('renders empty state when no visible executions (empty map)', () => {
       const props = createPanelProps(new Map());
-      const { container } = render(<ExecutionPanel {...props} />);
-      expect(container.firstChild).toBeNull();
+      render(<ExecutionPanel {...props} />);
+      expect(screen.getByText('No executions')).toBeInTheDocument();
+      expect(screen.getByText('Waiting for execution...')).toBeInTheDocument();
     });
 
-    it('returns null when all executions have no logs and are not running', () => {
+    it('renders empty state when all executions have no logs and are not running', () => {
       const executions = new Map([['exec-1', createExecution({ status: 'completed', logs: [] })]]);
       const props = createPanelProps(executions);
-      const { container } = render(<ExecutionPanel {...props} />);
-      expect(container.firstChild).toBeNull();
+      render(<ExecutionPanel {...props} />);
+      expect(screen.getByText('No executions')).toBeInTheDocument();
+      expect(screen.getByText('Waiting for execution...')).toBeInTheDocument();
     });
 
     it('renders when execution has logs', () => {
       const executions = new Map([
         [
           'exec-1',
-          createExecution({ status: 'completed', logs: [{ line: 'test', timestamp: Date.now() }] }),
+          createExecution({
+            status: 'completed',
+            logs: [{ line: 'test', timestamp: Date.now() }],
+          }),
         ],
       ]);
       const props = createPanelProps(executions);
@@ -212,7 +218,11 @@ describe('ExecutionPanel', () => {
       const executions = new Map([
         [
           'exec-1',
-          createExecution({ status: 'completed', command: 'fl', logs: [{ line: 'test' }] }),
+          createExecution({
+            status: 'completed',
+            command: 'fl',
+            logs: [{ line: 'test' }],
+          }),
         ],
       ]);
       const props = createPanelProps(executions);
@@ -239,7 +249,11 @@ describe('ExecutionPanel', () => {
       const executions = new Map([
         [
           'exec-1',
-          createExecution({ status: 'handed-off', command: 'fc', logs: [{ line: 'test' }] }),
+          createExecution({
+            status: 'handed-off',
+            command: 'fc',
+            logs: [{ line: 'test' }],
+          }),
         ],
       ]);
       const props = createPanelProps(executions);
@@ -308,7 +322,7 @@ describe('ExecutionPanel', () => {
       expect(screen.queryByText('Stop')).not.toBeInTheDocument();
     });
 
-    it('shows Resume button when stopped with sessionId', () => {
+    it('shows Continue and Terminal buttons when stopped with sessionId', () => {
       const executions = new Map([
         [
           'exec-1',
@@ -322,33 +336,44 @@ describe('ExecutionPanel', () => {
       const props = createPanelProps(executions);
       render(<ExecutionPanel {...props} />);
 
-      expect(screen.getByText('Resume')).toBeInTheDocument();
+      expect(screen.getByText('Continue')).toBeInTheDocument();
+      expect(screen.getByText('Terminal')).toBeInTheDocument();
     });
 
-    it('does not show Resume button when running', () => {
+    it('does not show Continue/Terminal buttons when running', () => {
       const executions = new Map([
         [
           'exec-1',
-          createExecution({ status: 'running', sessionId: 'session-1', logs: [{ line: 'test' }] }),
+          createExecution({
+            status: 'running',
+            sessionId: 'session-1',
+            logs: [{ line: 'test' }],
+          }),
         ],
       ]);
       const props = createPanelProps(executions);
       render(<ExecutionPanel {...props} />);
 
-      expect(screen.queryByText('Resume')).not.toBeInTheDocument();
+      expect(screen.queryByText('Continue')).not.toBeInTheDocument();
+      expect(screen.queryByText('Terminal')).not.toBeInTheDocument();
     });
 
-    it('does not show Resume button when no sessionId', () => {
+    it('does not show Continue/Terminal buttons when no sessionId', () => {
       const executions = new Map([
         [
           'exec-1',
-          createExecution({ status: 'completed', sessionId: null, logs: [{ line: 'test' }] }),
+          createExecution({
+            status: 'completed',
+            sessionId: null,
+            logs: [{ line: 'test' }],
+          }),
         ],
       ]);
       const props = createPanelProps(executions);
       render(<ExecutionPanel {...props} />);
 
-      expect(screen.queryByText('Resume')).not.toBeInTheDocument();
+      expect(screen.queryByText('Continue')).not.toBeInTheDocument();
+      expect(screen.queryByText('Terminal')).not.toBeInTheDocument();
     });
 
     it('shows Clear button when finished tabs exist', () => {
@@ -442,7 +467,28 @@ describe('ExecutionPanel', () => {
       expect(onCloseFinishedTabs).toHaveBeenCalled();
     });
 
-    it('calls onResumeTerminal when Resume button clicked', async () => {
+    it('calls onResumeBrowser when Continue button clicked', async () => {
+      const user = userEvent.setup();
+      const executions = new Map([
+        [
+          'exec-1',
+          createExecution({
+            status: 'completed',
+            sessionId: 'session-1',
+            logs: [{ line: 'test' }],
+          }),
+        ],
+      ]);
+      const onResumeBrowser = vi.fn();
+      const props = createPanelProps(executions, { onResumeBrowser });
+      render(<ExecutionPanel {...props} />);
+
+      await user.click(screen.getByText('Continue'));
+
+      expect(onResumeBrowser).toHaveBeenCalledWith('exec-1');
+    });
+
+    it('calls onResumeTerminal when Terminal button clicked', async () => {
       const user = userEvent.setup();
       const executions = new Map([
         [
@@ -458,25 +504,27 @@ describe('ExecutionPanel', () => {
       const props = createPanelProps(executions, { onResumeTerminal });
       render(<ExecutionPanel {...props} />);
 
-      await user.click(screen.getByText('Resume'));
+      await user.click(screen.getByText('Terminal'));
 
       expect(onResumeTerminal).toHaveBeenCalledWith('exec-1');
     });
   });
 
   describe('Terminal Input Panel', () => {
-    it('shows terminal input panel when waitingForTerminalInput', () => {
+    it('shows y/n buttons when waitingForTerminalInput', () => {
       const executions = new Map([
         ['exec-1', createExecution({ status: 'running', logs: [{ line: 'test' }] })],
       ]);
       const executionStates = new Map([
-        ['exec-1', { waitingForInput: true, waitingInputPattern: 'y/n' }],
+        ['exec-1', { waitingForInput: true, waitingInputPattern: 'y/n prompt' }],
       ]);
       const props = createPanelProps(executions, { executionStates });
       render(<ExecutionPanel {...props} />);
 
-      expect(screen.getByText('Terminal Input Required')).toBeInTheDocument();
-      expect(screen.getByText('y/n')).toBeInTheDocument();
+      expect(screen.getAllByText('y/n prompt').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Yes')).toBeInTheDocument();
+      expect(screen.getByText('No')).toBeInTheDocument();
+      expect(screen.getByText('Terminal')).toBeInTheDocument();
     });
 
     it('does not show terminal input panel when not waiting for input', () => {
@@ -486,12 +534,13 @@ describe('ExecutionPanel', () => {
       const props = createPanelProps(executions);
       render(<ExecutionPanel {...props} />);
 
-      expect(screen.queryByText('Terminal Input Required')).not.toBeInTheDocument();
+      expect(screen.queryByText('Yes')).not.toBeInTheDocument();
+      expect(screen.queryByText('No')).not.toBeInTheDocument();
     });
   });
 
   describe('Input Request Panel', () => {
-    it('shows input request panel when inputRequest present', () => {
+    it('shows clickable option buttons when inputRequest present', () => {
       const executions = new Map([
         ['exec-1', createExecution({ status: 'running', logs: [{ line: 'test' }] })],
       ]);
@@ -516,13 +565,13 @@ describe('ExecutionPanel', () => {
       const props = createPanelProps(executions, { inputRequests });
       render(<ExecutionPanel {...props} />);
 
-      expect(
-        screen.getByText('AskUserQuestion detected (handed off to Terminal):'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('Input Required')).toBeInTheDocument();
       expect(screen.getByText('Please answer the following question')).toBeInTheDocument();
       expect(screen.getByText('Choose one')).toBeInTheDocument();
+      // Options are now buttons
       expect(screen.getByText('A')).toBeInTheDocument();
       expect(screen.getByText('First option')).toBeInTheDocument();
+      expect(screen.getByText('Terminal')).toBeInTheDocument();
     });
 
     it('does not show input request panel when no inputRequest', () => {
@@ -532,9 +581,7 @@ describe('ExecutionPanel', () => {
       const props = createPanelProps(executions);
       render(<ExecutionPanel {...props} />);
 
-      expect(
-        screen.queryByText('AskUserQuestion detected (handed off to Terminal):'),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Input Required')).not.toBeInTheDocument();
     });
   });
 

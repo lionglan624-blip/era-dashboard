@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import LogViewer from './LogViewer.jsx';
+import HistoryView from './HistoryView.jsx';
 
 export default function ExecutionPanel({
   executions,
@@ -7,18 +8,35 @@ export default function ExecutionPanel({
   executionStates = new Map(),
   inputRequests = new Map(),
   projectRoot = null,
+  headerHeight = 0,
+  historyEntries = [],
+  historyLoading = false,
   onSelectExecution,
   onClose,
   onKill,
   onCloseTab,
   onCloseFinishedTabs,
+  onResumeBrowser,
   onResumeTerminal,
+  onAnswer,
+  onOpenHistory,
 }) {
   const [copyFeedback, setCopyFeedback] = useState(null);
+  const [answerPending, setAnswerPending] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Reset answerPending when active execution changes or input state clears
+  const activeState = executionStates.get(activeId);
+  const activeInputReq = inputRequests.has(activeId);
+  useEffect(() => {
+    if (answerPending && !activeState?.waitingForInput && !activeInputReq) {
+      setAnswerPending(false);
+    }
+  }, [activeId, activeState?.waitingForInput, activeInputReq, answerPending]);
 
   const handleCopyResumeCommand = (sessionId) => {
     if (!sessionId) return;
-    const rootPath = projectRoot || 'C:\\Era\\erakoumakanNTR'; // Fallback for initial load
+    const rootPath = projectRoot || 'C:\\Era\\devkit'; // Fallback for initial load
     const command = `cd "${rootPath}" && ccs -r ${sessionId}`;
     navigator.clipboard
       .writeText(command)
@@ -40,7 +58,62 @@ export default function ExecutionPanel({
       return (b.logs?.length || 0) - (a.logs?.length || 0);
     });
 
-  if (visibleExecs.length === 0) return null;
+  const panelStyle = { top: `${headerHeight || 100}px` };
+
+  const handleOpenHistory = () => {
+    setShowHistory(true);
+    onOpenHistory?.();
+  };
+
+  if (visibleExecs.length === 0) {
+    return (
+      <div className="execution-panel" style={panelStyle}>
+        <div className="execution-tabs">
+          <button
+            className="btn-close-panel"
+            onClick={onClose}
+            title="Close panel"
+            style={{ color: 'var(--text)', fontSize: '24px' }}
+          >
+            ✕
+          </button>
+          <span style={{ color: 'var(--text-dim)', fontSize: '12px', padding: '8px 0' }}>
+            No executions
+          </span>
+          <button
+            className="btn-history"
+            onClick={handleOpenHistory}
+            title="View execution history"
+          >
+            History
+          </button>
+        </div>
+        {showHistory ? (
+          <HistoryView
+            entries={historyEntries}
+            loading={historyLoading}
+            projectRoot={projectRoot}
+            onResumeBrowser={onResumeBrowser}
+            onResumeTerminal={onResumeTerminal}
+          />
+        ) : (
+          <div
+            className="log-viewer"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-dim)',
+              opacity: 0.4,
+              fontSize: '14px',
+            }}
+          >
+            Waiting for execution...
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const activeExec = executions.get(activeId) || visibleExecs[0];
   if (!activeExec) return null;
@@ -55,7 +128,7 @@ export default function ExecutionPanel({
     const state = executionStates.get(eid) || {};
 
     // Priority: input > stalled > status
-    if (inputRequests.has(eid)) return '◐';
+    if (inputRequests.has(eid) || state.waitingForInput) return '◐';
     if (state.taskDepth > 0) return '⧖';
     if (state.isStalled) return '⏸';
 
@@ -72,7 +145,10 @@ export default function ExecutionPanel({
 
     // Priority: input > stalled > handed-off > status
     if (inputRequest) {
-      return { icon: '◐', text: 'Waiting for input' };
+      return { icon: '◐', text: 'Choose an option' };
+    }
+    if (state.waitingForInput) {
+      return { icon: '◐', text: state.waitingInputPattern || 'Waiting for input' };
     }
     if (state.taskDepth > 0) {
       return { icon: '⧖', text: `Subagent running (depth=${state.taskDepth})` };
@@ -104,7 +180,7 @@ export default function ExecutionPanel({
   );
 
   return (
-    <div className="execution-panel">
+    <div className="execution-panel" style={panelStyle}>
       <div className="execution-tabs">
         <button className="btn-close-panel" onClick={onClose} title="Close panel">
           ✕
@@ -123,8 +199,11 @@ export default function ExecutionPanel({
           return (
             <div
               key={eid}
-              className={`exec-tab ${eid === execId ? 'active' : ''} exec-tab-${exec.status}`}
-              onClick={() => onSelectExecution(eid)}
+              className={`exec-tab ${eid === execId && !showHistory ? 'active' : ''} exec-tab-${exec.status}`}
+              onClick={() => {
+                setShowHistory(false);
+                onSelectExecution(eid);
+              }}
             >
               <span className="tab-label">
                 <span>F{exec.featureId}</span>
@@ -143,6 +222,13 @@ export default function ExecutionPanel({
             </div>
           );
         })}
+        <button
+          className={`btn-history ${showHistory ? 'active' : ''}`}
+          onClick={handleOpenHistory}
+          title="View execution history"
+        >
+          History
+        </button>
       </div>
 
       <div className="execution-header">
@@ -163,15 +249,20 @@ export default function ExecutionPanel({
             <button
               className="btn-copy-id"
               onClick={() => handleCopyResumeCommand(activeExec.sessionId)}
-              title={`Copy: cd "${projectRoot || 'C:\\Era\\erakoumakanNTR'}" && ccs -r ${activeExec.sessionId}`}
+              title={`Copy: cd "${projectRoot || 'C:\\Era\\devkit'}" && ccs -r ${activeExec.sessionId}`}
             >
               {copyFeedback || 'Copy ID'}
             </button>
           )}
           {activeExec.status !== 'running' && activeExec.sessionId && (
-            <button className="btn-resume" onClick={() => onResumeTerminal?.(execId)}>
-              Resume
-            </button>
+            <>
+              <button className="btn-resume" onClick={() => onResumeBrowser?.(execId)}>
+                Continue
+              </button>
+              <button className="btn-terminal" onClick={() => onResumeTerminal?.(execId)}>
+                Terminal
+              </button>
+            </>
           )}
           {activeExec.status === 'running' && (
             <button className="btn-kill" onClick={() => onKill(execId)}>
@@ -181,16 +272,45 @@ export default function ExecutionPanel({
         </div>
       </div>
 
-      {execState.waitingForInput && (
+      {execState.waitingForInput && !inputRequest && (
         <div className="terminal-input-panel">
-          <div className="panel-header">Terminal Input Required</div>
-          <div className="input-pattern">{execState.waitingInputPattern}</div>
+          <div className="panel-header">{execState.waitingInputPattern || 'Input Required'}</div>
+          <div className="input-actions">
+            <button
+              className="btn-answer btn-answer-y"
+              disabled={answerPending}
+              onClick={() => {
+                setAnswerPending(true);
+                onAnswer?.(execId, 'y');
+              }}
+            >
+              Yes
+            </button>
+            <button
+              className="btn-answer btn-answer-n"
+              disabled={answerPending}
+              onClick={() => {
+                setAnswerPending(true);
+                onAnswer?.(execId, 'n');
+              }}
+            >
+              No
+            </button>
+            <button
+              className="btn-answer-terminal"
+              disabled={answerPending}
+              onClick={() => onResumeTerminal?.(execId)}
+              title="Open in Terminal instead"
+            >
+              Terminal
+            </button>
+          </div>
         </div>
       )}
 
       {inputRequest && (
         <div className="input-request-panel">
-          <div className="panel-header">AskUserQuestion detected (handed off to Terminal):</div>
+          <div className="panel-header">Input Required</div>
           {inputRequest.context && <div className="request-context">{inputRequest.context}</div>}
           {inputRequest.questions?.map((q, i) => (
             <div key={i} className="question-block">
@@ -199,19 +319,47 @@ export default function ExecutionPanel({
               {q.options && (
                 <div className="question-options">
                   {q.options.map((opt, j) => (
-                    <div key={j} className="option">
+                    <button
+                      key={j}
+                      className="btn-answer-option"
+                      disabled={answerPending}
+                      onClick={() => {
+                        setAnswerPending(true);
+                        onAnswer?.(execId, opt.label);
+                      }}
+                    >
                       <span className="option-label">{opt.label}</span>
                       {opt.description && <span className="option-desc">{opt.description}</span>}
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
             </div>
           ))}
+          <div className="input-actions">
+            <button
+              className="btn-answer-terminal"
+              disabled={answerPending}
+              onClick={() => onResumeTerminal?.(execId)}
+              title="Open in Terminal instead"
+            >
+              Terminal
+            </button>
+          </div>
         </div>
       )}
 
-      <LogViewer logs={activeExec.logs || []} />
+      {showHistory ? (
+        <HistoryView
+          entries={historyEntries}
+          loading={historyLoading}
+          projectRoot={projectRoot}
+          onResumeBrowser={onResumeBrowser}
+          onResumeTerminal={onResumeTerminal}
+        />
+      ) : (
+        <LogViewer logs={activeExec.logs || []} />
+      )}
     </div>
   );
 }

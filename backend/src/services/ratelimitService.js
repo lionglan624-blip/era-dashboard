@@ -1,7 +1,9 @@
-import { execSync } from 'child_process';
+import { execSync, fork } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { claudeLog } from '../utils/logger.js';
+import { VtScreenBuffer } from './vtScreenBuffer.js';
 import {
   RATE_LIMIT_CACHE_MS,
   RATE_LIMIT_CAPTURE_TIMEOUT_MS,
@@ -12,155 +14,6 @@ import {
   SESSION_BURN_RATE_MIN_PERCENT,
   AUTO_SWITCH_THRESHOLD,
 } from '../config.js';
-
-/**
- * Minimal VT terminal emulator - reconstructs screen buffer from VT escape sequences.
- * Equivalent to ReadConsoleOutputCharacterW: produces a character grid with proper spacing.
- *
- * @param {number} cols - Terminal width
- * @param {number} rows - Terminal height
- */
-class VtScreenBuffer {
-  constructor(cols, rows) {
-    this.cols = cols;
-    this.rows = rows;
-    this.buffer = [];
-    this.cx = 0;
-    this.cy = 0;
-    for (let i = 0; i < rows; i++) {
-      this.buffer.push(new Array(cols).fill(' '));
-    }
-  }
-
-  /**
-   * Feed VT data into the buffer, processing escape sequences and characters.
-   * @param {string} data - Raw VT output from node-pty
-   */
-  feed(data) {
-    let i = 0;
-    while (i < data.length) {
-      const ch = data[i];
-      if (ch === '\x1b') {
-        i = this._parseEscape(data, i + 1);
-      } else if (ch === '\r') {
-        this.cx = 0;
-        i++;
-      } else if (ch === '\n') {
-        this.cy = Math.min(this.cy + 1, this.rows - 1);
-        i++;
-      } else if (ch === '\t') {
-        this.cx = Math.min(this.cx + (8 - (this.cx % 8)), this.cols - 1);
-        i++;
-      } else if (ch === '\x07' || ch === '\x08') {
-        // BEL: ignore, BS: move back
-        if (ch === '\x08') this.cx = Math.max(0, this.cx - 1);
-        i++;
-      } else if (ch.charCodeAt(0) < 32) {
-        i++; // skip other control chars
-      } else {
-        // Printable character
-        if (this.cx < this.cols && this.cy < this.rows) {
-          this.buffer[this.cy][this.cx] = ch;
-          this.cx++;
-        }
-        i++;
-      }
-    }
-  }
-
-  _parseEscape(data, i) {
-    if (i >= data.length) return i;
-    if (data[i] === '[') {
-      return this._parseCSI(data, i + 1);
-    } else if (data[i] === ']') {
-      return this._skipOSC(data, i + 1);
-    }
-    return i + 1; // skip single-char escape (e.g., \x1b7, \x1bM)
-  }
-
-  _parseCSI(data, i) {
-    let params = '';
-    while (i < data.length && data[i] >= '\x20' && data[i] <= '\x3f') {
-      params += data[i];
-      i++;
-    }
-    if (i < data.length) {
-      this._handleCSI(params, data[i]);
-      i++;
-    }
-    return i;
-  }
-
-  _skipOSC(data, i) {
-    // Skip until BEL (\x07) or ST (\x1b\\)
-    while (i < data.length) {
-      if (data[i] === '\x07') return i + 1;
-      if (data[i] === '\x1b' && i + 1 < data.length && data[i + 1] === '\\') return i + 2;
-      i++;
-    }
-    return i;
-  }
-
-  _handleCSI(params, cmd) {
-    // Parse semicolon-separated numeric params (e.g., "10;20" → [10, 20])
-    const parts = params
-      .replace(/\?/g, '')
-      .split(';')
-      .map((s) => parseInt(s) || 0);
-    switch (cmd) {
-      case 'A': // cursor up
-        this.cy = Math.max(0, this.cy - (parts[0] || 1));
-        break;
-      case 'B': // cursor down
-        this.cy = Math.min(this.rows - 1, this.cy + (parts[0] || 1));
-        break;
-      case 'C': // cursor forward
-        this.cx = Math.min(this.cols - 1, this.cx + (parts[0] || 1));
-        break;
-      case 'D': // cursor back
-        this.cx = Math.max(0, this.cx - (parts[0] || 1));
-        break;
-      case 'H':
-      case 'f': // cursor position (row;col, 1-based)
-        this.cy = Math.max(0, Math.min(this.rows - 1, (parts[0] || 1) - 1));
-        this.cx = Math.max(0, Math.min(this.cols - 1, (parts[1] || 1) - 1));
-        break;
-      case 'G': // cursor to column (1-based)
-        this.cx = Math.max(0, Math.min(this.cols - 1, (parts[0] || 1) - 1));
-        break;
-      case 'J': // erase display
-        if (parts[0] === 2 || parts[0] === 3) {
-          for (let r = 0; r < this.rows; r++) this.buffer[r].fill(' ');
-        } else if (parts[0] === 0 || params === '') {
-          // Erase from cursor to end
-          for (let c = this.cx; c < this.cols; c++) this.buffer[this.cy][c] = ' ';
-          for (let r = this.cy + 1; r < this.rows; r++) this.buffer[r].fill(' ');
-        }
-        break;
-      case 'K': // erase line
-        if ((parts[0] || 0) === 0) {
-          for (let c = this.cx; c < this.cols; c++) this.buffer[this.cy][c] = ' ';
-        } else if (parts[0] === 1) {
-          for (let c = 0; c <= this.cx; c++) this.buffer[this.cy][c] = ' ';
-        } else if (parts[0] === 2) {
-          this.buffer[this.cy].fill(' ');
-        }
-        break;
-      // m (SGR/style), h/l (mode set/reset), etc. — ignore
-    }
-  }
-
-  /**
-   * Get the screen content as text lines (trimmed end whitespace).
-   * @returns {string} Screen text with newlines
-   */
-  getText() {
-    return this.buffer
-      .map((row) => row.join('').trimEnd())
-      .filter((line) => line.length > 0)
-      .join('\n');
-  }
-}
 
 /**
  * Service for capturing rate limit information from Claude Code's console output.
@@ -304,11 +157,93 @@ export class RateLimitService {
   }
 
   /**
-   * Run the capture using node-pty with ConPTY.
+   * Run the capture, delegating to in-process (test DI) or forked worker (production).
    * @param {Object} env - Environment variables
    * @returns {Promise<string>} Captured output
    */
   async _runCapture(env) {
+    if (this._ptySpawn) {
+      return this._runCaptureInProcess(env);
+    }
+    return this._runCaptureForked(env);
+  }
+
+  /**
+   * Run capture in a forked child process to isolate node-pty native crashes.
+   * Worker crash or timeout resolves to empty string → _parseUsageOutput returns null → cache preserved.
+   * @param {Object} env - Environment variables
+   * @returns {Promise<string>} Captured output
+   */
+  _runCaptureForked(env) {
+    return new Promise((resolve) => {
+      const workerPath = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        'workers',
+        'ptyCapture.js',
+      );
+
+      const child = fork(workerPath, [], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+
+      let resolved = false;
+      const parentTimeoutMs = RATE_LIMIT_CAPTURE_TIMEOUT_MS + 5000;
+
+      const finish = (text) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(text);
+      };
+
+      child.on('message', (msg) => {
+        if (msg.type === 'result') {
+          claudeLog.info(`[RateLimit] Worker result received (${msg.text?.length || 0} chars)`);
+          finish(msg.text || '');
+        } else if (msg.type === 'error') {
+          claudeLog.error(`[RateLimit] Worker error: ${msg.message}`);
+          finish('');
+        }
+      });
+
+      child.on('error', (err) => {
+        claudeLog.error(`[RateLimit] Worker spawn error: ${err.message}`);
+        finish('');
+      });
+
+      child.on('exit', (code, signal) => {
+        claudeLog.info(`[RateLimit] Worker exited code=${code} signal=${signal}`);
+        finish('');
+      });
+
+      // Parent-side guard timeout (worker internal timeout + 5s)
+      const timeout = setTimeout(() => {
+        claudeLog.warn(`[RateLimit] Worker parent timeout (${parentTimeoutMs}ms), killing child`);
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+        finish('');
+      }, parentTimeoutMs);
+
+      // Send start command to worker
+      child.send({
+        type: 'start',
+        env,
+        cols: 120,
+        rows: 30,
+        timeoutMs: RATE_LIMIT_CAPTURE_TIMEOUT_MS,
+      });
+    });
+  }
+
+  /**
+   * Run the capture in-process using injected ptySpawn (for tests).
+   * @param {Object} env - Environment variables
+   * @returns {Promise<string>} Captured output
+   */
+  async _runCaptureInProcess(env) {
     const spawn = await this._getPtySpawn();
 
     return new Promise((resolve) => {
