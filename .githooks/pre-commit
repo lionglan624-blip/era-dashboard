@@ -1,14 +1,55 @@
 #!/bin/bash
 set -e
-echo "=== Pre-commit CI (dashboard) ==="
+
+# Log setup
+CI_TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+LOG_DIR="_out/logs/ci"
+LOG_FILE="$LOG_DIR/ci-$CI_TIMESTAMP.log"
+mkdir -p "$LOG_DIR"
+
+BRANCH=$(git branch --show-current 2>/dev/null || echo "detached")
+STAGED_FILES=$(git diff --cached --name-only 2>/dev/null)
+STAGED_COUNT=$(echo "$STAGED_FILES" | grep -c . 2>/dev/null || true)
+
+echo "=== Pre-commit CI (dashboard) ===" | tee -a "$LOG_FILE"
+echo "Date: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "$LOG_FILE"
+echo "Branch: $BRANCH" | tee -a "$LOG_FILE"
+echo "Staged: $STAGED_COUNT files" | tee -a "$LOG_FILE"
+echo "---" | tee -a "$LOG_FILE"
+echo "Log: $LOG_FILE"
 
 # Lint check
-echo "[1/3] ESLint + Prettier check..."
-npx eslint backend/ frontend/src/ --quiet
-npx prettier --check "backend/**/*.{js,cjs}" "frontend/src/**/*.{js,jsx,css}"
+echo "[1/3] ESLint + Prettier check..." | tee -a "$LOG_FILE"
+set +e
+npx eslint backend/ frontend/src/ --quiet 2>&1 | tee -a "$LOG_FILE"
+ESLINT_EXIT_CODE=${PIPESTATUS[0]}
+set -e
+if [ $ESLINT_EXIT_CODE -ne 0 ]; then
+    echo "ERROR: ESLint check failed." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+set +e
+npx prettier --check "backend/**/*.{js,cjs}" "frontend/src/**/*.{js,jsx,css}" 2>&1 | tee -a "$LOG_FILE"
+PRETTIER_EXIT_CODE=${PIPESTATUS[0]}
+set -e
+if [ $PRETTIER_EXIT_CODE -ne 0 ]; then
+    echo "ERROR: Prettier check failed. Run 'npx prettier --write' to fix." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 # Test
-echo "[2/3] Running tests..."
-npm run test
+echo "[2/3] Running tests..." | tee -a "$LOG_FILE"
+set +e
+npm run test 2>&1 | tee -a "$LOG_FILE"
+TEST_EXIT_CODE=${PIPESTATUS[0]}
+set -e
+if [ $TEST_EXIT_CODE -ne 0 ]; then
+    echo "ERROR: Tests failed." | tee -a "$LOG_FILE"
+    exit $TEST_EXIT_CODE
+fi
 
-echo "[3/3] === CI PASSED ==="
+# Log rotation - delete ci-*.log files older than 30 days
+find "$LOG_DIR" -name "ci-*.log" -mtime +30 -delete 2>/dev/null || true
+
+echo "[3/3] === CI PASSED ===" | tee -a "$LOG_FILE"
