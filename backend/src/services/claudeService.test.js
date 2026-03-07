@@ -149,14 +149,14 @@ describe('detectPhase', () => {
 
 describe('detectIteration', () => {
   it('detects Iteration N/10 pattern', () => {
-    expect(detectIteration('Iteration 1/10: Phase 0')).toBe(1);
-    expect(detectIteration('Iteration 5/10: Phase 2')).toBe(5);
-    expect(detectIteration('Iteration 10/10: Phase 3')).toBe(10);
+    expect(detectIteration('Iteration 1/10: Phase 0')).toEqual({ current: 1, total: 10 });
+    expect(detectIteration('Iteration 5/10: Phase 2')).toEqual({ current: 5, total: 10 });
+    expect(detectIteration('Iteration 10/10: Phase 3')).toEqual({ current: 10, total: 10 });
   });
 
   it('handles various spacing', () => {
-    expect(detectIteration('Iteration  3 / 10')).toBe(3);
-    expect(detectIteration('iteration 7/10')).toBe(7);
+    expect(detectIteration('Iteration  3 / 10')).toEqual({ current: 3, total: 10 });
+    expect(detectIteration('iteration 7/10')).toEqual({ current: 7, total: 10 });
   });
 
   it('returns null for non-iteration text', () => {
@@ -181,7 +181,7 @@ describe('getTotalPhases', () => {
   it('returns correct total phases for each command', () => {
     expect(getTotalPhases('run')).toBe(10);
     expect(getTotalPhases('fc')).toBe(7);
-    expect(getTotalPhases('fl')).toBe(8);
+    expect(getTotalPhases('fl')).toBe(7);
     expect(getTotalPhases('unknown')).toBeNull();
   });
 });
@@ -4680,7 +4680,7 @@ describe('ClaudeService', () => {
           status: 'running',
           phase: 3,
           phaseName: 'Implementation',
-          totalPhases: 8, // fl has 8 phases
+          totalPhases: 7, // fl has 7 phases
           iteration: 2,
           sessionId: 'sess-123',
           inputRequired: true,

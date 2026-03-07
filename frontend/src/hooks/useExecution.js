@@ -147,6 +147,7 @@ function reducer(state, action) {
             name: msg.phaseName ?? current.name,
             totalPhases: msg.totalPhases ?? current.totalPhases,
             iteration: msg.iteration ?? current.iteration,
+            totalIterations: msg.totalIterations ?? current.totalIterations,
             command: exec.command, // Store command to distinguish FL from others
           });
           changes.featurePhases = nextFP;

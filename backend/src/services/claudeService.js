@@ -1025,6 +1025,7 @@ export class ClaudeService {
       phaseName: execution.currentPhaseName,
       totalPhases: getTotalPhases(execution.command),
       iteration: execution.currentIteration, // FL workflow iteration (e.g., 1, 2, 3)
+      totalIterations: execution.totalIterations || null, // FL total iterations (e.g., 10)
       sessionId: execution.sessionId, // Added: needed for Resume button
       inputRequired: !!execution.inputRequired,
       waitingForInput: execution.waitingForInput,

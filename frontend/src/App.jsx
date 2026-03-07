@@ -576,6 +576,7 @@ export default function App() {
     featureStartedAt,
     featureRunningCommand,
     featureInputWaiting,
+    featureRetryInfo,
   } = useMemo(() => {
     const running = new Set();
     const sessionIds = new Map();
@@ -584,6 +585,7 @@ export default function App() {
     const startedAt = new Map();
     const runningCmd = new Map();
     const inputWaiting = new Set();
+    const retryInfo = new Map();
 
     for (const [execId, exec] of executions) {
       const isStopped =
@@ -596,6 +598,14 @@ export default function App() {
         if (state?.contextPercent != null) contextPercent.set(exec.featureId, state.contextPercent);
         if (exec.startedAt != null) startedAt.set(exec.featureId, exec.startedAt);
         if (state?.waitingForInput) inputWaiting.add(exec.featureId);
+        if (exec.chain) {
+          const fl = exec.chain.retryCount || 0;
+          const ctx = exec.chain.contextRetryCount || 0;
+          const inc = exec.chain.incompleteRetryCount || 0;
+          if (fl + ctx + inc > 0) {
+            retryInfo.set(exec.featureId, { fl, context: ctx, incomplete: inc });
+          }
+        }
         // Also store executionId for running executions so input-waiting click can navigate
         sessionIds.set(exec.featureId, {
           executionId: execId,
@@ -651,6 +661,7 @@ export default function App() {
       featureStartedAt: startedAt,
       featureRunningCommand: runningCmd,
       featureInputWaiting: inputWaiting,
+      featureRetryInfo: retryInfo,
     };
   }, [executions, executionStates, inputRequests]);
 
@@ -1197,6 +1208,7 @@ export default function App() {
           featureLastOutcome={featureLastOutcome}
           featureRunningCommand={featureRunningCommand}
           featureInputWaiting={featureInputWaiting}
+          featureRetryInfo={featureRetryInfo}
           onRunCommand={handleRunCommand}
           onOpenTerminal={handleOpenTerminal}
           onResumeBrowser={handleResumeBrowserByFeature}

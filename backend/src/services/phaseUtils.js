@@ -36,10 +36,10 @@ export function detectPhase(content) {
  * @returns {number | null}
  */
 export function detectIteration(content) {
-  const pattern = /Iteration[:\s]*(\d+)\s*\/\s*\d+/i;
+  const pattern = /Iteration[:\s]*(\d+)\s*\/\s*(\d+)/i;
   const match = content.match(pattern);
   if (match) {
-    return parseInt(match[1]);
+    return { current: parseInt(match[1]), total: parseInt(match[2]) };
   }
   return null;
 }
@@ -50,7 +50,7 @@ export function detectIteration(content) {
  * @returns {number | null}
  */
 export function getTotalPhases(command) {
-  const totals = { run: 10, fc: 7, fl: 8, imp: 6 };
+  const totals = { run: 10, fc: 7, fl: 7, imp: 6 };
   return totals[command] || null;
 }
 

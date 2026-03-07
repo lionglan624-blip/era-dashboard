@@ -140,9 +140,16 @@ export class StreamParser {
               iteration = detectIteration(JSON.stringify(block.input || ''));
             }
 
-            if (iteration !== null && iteration > 0 && iteration !== execution.currentIteration) {
-              claudeLog.info(`[ClaudeService] Iteration detected: ${iteration} from ${block.name}`);
-              execution.currentIteration = iteration;
+            if (
+              iteration !== null &&
+              iteration.current > 0 &&
+              iteration.current !== execution.currentIteration
+            ) {
+              claudeLog.info(
+                `[ClaudeService] Iteration detected: ${iteration.current}/${iteration.total} from ${block.name}`,
+              );
+              execution.currentIteration = iteration.current;
+              execution.totalIterations = iteration.total;
               this.broadcastState(execution);
             }
           }
@@ -215,11 +222,16 @@ export class StreamParser {
 
           // Check for iteration pattern (FL workflow: "Iteration N/10")
           const iteration = detectIteration(block.text);
-          if (iteration !== null && iteration > 0 && iteration !== execution.currentIteration) {
+          if (
+            iteration !== null &&
+            iteration.current > 0 &&
+            iteration.current !== execution.currentIteration
+          ) {
             claudeLog.info(
-              `[ClaudeService] Iteration detected from text: ${iteration} (was: ${execution.currentIteration})`,
+              `[ClaudeService] Iteration detected from text: ${iteration.current}/${iteration.total} (was: ${execution.currentIteration})`,
             );
-            execution.currentIteration = iteration;
+            execution.currentIteration = iteration.current;
+            execution.totalIterations = iteration.total;
             this.broadcastState(execution);
           }
         }
