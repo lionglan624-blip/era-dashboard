@@ -38,15 +38,21 @@ if [ $PRETTIER_EXIT_CODE -ne 0 ]; then
     exit 1
 fi
 
-# Test
+# Test (backend + frontend in parallel)
 echo "[2/3] Running tests..." | tee -a "$LOG_FILE"
 set +e
-npm run test 2>&1 | tee -a "$LOG_FILE"
-TEST_EXIT_CODE=${PIPESTATUS[0]}
+npm run test --workspace=backend 2>&1 | tee -a "$LOG_FILE" &
+PID_BACKEND=$!
+npm run test --workspace=frontend 2>&1 | tee -a "$LOG_FILE" &
+PID_FRONTEND=$!
+wait $PID_BACKEND
+EXIT_BACKEND=$?
+wait $PID_FRONTEND
+EXIT_FRONTEND=$?
 set -e
-if [ $TEST_EXIT_CODE -ne 0 ]; then
-    echo "ERROR: Tests failed." | tee -a "$LOG_FILE"
-    exit $TEST_EXIT_CODE
+if [ $EXIT_BACKEND -ne 0 ] || [ $EXIT_FRONTEND -ne 0 ]; then
+    echo "ERROR: Tests failed (backend=$EXIT_BACKEND, frontend=$EXIT_FRONTEND)." | tee -a "$LOG_FILE"
+    exit 1
 fi
 
 # Log rotation - delete ci-*.log files older than 30 days
