@@ -268,6 +268,7 @@ export class RateLimitService {
 
       claudeLog.info(`[RateLimit] Spawned pty process PID=${ptyProcess.pid}`);
 
+      let trustAccepted = false;
       let tuiDetected = false;
       let usageSent = false;
       let usageDetected = false;
@@ -279,6 +280,23 @@ export class RateLimitService {
         if (resolved) return;
 
         const text = screen.getText();
+
+        // Phase 0: Detect workspace trust prompt and accept it
+        // Claude Code v2.1.71+ shows "Quick safety check" before TUI loads
+        if (!trustAccepted && !tuiDetected) {
+          if (
+            /safety check/i.test(text) ||
+            /trust.*files/i.test(text) ||
+            /Yes,\s*proceed/i.test(text)
+          ) {
+            trustAccepted = true;
+            claudeLog.info(`[RateLimit] Trust prompt detected, accepting PID=${ptyProcess.pid}`);
+            // Send Enter to accept the default (Yes, proceed) option
+            setTimeout(() => {
+              if (!resolved) ptyProcess.write('\r');
+            }, 500);
+          }
+        }
 
         // Phase 3: After /usage sent, check for output completion
         // /usage renders multi-line sections: session → week (all models) → week (Sonnet only) → Extra usage → Esc to cancel
