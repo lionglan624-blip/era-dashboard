@@ -141,6 +141,7 @@ export class InsightsService {
       let insightsSent = false;
       let rawChunks = [];
       let chunkCount = 0;
+      let trustAccepted = false;
 
       const env = {
         ...process.env,
@@ -187,6 +188,21 @@ export class InsightsService {
         if (rawChunks.length > 50) rawChunks.shift();
 
         if (resolved) return;
+
+        // Phase 0: Trust prompt detection (same pattern as ptyCapture.js)
+        if (!trustAccepted && !tuiDetected) {
+          if (
+            /safety check/i.test(data) ||
+            /trust.*files/i.test(data) ||
+            /Yes,\s*proceed/i.test(data)
+          ) {
+            trustAccepted = true;
+            claudeLog.info(`[Insights] Trust prompt detected, accepting PID=${ptyProcess.pid}`);
+            setTimeout(() => {
+              if (!resolved) ptyProcess.write('\r');
+            }, 500);
+          }
+        }
 
         // Dual detection signal 2: PTY output pattern
         if (insightsSent && REPORT_READY_PATTERN.test(data)) {
