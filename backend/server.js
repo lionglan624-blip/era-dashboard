@@ -14,6 +14,7 @@ import { LogStreamer } from './src/websocket/logStreamer.js';
 import { RateLimitService } from './src/services/ratelimitService.js';
 import { StatusMailService } from './src/services/statusMailService.js';
 import { UpdateWatcherService } from './src/services/updateWatcherService.js';
+import { SmokeTestService } from './src/services/smokeTestService.js';
 import { InsightsService } from './src/services/insightsService.js';
 import { CleanupService } from './src/services/cleanupService.js';
 import { ClaudeStatusService } from './src/services/claudeStatusService.js';
@@ -188,7 +189,18 @@ const statusMailService = new StatusMailService({
 });
 
 // Update watcher (Claude Code release detection + impact analysis via claudeService execution)
-const updateWatcherService = new UpdateWatcherService({ emailService, logStreamer, claudeService });
+const smokeTestService = new SmokeTestService({
+  emailService,
+  logStreamer,
+  rateLimitService,
+  claudeService,
+});
+const updateWatcherService = new UpdateWatcherService({
+  emailService,
+  logStreamer,
+  claudeService,
+  smokeTestService,
+});
 statusMailService.onReleaseEmail = (version, subject, rawSource) =>
   updateWatcherService.handleRelease(version, subject, rawSource);
 
@@ -423,6 +435,26 @@ app.get('/api/insights/status', (req, res) => {
   });
 });
 
+// Smoke test: trigger manual run
+app.post('/api/smoke-test/run', (req, res) => {
+  if (smokeTestService.isRunning()) {
+    return res.status(409).json({ error: 'Smoke test already running' });
+  }
+  const { trigger = 'manual', version } = req.body || {};
+  smokeTestService.runAll({ trigger, version }).catch((err) => {
+    serverLog.error(`[SmokeTest] Unhandled: ${err.message}`);
+  });
+  res.json({ ok: true, message: 'Smoke test started' });
+});
+
+// Smoke test: check status
+app.get('/api/smoke-test/status', (req, res) => {
+  res.json({
+    running: smokeTestService.isRunning(),
+    lastResult: smokeTestService.getLastResult(),
+  });
+});
+
 // HTTP + WebSocket server
 const server = http.createServer(app);
 logStreamer.attach(server);
@@ -567,6 +599,7 @@ async function shutdown(signal) {
   statusMailService.stop().catch(() => {});
   cleanupService.stop();
   claudeStatusService.stop();
+  smokeTestService.stop();
   insightsService.stopScheduler();
   claudeService.killAllRunning();
   fileWatcher.stop();

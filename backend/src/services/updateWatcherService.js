@@ -2,11 +2,12 @@ import { createLogger } from '../utils/logger.js';
 import { nowJST } from '../utils/timeUtils.js';
 
 export class UpdateWatcherService {
-  constructor({ emailService, logStreamer, claudeService } = {}) {
+  constructor({ emailService, logStreamer, claudeService, smokeTestService } = {}) {
     this.logger = createLogger('update-watcher');
     this.emailService = emailService;
     this.logStreamer = logStreamer;
     this.claudeService = claudeService;
+    this.smokeTestService = smokeTestService;
 
     this._lastVersion = null;
     this._analyzing = false;
@@ -52,6 +53,11 @@ export class UpdateWatcherService {
         this.logger.error(`Analysis execution failed for ${version} (exit ${exitCode})`);
       }
       this._sendEmail(version, changelog, analysis);
+      if (this.smokeTestService) {
+        this.smokeTestService.runAll({ trigger: 'update', version }).catch((err) => {
+          this.logger.error(`Smoke test failed: ${err.message}`);
+        });
+      }
     });
 
     this._lastExecutionId = executionId;
@@ -191,6 +197,12 @@ ${changelog}
         impact: 'UNKNOWN',
         summary: 'Changelog extraction failed',
         timestamp: new Date().toISOString(),
+      });
+    }
+    // No changelog = higher risk of undocumented changes — run smoke test
+    if (this.smokeTestService) {
+      this.smokeTestService.runAll({ trigger: 'update-no-changelog', version }).catch((err) => {
+        this.logger.error(`Smoke test failed: ${err.message}`);
       });
     }
   }

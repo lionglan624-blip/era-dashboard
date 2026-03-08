@@ -163,6 +163,28 @@ export const DEBUG_LOG_RETENTION_DAYS = 3;
 export const DAILY_LOG_RETENTION_DAYS = 7;
 
 // =============================================================================
+// Smoke Test Configuration
+// =============================================================================
+
+/** Overall timeout for smoke test suite (all 3 tests + margin) */
+export const SMOKE_TEST_OVERALL_TIMEOUT_MS = 45000;
+
+/** Timeout for cli-binary test (claude --version) */
+export const SMOKE_CLI_TIMEOUT_MS = 5000;
+
+/** Timeout for stream-json test (claude -p with stream-json output) */
+export const SMOKE_STREAM_TIMEOUT_MS = 15000;
+
+/** Timeout for pty-usage test (rateLimitService.capture) */
+export const SMOKE_PTY_TIMEOUT_MS = 25000;
+
+/** Rate limit threshold (%) above which stream-json test is skipped (API consuming) */
+export const SMOKE_RATE_LIMIT_SKIP_STREAM = 95;
+
+/** Rate limit threshold (%) above which pty-usage test is skipped (mutex collision risk) */
+export const SMOKE_RATE_LIMIT_SKIP_PTY = 80;
+
+// =============================================================================
 // Health Metrics Configuration
 // =============================================================================
 
