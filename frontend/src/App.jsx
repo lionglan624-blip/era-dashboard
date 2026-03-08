@@ -119,9 +119,8 @@ export default function App() {
   }, [activeExecutionId]);
 
   // Sync activeExecutionId validity when executions change (tab removed, etc.)
-  // Note: Don't auto-close panel here. ExecutionPanel returns null when visibleExecs is empty,
-  // which handles the "no executions" case. This prevents race conditions where executions
-  // are temporarily removed (e.g., during status changes) from closing the panel unexpectedly.
+  // Also auto-select first execution when panel has tabs but no active selection,
+  // to avoid showing "Waiting for output..." with tabs visible.
   useEffect(() => {
     if (activeExecutionId && !executions.has(activeExecutionId)) {
       const remaining = Array.from(executions.keys());
@@ -131,8 +130,10 @@ export default function App() {
         setActiveExecutionId(null);
         setShowExecutionPanel(false);
       }
+    } else if (!activeExecutionId && executions.size > 0 && showExecutionPanel) {
+      setActiveExecutionId(Array.from(executions.keys())[0]);
     }
-  }, [executions, activeExecutionId]);
+  }, [executions, activeExecutionId, showExecutionPanel]);
 
   const addNotification = useCallback((notification) => {
     // Deduplicate: create a key from notification content

@@ -282,17 +282,18 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
             )}
             {isRunning ? (
               <>
-                <span className="tree-phase">
-                  {currentPhase &&
+                {currentPhase &&
                   currentPhase.command === 'fl' &&
                   currentPhase.iteration !== null &&
-                  currentPhase.iteration !== undefined
-                    ? `i${currentPhase.iteration}${currentPhase.phase != null ? ` P${currentPhase.phase}` : ''}`
-                    : currentPhase &&
-                        currentPhase.phase !== null &&
-                        currentPhase.phase !== undefined
-                      ? `P${currentPhase.phase}${currentPhase.totalPhases ? `/${currentPhase.totalPhases}` : ''}`
-                      : '—'}
+                  currentPhase.iteration !== undefined && (
+                    <span className="tree-iteration">
+                      {`iter${currentPhase.iteration}${currentPhase.totalIterations ? `/${currentPhase.totalIterations}` : ''}`}
+                    </span>
+                  )}
+                <span className="tree-phase">
+                  {currentPhase && currentPhase.phase !== null && currentPhase.phase !== undefined
+                    ? `P${currentPhase.phase}${currentPhase.totalPhases ? `/${currentPhase.totalPhases}` : ''}`
+                    : '—'}
                 </span>
                 <span
                   className={`tree-context ${contextPercent > 80 ? 'high' : contextPercent > 50 ? 'medium' : ''}`}
