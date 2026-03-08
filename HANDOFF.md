@@ -5,9 +5,8 @@ A browser-based dashboard for managing Claude Code feature workflows with automa
 > **For Claude (orchestrator)**: This file is both documentation and a change checklist.
 > When modifying dashboard code, follow the **Orchestrator Workflow** below.
 >
-> **Source of truth**: `C:\Era\devkit\src\tools\node\feature-dashboard\` (inside devkit repo).
-> `C:\Era\dashboard\` is a **separate git repo** that tracks the same code independently — do NOT edit files there.
-> PM2 runs from the devkit path. All file creation and edits MUST target `C:\Era\devkit\src\tools\node\feature-dashboard\`.
+> **Source of truth**: `C:\Era\dashboard\` (independent git repo).
+> All file creation and edits MUST target `C:\Era\dashboard\`.
 
 ### Orchestrator Workflow
 
@@ -43,11 +42,12 @@ Report to user on completion (in Japanese):
 
 ```bash
 # Start
-cd src/tools/node/feature-dashboard && npm start    # backend:3001 + frontend:5173
+npm start                                   # backend:3001 + frontend:5173
 
-# Test
+# Test (run from dashboard root)
 npm test                                    # both backend & frontend
-npm run test:mutation                       # backend mutation testing
+npx vitest run                              # both (via vitest.workspace.js)
+npm run test:mutation --workspace=backend    # backend mutation testing (incremental: changed files only)
 
 # Restart (from dashboard UI)
 dr button                                   # pm2 restart all
@@ -224,7 +224,10 @@ User action → App.jsx handler → useExecution API call
 ### File Structure
 
 ```
+vitest.config.js                 # Root Vitest config (references backend + frontend configs)
+
 backend/
+├── vitest.config.js             # Backend Vitest config (node environment)
 ├── server.js                    # Express setup, service wiring
 ├── send-email.mjs               # CLI email sender (used by Claude Code)
 ├── email.config.example.json    # Email config template
@@ -290,12 +293,13 @@ frontend/
 After code changes:
 
 ```bash
-# Run tests
-cd src/tools/node/feature-dashboard && npm test          # both via workspaces
-cd src/tools/node/feature-dashboard/backend && npm test  # backend only
-cd src/tools/node/feature-dashboard/frontend && npm test # frontend only
+# Run tests (from dashboard root)
+npm test                                                  # both via workspaces
+npx vitest run                                            # both (via vitest.config.js projects)
+npm test --workspace=backend                              # backend only
+npm test --workspace=frontend                             # frontend only
 
-# Check coverage
+# Check coverage (output: _out/coverage/)
 npx vitest run --coverage
 
 # Mutation testing (after adding new tests)

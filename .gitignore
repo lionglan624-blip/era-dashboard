@@ -1,2 +1,5 @@
 node_modules/
 _out/
+coverage/
+.stryker-incremental.json
+.stryker-tmp/
