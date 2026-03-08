@@ -21,13 +21,68 @@ import { EmailService } from './src/services/emailService.js';
 import { getCcsProfiles } from './src/services/ccsUtils.js';
 import { createFeaturesRouter } from './src/routes/features.js';
 import { createExecutionRouter } from './src/routes/execution.js';
-import { serverLog, LOG_DIR } from './src/utils/logger.js';
+import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
-import { RATE_LIMIT_POLL_INTERVAL_MS, AUTO_DR_DEBOUNCE_MS } from './src/config.js';
+import {
+  RATE_LIMIT_POLL_INTERVAL_MS,
+  AUTO_DR_DEBOUNCE_MS,
+  HEALTH_METRICS_INTERVAL_MS,
+} from './src/config.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(__dirname, '..', '..', '..');
 const PORT = parseInt(process.env.PORT || '3001');
+const EXIT_MARKER_PATH = path.join(LOG_DIR, '..', 'last-exit.json');
+
+function writeExitMarker(reason, extra = {}) {
+  try {
+    const mem = process.memoryUsage();
+    let handles = null;
+    let requests = null;
+    try {
+      handles = process._getActiveHandles?.()?.length ?? null;
+      requests = process._getActiveRequests?.()?.length ?? null;
+    } catch {
+      /* undocumented API */
+    }
+    const data = {
+      reason,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+      memory: {
+        heapUsedMB: Math.round(mem.heapUsed / 1048576),
+        heapTotalMB: Math.round(mem.heapTotal / 1048576),
+        rssMB: Math.round(mem.rss / 1048576),
+      },
+      handles,
+      requests,
+      uptimeSeconds: Math.round(process.uptime()),
+      ...extra,
+    };
+    fs.writeFileSync(EXIT_MARKER_PATH, JSON.stringify(data, null, 2));
+  } catch {
+    /* best-effort */
+  }
+}
+
+function readExitMarker() {
+  try {
+    const raw = fs.readFileSync(EXIT_MARKER_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    if (data.reason === 'running') {
+      // Previous process was hard-killed (TerminateProcess — no exit handler ran)
+      serverLog.info(
+        `Previous exit (hard-kill): pid=${data.pid}, started=${data.timestamp}, heap=${data.memory?.heapUsedMB}/${data.memory?.heapTotalMB}MB, handles=${data.handles}, uptime=${data.uptimeSeconds}s`,
+      );
+    } else {
+      serverLog.info(
+        `Previous exit (self-reported): reason=${data.reason}, pid=${data.pid}, at=${data.timestamp}, heap=${data.memory?.heapUsedMB}/${data.memory?.heapTotalMB}MB, handles=${data.handles}, uptime=${data.uptimeSeconds}s`,
+      );
+    }
+  } catch {
+    /* no marker or corrupt */
+  }
+}
 
 // Resolve claude CLI path
 if (!process.env.CLAUDE_PATH) {
@@ -60,6 +115,9 @@ try {
 } catch {
   /* PM2 log not available */
 }
+
+readExitMarker();
+writeExitMarker('running'); // Sentinel: overwritten at exit if handler fires; stays 'running' on hard kill
 
 // Services
 const logStreamer = new LogStreamer();
@@ -143,6 +201,8 @@ const claudeStatusService = new ClaudeStatusService();
 // =============================================================================
 let pendingRestart = false;
 let debounceTimer = null;
+let rateLimitInterval = null;
+let healthInterval = null;
 
 function triggerAutoDR() {
   const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount } =
@@ -430,53 +490,98 @@ const onListening = () => {
   serverLog.info(`WebSocket on ws://localhost:${PORT}/ws`);
   fileWatcher.start();
   rateLimitService.capture({ forceRefresh: true }).catch(() => {});
-  setInterval(() => rateLimitService.capture().catch(() => {}), RATE_LIMIT_POLL_INTERVAL_MS);
+  rateLimitInterval = setInterval(
+    () => rateLimitService.capture().catch(() => {}),
+    RATE_LIMIT_POLL_INTERVAL_MS,
+  );
   statusMailService.start();
   cleanupService.start();
   insightsService.startScheduler();
   claudeStatusService.start();
+
+  // Periodic health metrics + exit marker refresh (sentinel keeps latest snapshot for hard-kill diagnosis)
+  healthInterval = setInterval(() => {
+    const mem = process.memoryUsage();
+    let handles = null;
+    let requests = null;
+    try {
+      handles = process._getActiveHandles?.()?.length ?? null;
+      requests = process._getActiveRequests?.()?.length ?? null;
+    } catch {
+      /* undocumented API */
+    }
+    serverLog.info(
+      `[Health] heap=${Math.round(mem.heapUsed / 1048576)}/${Math.round(mem.heapTotal / 1048576)}MB, rss=${Math.round(mem.rss / 1048576)}MB, handles=${handles}, requests=${requests}, uptime=${Math.round(process.uptime())}s`,
+    );
+    writeExitMarker('running'); // Refresh sentinel with current metrics
+  }, HEALTH_METRICS_INTERVAL_MS);
+  healthInterval.unref();
 };
 server.listen(PORT, '127.0.0.1', onListening);
 
+// Shutdown state (declared early — referenced by exit/error/signal handlers below)
+let lastExitReason = 'unknown';
+let shutdownInProgress = false;
+
+// Exit marker fallback: process.on('exit') always fires (even hard kill on Windows)
+// SIGINT/SIGTERM are NOT delivered by PM2 on Windows (TerminateProcess = hard kill)
+process.on('exit', (code) => {
+  if (!shutdownInProgress) {
+    // Hard kill (no graceful shutdown ran) — write marker with whatever info we have
+    writeExitMarker(lastExitReason, { exitCode: code });
+  }
+});
+
 // Error handling
 process.on('uncaughtException', (err) => {
+  lastExitReason = 'uncaughtException-survived';
+  writeExitMarker('uncaughtException-survived', { stack: err.stack });
   serverLog.error(`Uncaught Exception: ${err.message}`);
   serverLog.error(err.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
+  lastExitReason = 'unhandledRejection-survived';
+  writeExitMarker('unhandledRejection-survived', { stack: String(reason) });
   serverLog.error(`Unhandled Rejection at: ${promise}, reason: ${reason}`);
 });
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  serverLog.info('Shutting down (SIGINT)...');
-  setTimeout(() => {
-    serverLog.warn('Shutdown timeout, forcing exit');
-    process.exit(1);
-  }, 1500).unref();
-  await statusMailService.stop();
-  cleanupService.stop();
-  claudeStatusService.stop();
-  claudeService.killAllRunning();
-  fileWatcher.stop();
-  autoDRWatcher.close();
-  server.closeAllConnections();
-  server.close(() => process.exit(0));
-});
+// Graceful shutdown (shared by SIGINT, SIGTERM, and PM2 IPC)
+async function shutdown(signal) {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  lastExitReason = signal;
 
-process.on('SIGTERM', async () => {
-  serverLog.info('Shutting down (SIGTERM)...');
+  writeExitMarker(signal);
+  serverLog.info(`Shutting down (${signal})...`);
+
   setTimeout(() => {
     serverLog.warn('Shutdown timeout, forcing exit');
     process.exit(1);
-  }, 1500).unref();
-  await statusMailService.stop();
+  }, 2500).unref();
+
+  clearInterval(healthInterval);
+  clearInterval(rateLimitInterval);
+  clearTimeout(debounceTimer);
+
+  statusMailService.stop().catch(() => {});
   cleanupService.stop();
   claudeStatusService.stop();
+  insightsService.stopScheduler();
   claudeService.killAllRunning();
   fileWatcher.stop();
   autoDRWatcher.close();
+
   server.closeAllConnections();
-  server.close(() => process.exit(0));
+  server.close(async () => {
+    await flushAll().catch(() => {});
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+// PM2 graceful shutdown via IPC (Windows: PM2 uses this instead of signals)
+process.on('message', (msg) => {
+  if (msg === 'shutdown') shutdown('pm2-shutdown');
 });

@@ -39,6 +39,9 @@ function formatTimestamp() {
   return jst.toISOString().replace('Z', '+09:00');
 }
 
+// Logger registry for flushAll()
+const loggerRegistry = new Set();
+
 function createLogger(name) {
   let currentDate = getDateString();
 
@@ -65,8 +68,10 @@ function createLogger(name) {
       .join(' ');
     const line = `[${timestamp}] [${level.toUpperCase()}] [${name}] ${message}\n`;
 
-    // Write to file (no-op in test)
-    stream.write(line);
+    // Write to file (no-op in test, skip if stream already ended by flush)
+    if (!stream.writableEnded) {
+      stream.write(line);
+    }
 
     // Also write to console
     if (level === 'error') {
@@ -76,7 +81,7 @@ function createLogger(name) {
     }
   };
 
-  return {
+  const logger = {
     info: (...args) => writeLog('info', ...args),
     warn: (...args) => writeLog('warn', ...args),
     error: (...args) => writeLog('error', ...args),
@@ -84,7 +89,28 @@ function createLogger(name) {
 
     // Get current log file path (dynamic - returns today's path)
     getLogPath: () => getLogPath(name, getDateString()),
+
+    // Flush and close the current stream (for graceful shutdown)
+    flush: () => {
+      if (IS_TEST || typeof stream.on !== 'function') {
+        return Promise.resolve();
+      }
+      if (stream.writableEnded) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        const timeout = setTimeout(resolve, 2000);
+        stream.once('finish', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        stream.end();
+      });
+    },
   };
+
+  loggerRegistry.add(logger);
+  return logger;
 }
 
 // Pre-created loggers
@@ -92,5 +118,9 @@ export const serverLog = createLogger('server');
 export const wsLog = createLogger('websocket');
 export const claudeLog = createLogger('claude');
 export const watcherLog = createLogger('watcher');
+
+export function flushAll() {
+  return Promise.all([...loggerRegistry].map((l) => l.flush()));
+}
 
 export { createLogger, LOG_DIR };

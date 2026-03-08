@@ -163,6 +163,13 @@ export const DEBUG_LOG_RETENTION_DAYS = 3;
 export const DAILY_LOG_RETENTION_DAYS = 7;
 
 // =============================================================================
+// Health Metrics Configuration
+// =============================================================================
+
+/** Interval for periodic health metrics + exit marker update */
+export const HEALTH_METRICS_INTERVAL_MS = 300000;
+
+// =============================================================================
 // Claude Status Monitoring Configuration
 // =============================================================================
 

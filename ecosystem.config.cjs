@@ -26,6 +26,7 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 2000,
       kill_timeout: 3000,
+      shutdown_with_message: true,
       env: {
         PROJECT_ROOT: 'C:\\Era\\devkit',
         PORT: '3001',
