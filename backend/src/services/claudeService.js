@@ -575,12 +575,16 @@ export class ClaudeService {
       this.rateLimitService.capture().catch(() => {});
     }
 
-    if (this.runningCount < this.maxConcurrent) {
+    const runBlocked = this._isRunBlocked(execution.command);
+
+    if (this.runningCount < this.maxConcurrent && !runBlocked) {
       this._startExecution(execution);
     } else {
       this.queue.push(executionId);
       this._pushLog(execution, {
-        line: `Queued (position ${this.queue.length}). Waiting for slot...`,
+        line: runBlocked
+          ? `Queued (position ${this.queue.length}). Waiting for running /run to complete...`
+          : `Queued (position ${this.queue.length}). Waiting for slot...`,
         timestamp: new Date().toISOString(),
         level: 'info',
       });
@@ -2073,22 +2077,48 @@ export class ClaudeService {
     this.chainExecutor.handleStatusChanged(featureId, oldStatus, newStatus);
   }
 
+  /**
+   * Check if a /run command is blocked by another running /run.
+   * Only /run commands are exclusive — fc/fl/imp can run concurrently.
+   * @param {string} command
+   * @returns {boolean}
+   */
+  _isRunBlocked(command) {
+    if (command !== 'run') return false;
+    for (const exec of this.executions.values()) {
+      if (exec.command === 'run' && exec.status === 'running') return true;
+    }
+    return false;
+  }
+
   _dequeueNext() {
     if (this._rateLimitPaused) {
       claudeLog.info('[Queue] Dequeue blocked — rate limit retry pending');
       return;
     }
     while (this.queue.length > 0 && this.runningCount < this.maxConcurrent) {
-      const nextId = this.queue.shift();
+      // Purge non-queued items (cancelled, already started, etc.)
+      this.queue = this.queue.filter((id) => {
+        const exec = this.executions.get(id);
+        return exec && exec.status === 'queued';
+      });
+
+      // Find first non-blocked item (skip /run if another /run is running)
+      const idx = this.queue.findIndex((id) => {
+        const exec = this.executions.get(id);
+        return !this._isRunBlocked(exec.command);
+      });
+
+      if (idx === -1) break; // All remaining items are run-blocked
+
+      const nextId = this.queue.splice(idx, 1)[0];
       const nextExec = this.executions.get(nextId);
-      if (nextExec && nextExec.status === 'queued') {
-        this._pushLog(nextExec, {
-          line: 'Dequeued. Starting execution...',
-          timestamp: new Date().toISOString(),
-          level: 'info',
-        });
-        this._startExecution(nextExec);
-      }
+      this._pushLog(nextExec, {
+        line: 'Dequeued. Starting execution...',
+        timestamp: new Date().toISOString(),
+        level: 'info',
+      });
+      this._startExecution(nextExec);
     }
     this._broadcastQueueUpdate();
   }

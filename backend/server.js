@@ -234,13 +234,50 @@ function triggerAutoDR() {
     });
     // Persist DR success to shell states so green button survives restart
     claudeService._setShellState('dr', true);
-    // pm2 restart — EADDRINUSE handled by server.js polling retry
+    // Stop → wait for port free → start (not pm2 restart which races)
     setTimeout(() => {
-      spawn('pm2', ['restart', 'dashboard-backend'], {
-        stdio: 'ignore',
-        shell: true,
-        windowsHide: true,
-      });
+      try {
+        execSync('pm2 stop dashboard-backend', {
+          stdio: 'ignore',
+          shell: true,
+          windowsHide: true,
+          timeout: 10000,
+        });
+      } catch {
+        /* already stopped */
+      }
+      // Poll until port is free, then start
+      const pollStart = Date.now();
+      const poll = setInterval(() => {
+        try {
+          execSync(`netstat -ano | findstr "LISTENING" | findstr ":${PORT} "`, {
+            encoding: 'utf8',
+            shell: true,
+            windowsHide: true,
+            timeout: 3000,
+          });
+          // Port still in use
+          if (Date.now() - pollStart > 10000) {
+            clearInterval(poll);
+            cleanupPort(PORT);
+            setTimeout(() => {
+              spawn('pm2', ['start', 'dashboard-backend'], {
+                stdio: 'ignore',
+                shell: true,
+                windowsHide: true,
+              });
+            }, 500);
+          }
+        } catch {
+          // Port is free — start immediately
+          clearInterval(poll);
+          spawn('pm2', ['start', 'dashboard-backend'], {
+            stdio: 'ignore',
+            shell: true,
+            windowsHide: true,
+          });
+        }
+      }, 500);
     }, 500);
   } else {
     if (!pendingRestart) {
