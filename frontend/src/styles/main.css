@@ -1101,6 +1101,17 @@ body {
   min-width: 48px;
 }
 
+.tree-lock {
+  font-size: 0.75em;
+  margin-left: 2px;
+  opacity: 0.8;
+}
+
+.tree-item.run-locked {
+  cursor: pointer;
+  border-left: 3px solid #f59e0b;
+}
+
 .tree-type {
   font-size: 11px;
   color: var(--text-muted);

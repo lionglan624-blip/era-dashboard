@@ -234,51 +234,20 @@ function triggerAutoDR() {
     });
     // Persist DR success to shell states so green button survives restart
     claudeService._setShellState('dr', true);
-    // Stop → wait for port free → start (not pm2 restart which races)
-    setTimeout(() => {
-      try {
-        execSync('pm2 stop dashboard-backend', {
-          stdio: 'ignore',
-          shell: true,
-          windowsHide: true,
-          timeout: 10000,
-        });
-      } catch {
-        /* already stopped */
-      }
-      // Poll until port is free, then start
-      const pollStart = Date.now();
-      const poll = setInterval(() => {
-        try {
-          execSync(`netstat -ano | findstr "LISTENING" | findstr ":${PORT} "`, {
-            encoding: 'utf8',
-            shell: true,
-            windowsHide: true,
-            timeout: 3000,
-          });
-          // Port still in use
-          if (Date.now() - pollStart > 10000) {
-            clearInterval(poll);
-            cleanupPort(PORT);
-            setTimeout(() => {
-              spawn('pm2', ['start', 'dashboard-backend'], {
-                stdio: 'ignore',
-                shell: true,
-                windowsHide: true,
-              });
-            }, 500);
-          }
-        } catch {
-          // Port is free — start immediately
-          clearInterval(poll);
-          spawn('pm2', ['start', 'dashboard-backend'], {
-            stdio: 'ignore',
-            shell: true,
-            windowsHide: true,
-          });
-        }
-      }, 500);
-    }, 500);
+    // NOTE: Must use spawn (async), NOT execSync — this process IS dashboard-backend,
+    // so execSync('pm2 stop/restart') deadlocks (blocks event loop, IPC shutdown handler never fires,
+    // PM2 force-kills after kill_timeout, port polling code never executes).
+    // The EADDRINUSE handler in the new process polls until the port is free.
+    const child = spawn('pm2', ['restart', 'dashboard-backend', '--update-env'], {
+      stdio: 'ignore',
+      shell: true,
+      windowsHide: true,
+      detached: true,
+    });
+    child.on('error', (err) =>
+      serverLog.error(`[Auto-DR] pm2 restart spawn failed: ${err.message}`),
+    );
+    child.unref();
   } else {
     if (!pendingRestart) {
       pendingRestart = true;
@@ -409,6 +378,7 @@ app.get('/api/health', async (req, res) => {
       runningCount: queueStatus.runningCount,
       queuedCount: queueStatus.queuedCount,
       running: queueStatus.running,
+      runLockFeatureId: claudeService.runLockFeatureId || null, // ADD THIS
     },
     proxy,
     ccsProfile: claudeService.getCcsProfile(), // Current CCS profile name
@@ -546,7 +516,9 @@ server.on('error', (err) => {
     serverLog.info(
       `Port ${PORT} in use, retrying in ${Math.round(delay)}ms (${Math.round(elapsed / 1000)}s elapsed)...`,
     );
-    setTimeout(() => server.listen(PORT), delay);
+    // NOTE: Host MUST match initial listen (127.0.0.1). Omitting host binds to :::3001 which conflicts.
+    // onListening already bound on first listen — omit callback to avoid re-registration.
+    setTimeout(() => server.listen(PORT, '127.0.0.1'), delay);
   } else {
     serverLog.error(`Server error: ${err.message}`);
     process.exit(1);

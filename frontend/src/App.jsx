@@ -88,6 +88,7 @@ export default function App() {
     gitChangedCount: 0,
     rateLimit: null,
     claudeStatus: null,
+    runLockFeatureId: null,
   });
   const healthCheckRef = useRef(null);
   const recentNotificationsRef = useRef(new Set()); // Track recent notification keys for deduplication
@@ -221,6 +222,7 @@ export default function App() {
           rateLimit: data.rateLimit || null,
           claudeStatus: data.claudeStatus || null,
           ccsProfiles: data.ccsProfiles || [],
+          runLockFeatureId: data.claude?.runLockFeatureId || null,
         });
         // Sync CCS profile
         if (data.ccsProfile !== undefined) {
@@ -712,6 +714,26 @@ export default function App() {
     [startCommand, subscribe, addNotification],
   );
 
+  const handleReleaseLock = useCallback(
+    async (featureId) => {
+      try {
+        const res = await fetch('/api/execution/run-lock', { method: 'DELETE' });
+        const data = await res.json();
+        if (data.released) {
+          addNotification({
+            type: 'info',
+            title: 'Run Lock',
+            message: `F${featureId} lock released`,
+          });
+          checkHealth();
+        }
+      } catch (err) {
+        addNotification({ type: 'warning', title: 'Lock Release Failed', message: err.message });
+      }
+    },
+    [addNotification, checkHealth],
+  );
+
   const handleBulkQueue = useCallback(
     async (featureIds) => {
       try {
@@ -914,15 +936,16 @@ export default function App() {
     [featureSessionIds, handleResumeBrowser, addNotification],
   );
 
-  // Cancel input-waiting execution when tile clicked (frees the slot)
+  // Navigate to ExecutionPanel when input-waiting tile clicked (Y/N buttons are there)
   const handleInputWaitingClick = useCallback(
     (featureId) => {
       const info = featureSessionIds.get(featureId);
       if (info?.executionId) {
-        killExecution(info.executionId);
+        setActiveExecutionId(info.executionId);
+        setShowExecutionPanel(true);
       }
     },
-    [featureSessionIds, killExecution],
+    [featureSessionIds],
   );
 
   const handleOpenHistory = useCallback(async () => {
@@ -1276,6 +1299,8 @@ export default function App() {
           featureInputWaiting={featureInputWaiting}
           featureRetryInfo={featureRetryInfo}
           featureQueueWaiters={featureQueueWaiters}
+          runLockFeatureId={healthStatus.runLockFeatureId}
+          onReleaseLock={handleReleaseLock}
           onRunCommand={handleRunCommand}
           onOpenTerminal={handleOpenTerminal}
           onResumeBrowser={handleResumeBrowserByFeature}

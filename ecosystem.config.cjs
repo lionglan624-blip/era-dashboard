@@ -24,7 +24,7 @@ module.exports = {
       watch: false,
       autorestart: true,
       max_restarts: 10,
-      restart_delay: 2000,
+      restart_delay: 5000,  // Must exceed kill_timeout (3s) — Windows port release lags process death
       kill_timeout: 3000,
       shutdown_with_message: true,
       env: {

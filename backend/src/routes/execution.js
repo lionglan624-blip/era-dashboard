@@ -185,6 +185,16 @@ export function createExecutionRouter(claudeService) {
     res.json(claudeService.getQueueStatus());
   });
 
+  // DELETE /api/execution/run-lock - Release stale run-lock
+  router.delete('/run-lock', (req, res) => {
+    const held = claudeService.runLockFeatureId;
+    if (!held) {
+      return res.json({ released: false, message: 'No run-lock held' });
+    }
+    claudeService._releaseRunLock(held, 'manual');
+    res.json({ released: true, featureId: held });
+  });
+
   // POST /api/execution/queue/clear - Clear queued items
   router.post('/queue/clear', (req, res) => {
     const cleared = claudeService.clearQueue();

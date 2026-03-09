@@ -67,6 +67,8 @@ export class LogStreamer {
     });
 
     this.wss.on('error', (err) => {
+      // EADDRINUSE is handled by server.js retry loop — suppress duplicate noise
+      if (err.code === 'EADDRINUSE') return;
       wsLog.error(`WebSocketServer error: ${err.message}`);
     });
 

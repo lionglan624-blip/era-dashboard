@@ -1896,6 +1896,133 @@ describe('ClaudeService', () => {
       const { service } = createService();
       expect(service.killExecution('nonexistent')).toBe(false);
     });
+
+    it('releases run-lock when killing a running /run execution', () => {
+      const { service } = createService();
+      service._startExecution = vi.fn();
+      service._killProcess = vi.fn();
+
+      const id = service.executeCommand('200', 'run');
+      const exec = service.executions.get(id);
+      exec.status = 'running';
+      exec.process = { pid: 456 };
+      service.runLockFeatureId = '200';
+
+      service.killExecution(id);
+
+      expect(service.runLockFeatureId).toBeNull();
+    });
+
+    it('releases run-lock when killing a dead /run execution (no process)', () => {
+      const { service } = createService();
+      service._startExecution = vi.fn();
+
+      const id = service.executeCommand('201', 'run');
+      const exec = service.executions.get(id);
+      exec.status = 'running';
+      exec.process = null;
+      service.runLockFeatureId = '201';
+
+      service.killExecution(id);
+
+      expect(service.runLockFeatureId).toBeNull();
+    });
+  });
+
+  describe('_isRunBlocked', () => {
+    it('returns false for non-run commands', () => {
+      const { service } = createService();
+      service.runLockFeatureId = '100';
+      expect(service._isRunBlocked('fc')).toBe(false);
+      expect(service._isRunBlocked('fl')).toBe(false);
+    });
+
+    it('returns true when runLockFeatureId is set', () => {
+      const { service } = createService();
+      service.runLockFeatureId = '100';
+      expect(service._isRunBlocked('run')).toBe(true);
+    });
+
+    it('returns false when runLockFeatureId is null and no running /run', () => {
+      const { service } = createService();
+      service.runLockFeatureId = null;
+      expect(service._isRunBlocked('run')).toBe(false);
+    });
+
+    it('returns true via fallback when no runLockFeatureId but running /run exists', () => {
+      const { service } = createService();
+      service.runLockFeatureId = null;
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      service.executions.set(exec.id, exec);
+      expect(service._isRunBlocked('run')).toBe(true);
+    });
+  });
+
+  describe('_releaseRunLock', () => {
+    it('releases lock and calls _dequeueNext when featureId matches', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = '100';
+
+      service._releaseRunLock('100', '[DONE]');
+
+      expect(service.runLockFeatureId).toBeNull();
+      expect(service._dequeueNext).toHaveBeenCalled();
+    });
+
+    it('does nothing when featureId does not match', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = '100';
+
+      service._releaseRunLock('200', '[DONE]');
+
+      expect(service.runLockFeatureId).toBe('100');
+      expect(service._dequeueNext).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when lock is already null', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = null;
+
+      service._releaseRunLock('100', '[DONE]');
+
+      expect(service._dequeueNext).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleFeatureStatusChanged run-lock integration', () => {
+    it('releases run-lock when status changes from [WIP] to [DONE]', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = '100';
+
+      service.handleFeatureStatusChanged('100', '[WIP]', '[DONE]');
+
+      expect(service.runLockFeatureId).toBeNull();
+    });
+
+    it('keeps run-lock when status remains [WIP]', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = '100';
+
+      service.handleFeatureStatusChanged('100', '[REVIEWED]', '[WIP]');
+
+      expect(service.runLockFeatureId).toBe('100');
+    });
+
+    it('releases run-lock when status changes to [BLOCKED]', () => {
+      const { service } = createService();
+      service._dequeueNext = vi.fn();
+      service.runLockFeatureId = '100';
+
+      service.handleFeatureStatusChanged('100', '[WIP]', '[BLOCKED]');
+
+      expect(service.runLockFeatureId).toBeNull();
+    });
   });
 
   describe('removeExecution', () => {

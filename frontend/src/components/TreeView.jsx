@@ -177,6 +177,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
 
   // Derive state from data context maps for this feature
   const isRunning = data.runningFeatures?.has(id) || false;
+  const isRunLocked = data.runLockFeatureId === String(id);
 
   const currentPhase = data.featurePhases?.get(id);
   const sessionId = data.featureSessionIds?.get(id)?.sessionId;
@@ -227,6 +228,10 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
 
   const handleClick = () => {
     if (isQueued) return;
+    if (isRunLocked && !isRunning) {
+      callbacks.onReleaseLock(id);
+      return;
+    }
     if (isInputWaiting) {
       callbacks.onInputWaitingClick(id);
     } else if (executableCommand) {
@@ -237,7 +242,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   return (
     <div className="tree-node">
       <div
-        className={`tree-item ${executableCommand && !isQueued ? 'executable' : ''} ${isBlocked ? 'blocked' : ''} ${stateClass} ${isRunning ? 'running' : ''}`}
+        className={`tree-item ${executableCommand && !isQueued ? 'executable' : ''} ${isBlocked ? 'blocked' : ''} ${stateClass} ${isRunning ? 'running' : ''} ${isRunLocked && !isRunning ? 'run-locked' : ''}`}
         onClick={handleClick}
         style={{ marginLeft: depth * 24 }}
       >
@@ -260,6 +265,11 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
               </span>
             )}
             <span className="tree-id">F{id}</span>
+            {isRunLocked && (
+              <span className="tree-lock" title="Run lock active — blocks new /run commands">
+                🔒
+              </span>
+            )}
             <StatusBadge status={status} />
             <span className="tree-type">{type || '\u00A0'}</span>
             <span className="tree-name">{name}</span>
@@ -406,11 +416,13 @@ export default function TreeView({
   featureRunningCommand,
   featureInputWaiting,
   featureQueueWaiters,
+  runLockFeatureId,
   onRunCommand,
   onOpenTerminal,
   onResumeBrowser,
   onResumeTerminal,
   onInputWaitingClick,
+  onReleaseLock,
   onBulkQueue,
   onSelect,
 }) {
@@ -500,6 +512,7 @@ export default function TreeView({
       onResume: handleResume,
       onResumeBrowser: handleResumeBrowser,
       onInputWaitingClick: handleInputWaitingClick,
+      onReleaseLock,
     }),
     [
       handleTileClick,
@@ -508,6 +521,7 @@ export default function TreeView({
       handleResume,
       handleResumeBrowser,
       handleInputWaitingClick,
+      onReleaseLock,
     ],
   );
 
@@ -522,6 +536,7 @@ export default function TreeView({
       featureRunningCommand,
       featureInputWaiting,
       featureQueueWaiters,
+      runLockFeatureId,
     }),
     [
       runningFeatures,
@@ -533,6 +548,7 @@ export default function TreeView({
       featureRunningCommand,
       featureInputWaiting,
       featureQueueWaiters,
+      runLockFeatureId,
     ],
   );
 

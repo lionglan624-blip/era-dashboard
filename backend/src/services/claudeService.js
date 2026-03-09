@@ -113,6 +113,7 @@ export class ClaudeService {
     this.executions = new Map();
     this.queue = [];
     this.chainSlots = new Set();
+    this.runLockFeatureId = null; // Feature ID holding /run exclusion lock
     this._shellStatesPath = path.join(projectRoot, '_out', 'tmp', 'dashboard', 'shell-states.json');
     this.shellStates = this._loadShellStates();
     this.fileWatcher = null; // Set by server.js after construction for chain race condition fix
@@ -423,6 +424,10 @@ export class ClaudeService {
         exec.completedAt = new Date().toISOString();
         exec.process = null;
         this._releaseChainSlot(exec);
+        // Release run-lock for stuck /run executions
+        if (exec.command === 'run') {
+          this._releaseRunLock(exec.featureId, 'stale-cleanup');
+        }
       }
     }
     // Clean stale chain waiters (feature status change never arrived)
@@ -624,6 +629,13 @@ export class ClaudeService {
     execution.status = 'running';
     execution.startedAt = new Date().toISOString();
     execution.lastOutputTime = Date.now();
+
+    // Acquire run-lock when /run starts
+    if (command === 'run') {
+      this.runLockFeatureId = featureId;
+      claudeLog.info(`[Queue] Run-lock acquired: F${featureId}`);
+    }
+
     this._pushLog(execution, {
       line: `Starting: claude -p "${cliPrompt}" --output-format stream-json`,
       timestamp: execution.startedAt,
@@ -2151,6 +2163,10 @@ export class ClaudeService {
    */
   handleFeatureStatusChanged(featureId, oldStatus, newStatus) {
     this.chainExecutor.handleStatusChanged(featureId, oldStatus, newStatus);
+    // Release run-lock if feature exits [WIP]
+    if (newStatus !== '[WIP]') {
+      this._releaseRunLock(featureId, newStatus);
+    }
   }
 
   /**
@@ -2161,10 +2177,26 @@ export class ClaudeService {
    */
   _isRunBlocked(command) {
     if (command !== 'run') return false;
+    if (this.runLockFeatureId) return true;
+    // Fallback: check for any running /run execution
     for (const exec of this.executions.values()) {
       if (exec.command === 'run' && exec.status === 'running') return true;
     }
     return false;
+  }
+
+  /**
+   * Release run-lock when feature status advances past [WIP].
+   * Called from fileWatcher status-change events.
+   * @param {string} featureId
+   * @param {string} newStatus - e.g. '[DONE]', '[BLOCKED]', '[REVIEWED]'
+   */
+  _releaseRunLock(featureId, newStatus) {
+    if (this.runLockFeatureId === featureId) {
+      claudeLog.info(`[Queue] Run-lock released: F${featureId} → ${newStatus}`);
+      this.runLockFeatureId = null;
+      this._dequeueNext();
+    }
   }
 
   _releaseChainSlot(execution) {
@@ -2506,6 +2538,10 @@ export class ClaudeService {
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
       this._releaseChainSlot(exec);
+      // Release run-lock on explicit kill
+      if (exec.command === 'run') {
+        this._releaseRunLock(exec.featureId, 'killed');
+      }
       this.logStreamer?.broadcastAll({
         type: 'status',
         executionId,
@@ -2517,6 +2553,10 @@ export class ClaudeService {
 
     if (exec.status === 'running' && exec.process) {
       exec.killedByUser = true;
+      // Release run-lock on explicit kill
+      if (exec.command === 'run') {
+        this._releaseRunLock(exec.featureId, 'killed');
+      }
       this._killProcess(exec.process);
       return true;
     }
@@ -2527,6 +2567,10 @@ export class ClaudeService {
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
       this._releaseChainSlot(exec);
+      // Release run-lock on explicit kill
+      if (exec.command === 'run') {
+        this._releaseRunLock(exec.featureId, 'killed');
+      }
       exec._killedForAskUser = false;
       exec.inputRequired = null;
       exec.waitingForInput = false;
