@@ -63,6 +63,9 @@ export const INPUT_EMAIL_DELAY_MS = 300000;
 /** Timeout for deferred y/n handoff — fallback if result event never arrives (ms) */
 export const PENDING_HANDOFF_TIMEOUT_MS = 10000;
 
+/** Safety timeout for input-wait slot hold — force-complete if user never answers (ms) */
+export const INPUT_WAIT_CLEANUP_MS = 1800000; // 30 minutes
+
 /** Margin for log trimming (trim when exceeds MAX_LOG_ENTRIES + margin) */
 export const LOG_TRIM_MARGIN = 100;
 

@@ -58,6 +58,7 @@ export default function App() {
     dispatch,
     startCommand,
     killExecution,
+    bulkQueueRoots,
     addLog,
     updateStatus,
     fetchExecutions,
@@ -711,6 +712,46 @@ export default function App() {
     [startCommand, subscribe, addNotification],
   );
 
+  const handleBulkQueue = useCallback(
+    async (featureIds) => {
+      try {
+        const data = await bulkQueueRoots(featureIds);
+        // Subscribe to each queued execution for WS updates
+        for (const exec of data.queued) {
+          subscribe(exec.id);
+        }
+        // Set the first queued item as active
+        if (data.queued.length > 0) {
+          setActiveExecutionId(data.queued[0].id);
+        }
+        // Notify user
+        const qCount = data.queued.length;
+        const sCount = data.skipped.length;
+        if (qCount > 0) {
+          addNotification({
+            type: 'info',
+            title: 'Queue Roots',
+            message: `${qCount} queued${sCount > 0 ? `, ${sCount} skipped` : ''}`,
+          });
+        } else {
+          addNotification({
+            type: 'warning',
+            title: 'Queue Roots',
+            message: sCount > 0 ? `${sCount} skipped` : 'Nothing to queue',
+          });
+        }
+      } catch (err) {
+        console.error('Bulk queue failed:', err);
+        addNotification({
+          type: 'warning',
+          title: 'Queue Roots Failed',
+          message: err.message,
+        });
+      }
+    },
+    [bulkQueueRoots, subscribe, addNotification],
+  );
+
   const handleOpenTerminal = useCallback(
     async (featureId, command) => {
       try {
@@ -873,17 +914,15 @@ export default function App() {
     [featureSessionIds, handleResumeBrowser, addNotification],
   );
 
-  // Navigate to ExecutionPanel when input-waiting tile clicked
+  // Cancel input-waiting execution when tile clicked (frees the slot)
   const handleInputWaitingClick = useCallback(
     (featureId) => {
       const info = featureSessionIds.get(featureId);
       if (info?.executionId) {
-        setActiveExecutionId(info.executionId);
-        setShowExecutionPanel(true);
-        subscribe(info.executionId);
+        killExecution(info.executionId);
       }
     },
-    [featureSessionIds, subscribe],
+    [featureSessionIds, killExecution],
   );
 
   const handleOpenHistory = useCallback(async () => {
@@ -1242,6 +1281,7 @@ export default function App() {
           onResumeBrowser={handleResumeBrowserByFeature}
           onResumeTerminal={handleResumeByFeature}
           onInputWaitingClick={handleInputWaitingClick}
+          onBulkQueue={handleBulkQueue}
           onSelect={setSelectedFeatureId}
         />
       </main>

@@ -441,6 +441,140 @@ describe('Execution Routes', () => {
     });
   });
 
+  describe('POST /queue/bulk', () => {
+    it('queues multiple features and returns full execution objects', async () => {
+      const mock = createMockClaudeService();
+      mock.bulkQueue = vi.fn(() => ({
+        queued: [
+          { id: 'exec-100', featureId: '100', command: 'run' },
+          { id: 'exec-200', featureId: '200', command: 'run' },
+        ],
+        skipped: [],
+      }));
+      mock.getExecution
+        .mockReturnValueOnce({ id: 'exec-100', featureId: '100', command: 'run', status: 'queued' })
+        .mockReturnValueOnce({
+          id: 'exec-200',
+          featureId: '200',
+          command: 'run',
+          status: 'queued',
+        });
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: ['100', '200'],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.queued).toHaveLength(2);
+      expect(res.body.queued[0].id).toBe('exec-100');
+      expect(res.body.queued[1].id).toBe('exec-200');
+      expect(res.body.skipped).toHaveLength(0);
+      expect(mock.bulkQueue).toHaveBeenCalledWith(['100', '200']);
+    });
+
+    it('returns empty result for empty array', async () => {
+      const mock = createMockClaudeService();
+      mock.bulkQueue = vi.fn(() => ({ queued: [], skipped: [] }));
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', { featureIds: [] });
+      expect(res.status).toBe(200);
+      expect(res.body.queued).toHaveLength(0);
+      expect(res.body.skipped).toHaveLength(0);
+    });
+
+    it('returns 400 for non-array featureIds', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: '100',
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('featureIds must be an array');
+    });
+
+    it('returns 400 for missing featureIds', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('featureIds must be an array');
+    });
+
+    it('returns 400 when exceeding 30 items', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const featureIds = Array.from({ length: 31 }, (_, i) => String(i + 1));
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', { featureIds });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Maximum 30 features');
+    });
+
+    it('returns 400 for invalid feature ID in array', async () => {
+      const mock = createMockClaudeService();
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: ['100', 'abc'],
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Invalid feature ID');
+    });
+
+    it('deduplicates feature IDs', async () => {
+      const mock = createMockClaudeService();
+      mock.bulkQueue = vi.fn(() => ({
+        queued: [{ id: 'exec-100', featureId: '100', command: 'run' }],
+        skipped: [],
+      }));
+      mock.getExecution.mockReturnValueOnce({
+        id: 'exec-100',
+        featureId: '100',
+        command: 'run',
+        status: 'queued',
+      });
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: ['100', '100', '100'],
+      });
+      expect(res.status).toBe(200);
+      expect(mock.bulkQueue).toHaveBeenCalledWith(['100']);
+    });
+
+    it('returns mixed result with queued and skipped items', async () => {
+      const mock = createMockClaudeService();
+      mock.bulkQueue = vi.fn(() => ({
+        queued: [{ id: 'exec-100', featureId: '100', command: 'run' }],
+        skipped: [{ featureId: '200', reason: 'already running' }],
+      }));
+      mock.getExecution.mockReturnValueOnce({
+        id: 'exec-100',
+        featureId: '100',
+        command: 'run',
+        status: 'queued',
+      });
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: ['100', '200'],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.queued).toHaveLength(1);
+      expect(res.body.skipped).toHaveLength(1);
+      expect(res.body.skipped[0].featureId).toBe('200');
+      expect(res.body.skipped[0].reason).toBe('already running');
+    });
+
+    it('handles service error gracefully', async () => {
+      const mock = createMockClaudeService();
+      mock.bulkQueue = vi.fn(() => {
+        throw new Error('Queue unavailable');
+      });
+      const app = createApp(mock);
+      const res = await request(app, 'POST', '/api/execution/queue/bulk', {
+        featureIds: ['100'],
+      });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain('Queue unavailable');
+    });
+  });
+
   describe('GET /:id/diag', () => {
     it('returns diagnostics for existing execution', async () => {
       const mock = createMockClaudeService();

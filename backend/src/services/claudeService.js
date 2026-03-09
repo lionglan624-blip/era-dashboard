@@ -42,6 +42,7 @@ import {
   MAX_PROFILE_SWITCHES,
   MAX_INCOMPLETE_RETRIES,
   INPUT_EMAIL_DELAY_MS,
+  INPUT_WAIT_CLEANUP_MS,
   MAX_CONCURRENT_EXECUTIONS,
 } from '../config.js';
 
@@ -62,6 +63,17 @@ import { StreamParser, extractStreamText, endsWithQuestion } from './streamParse
 // Verbose debug logging (enable with DASHBOARD_DEBUG=1)
 const DEBUG = process.env.DASHBOARD_DEBUG === '1';
 const debugLog = DEBUG ? claudeLog.info.bind(claudeLog) : () => {};
+
+// Commands that bypass queue slot limit (lightweight, non-feature operations)
+const SLOT_EXEMPT_COMMANDS = new Set(['commit', 'sync-deps']);
+
+// Maps feature status to the first command to run in the workflow
+const STATUS_TO_FIRST_COMMAND = {
+  '[DRAFT]': 'fc',
+  '[PROPOSED]': 'fl',
+  '[REVIEWED]': 'run',
+  '[WIP]': 'run',
+};
 
 // Re-export for backward compatibility
 export { validateFeatureId, validateCommand, INPUT_WAIT_PATTERNS };
@@ -391,6 +403,7 @@ export class ClaudeService {
       if (
         exec.status === 'running' &&
         !exec.inputRequired &&
+        !exec.waitingForInput &&
         exec.lastOutputTime &&
         now - exec.lastOutputTime > STUCK_RUNNING_TIMEOUT_MS
       ) {
@@ -517,7 +530,7 @@ export class ClaudeService {
   get runningCount() {
     let count = 0;
     for (const exec of this.executions.values()) {
-      if (exec.status === 'running') count++;
+      if (exec.status === 'running' && !SLOT_EXEMPT_COMMANDS.has(exec.command)) count++;
     }
     return count;
   }
@@ -668,6 +681,13 @@ export class ClaudeService {
 
     proc.on('close', (code) => {
       claudeLog.info(`[ClaudeService] Process exited with code ${code}`);
+      // Fix A: Ignore stale close events from previous processes (kill→resume race).
+      // answerInBrowser() replaces execution.process with the new spawn; if this
+      // close came from the old (killed) process, skip it entirely.
+      if (execution.process !== proc) {
+        claudeLog.info(`[ClaudeService] Ignoring stale close event (process replaced by resume)`);
+        return;
+      }
       if (execution.status === 'running') {
         // Prefer resultExitCode from stream-json 'result' event (more accurate than process exit code)
         // The 'close' event fires after ALL stdio streams are drained, ensuring
@@ -1117,6 +1137,36 @@ export class ClaudeService {
       execution.process = null;
       execution.stdin = null;
       // Keep status as 'running' and inputRequired intact for browser UI
+      return;
+    }
+
+    // Fix B: Process exited while waiting for browser input (y/n prompt).
+    // Hold the execution slot — browser answer or safety timeout will handle cleanup.
+    // Without this guard, _dequeueNext() would open a slot,
+    // and a subsequent answerInBrowser() would push runningCount over maxConcurrent.
+    if (execution.waitingForInput) {
+      claudeLog.info(
+        `[ClaudeService] Process exited while waiting for browser input — holding slot (exec ${execution.id})`,
+      );
+      if (execution.stallCheckInterval) {
+        clearInterval(execution.stallCheckInterval);
+        execution.stallCheckInterval = null;
+      }
+      execution.process = null;
+      execution.stdin = null;
+
+      // Safety timeout — force-complete if user never answers
+      execution._inputWaitExitCode = exitCode;
+      execution._inputWaitCleanupTimeout = setTimeout(() => {
+        if (execution.waitingForInput && execution.status === 'running') {
+          claudeLog.warn(
+            `[ClaudeService] Input wait cleanup timeout (${INPUT_WAIT_CLEANUP_MS}ms) — force completing exec ${execution.id}`,
+          );
+          execution.waitingForInput = false;
+          this._handleCompletion(execution, execution._inputWaitExitCode ?? 0);
+        }
+      }, INPUT_WAIT_CLEANUP_MS);
+
       return;
     }
 
@@ -2277,6 +2327,61 @@ export class ClaudeService {
     return cleared;
   }
 
+  /**
+   * Bulk queue features based on their current status.
+   * @param {string[]} featureIds - Array of feature IDs (already deduplicated and validated)
+   * @returns {{ queued: Array<{id, featureId, command}>, skipped: Array<{featureId, reason}> }}
+   */
+  bulkQueue(featureIds) {
+    // Build a set of featureIds that already have running or queued executions
+    const activeFeatureIds = new Set();
+    for (const exec of this.executions.values()) {
+      if (exec.status === 'running' || exec.status === 'queued') {
+        activeFeatureIds.add(String(exec.featureId));
+      }
+    }
+
+    const queued = [];
+    const skipped = [];
+
+    for (const featureId of featureIds) {
+      const featureIdStr = String(featureId);
+
+      // Already running or queued
+      if (activeFeatureIds.has(featureIdStr)) {
+        skipped.push({ featureId: featureIdStr, reason: 'already running or queued' });
+        continue;
+      }
+
+      // Look up status from file watcher cache
+      const status = this.fileWatcher?.statusCache.get(featureIdStr);
+      if (!status) {
+        skipped.push({ featureId: featureIdStr, reason: 'status unknown' });
+        continue;
+      }
+
+      // Look up command from status mapping
+      const command = STATUS_TO_FIRST_COMMAND[status];
+      if (!command) {
+        skipped.push({
+          featureId: featureIdStr,
+          reason: `status is ${status} — queue individually`,
+        });
+        continue;
+      }
+
+      // Attempt to queue the execution
+      try {
+        const executionId = this.executeCommand(featureIdStr, command, { chain: true });
+        queued.push({ id: executionId, featureId: featureIdStr, command });
+      } catch (err) {
+        skipped.push({ featureId: featureIdStr, reason: err.message });
+      }
+    }
+
+    return { queued, skipped };
+  }
+
   getExecution(executionId) {
     const exec = this.executions.get(executionId);
     if (!exec) return null;
@@ -2428,6 +2533,10 @@ export class ClaudeService {
       if (exec.stallCheckInterval) {
         clearInterval(exec.stallCheckInterval);
         exec.stallCheckInterval = null;
+      }
+      if (exec._inputWaitCleanupTimeout) {
+        clearTimeout(exec._inputWaitCleanupTimeout);
+        exec._inputWaitCleanupTimeout = null;
       }
       this.logStreamer?.broadcastAll({
         type: 'status',
@@ -2607,6 +2716,12 @@ export class ClaudeService {
     }
     execution.pendingHandoff = null;
 
+    // Cancel input-wait cleanup timeout (user answered in time)
+    if (execution._inputWaitCleanupTimeout) {
+      clearTimeout(execution._inputWaitCleanupTimeout);
+      execution._inputWaitCleanupTimeout = null;
+    }
+
     // Cancel pending input email (user answered in time)
     if (execution._pendingInputEmailTimeout) {
       clearTimeout(execution._pendingInputEmailTimeout);
@@ -2702,6 +2817,11 @@ export class ClaudeService {
     });
 
     proc.on('close', (code) => {
+      // Fix A: Ignore stale close events from previous (killed) process
+      if (execution.process !== proc) {
+        claudeLog.info(`[ClaudeService] Ignoring stale close event from resumed session`);
+        return;
+      }
       if (execution.status === 'running') {
         this._handleCompletion(execution, code ?? 1);
       } else if (execution.status === 'handed-off') {

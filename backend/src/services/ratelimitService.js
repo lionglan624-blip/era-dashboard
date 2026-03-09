@@ -37,6 +37,7 @@ export class RateLimitService {
     this._cache = new Map(); // Map<profileName, { data, timestamp, expiresAt, refreshAt }>
     this._capturing = false; // Prevent concurrent captures
     this._cacheFile = path.join(projectRoot, '_out', 'tmp', 'dashboard', 'ratelimit-cache.json');
+    this._expiryTimer = null; // setTimeout for earliest expiresAt
     this._loadCache();
   }
 
@@ -56,6 +57,7 @@ export class RateLimitService {
           );
         }
       }
+      this._scheduleExpiryCapture();
     } catch (err) {
       claudeLog.error(`[RateLimit] Failed to load cache: ${err.message}`);
     }
@@ -140,6 +142,7 @@ export class RateLimitService {
 
       const cached = this.getCached();
       this._checkAutoSwitch(cached);
+      this._scheduleExpiryCapture();
       return cached;
     } finally {
       this._capturing = false;
@@ -717,6 +720,7 @@ export class RateLimitService {
     const refreshAt = this._computeRefreshAt(data);
     this._cache.set(profile, { data, timestamp: Date.now(), expiresAt, refreshAt });
     this._saveCache();
+    this._scheduleExpiryCapture();
     claudeLog.info(
       `[RateLimit] Manual cache set for ${profile}: ${JSON.stringify(data)}, expiresAt: ${new Date(expiresAt).toISOString()}`,
     );
@@ -785,6 +789,45 @@ export class RateLimitService {
       }
     }
     if (changed) this._saveCache();
+  }
+
+  /**
+   * Schedule a forceRefresh capture at the earliest expiresAt across all cached profiles.
+   * Ensures rate limits are refreshed immediately when weekly/session resets occur,
+   * rather than waiting for the next polling cycle (up to 5 min delay).
+   */
+  _scheduleExpiryCapture() {
+    // Clear any existing timer
+    if (this._expiryTimer) {
+      clearTimeout(this._expiryTimer);
+      this._expiryTimer = null;
+    }
+
+    // Find earliest expiresAt across all cached profiles
+    let earliest = Infinity;
+    for (const [, entry] of this._cache) {
+      if (entry.expiresAt < earliest) {
+        earliest = entry.expiresAt;
+      }
+    }
+
+    if (!isFinite(earliest)) return;
+
+    const delay = Math.max(earliest - Date.now(), 0);
+    // Cap at 2^31-1 ms (~24.8 days) to avoid setTimeout overflow
+    if (delay > 2147483647) return;
+
+    this._expiryTimer = setTimeout(() => {
+      this._expiryTimer = null;
+      claudeLog.info('[RateLimit] Expiry timer fired, refreshing all profiles');
+      this.capture({ forceRefresh: true }).catch((err) => {
+        claudeLog.error(`[RateLimit] Expiry-triggered capture failed: ${err.message}`);
+      });
+    }, delay);
+
+    claudeLog.info(
+      `[RateLimit] Expiry capture scheduled in ${Math.round(delay / 1000)}s (${new Date(earliest).toISOString()})`,
+    );
   }
 
   /**

@@ -74,11 +74,10 @@ Both y/n patterns and AskUserQuestion are handled browser-first. When detected, 
 
 ### y/n Flow Detail
 
-CLI emits `result` event (session saved) → streamParser cancels pendingHandoff timeout → process exits naturally via `_handleCompletion` → execution status = `completed` but `waitingForInput` remains `true` → FE shows Yes/No buttons on the completed execution → user clicks → `answerInBrowser` resumes session.
+CLI emits `result` event (session saved) → streamParser cancels pendingHandoff timeout → **kills process** → `_handleCompletion` Fix B guard catches `waitingForInput` → execution stays `running` (slot held) → FE shows Yes/No buttons → user clicks → `answerInBrowser` resumes session. Safety timeout (30min) force-completes if user never answers.
 
-- `result` event arrives → `pendingHandoff` **cancelled** (not triggered) → process exits naturally
-- `_handleCompletion` completes with `waitingForInput: true` → FE shows Yes/No buttons on completed execution
-- Timeout: `PENDING_HANDOFF_TIMEOUT_MS` (10s)
+- `result` event arrives → `pendingHandoff` **cancelled** → process **killed** → Fix B holds slot as `running`
+- `_handleCompletion` safety timeout: `INPUT_WAIT_CLEANUP_MS` (30min)
 
 ### AskUserQuestion Flow Detail
 

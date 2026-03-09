@@ -191,6 +191,44 @@ export function createExecutionRouter(claudeService) {
     res.json({ cleared: cleared.length, ids: cleared });
   });
 
+  // POST /api/execution/queue/bulk - Bulk queue features
+  router.post('/queue/bulk', (req, res) => {
+    const { featureIds } = req.body;
+
+    // 1. Validate array
+    if (!Array.isArray(featureIds)) {
+      return res.status(400).json({ error: 'featureIds must be an array' });
+    }
+
+    // 2. Max size
+    if (featureIds.length > 30) {
+      return res.status(400).json({ error: 'Maximum 30 features per bulk queue request' });
+    }
+
+    // 3. Deduplicate
+    const uniqueIds = [...new Set(featureIds)];
+
+    // 4. Validate each ID (numeric only)
+    for (const id of uniqueIds) {
+      if (!/^\d+$/.test(String(id))) {
+        return res.status(400).json({ error: `Invalid feature ID: ${id}` });
+      }
+    }
+
+    try {
+      const result = claudeService.bulkQueue(uniqueIds);
+      // Get full execution objects for queued items
+      const queued = result.queued.map((item) => {
+        const exec = claudeService.getExecution(item.id);
+        return exec;
+      });
+      res.json({ queued, skipped: result.skipped });
+    } catch (err) {
+      serverLog.error('Error in bulk queue:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET /api/execution/history - Persistent execution history (survives DR/reload)
   router.get('/history', (req, res) => {
     try {

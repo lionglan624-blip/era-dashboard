@@ -12,6 +12,9 @@ import StatusBadge from './StatusBadge.jsx';
 // Maximum recursion depth for tree traversal (prevents infinite loops from circular deps)
 const MAX_TREE_DEPTH = 10;
 
+// Feature statuses eligible for bulk queue
+const QUEUEABLE_STATUSES = new Set(['[DRAFT]', '[PROPOSED]', '[REVIEWED]', '[WIP]']);
+
 // localStorage key for persisting collapsed phase sections
 const COLLAPSED_PHASES_KEY = 'dashboard-collapsed-phases';
 
@@ -408,6 +411,7 @@ export default function TreeView({
   onResumeBrowser,
   onResumeTerminal,
   onInputWaitingClick,
+  onBulkQueue,
   onSelect,
 }) {
   // Note: buildTree returns new objects each time, so TreeNode memo only helps when
@@ -415,6 +419,15 @@ export default function TreeView({
   // Map-based props (phases, context, etc.) are independently memoized in App.
   const trees = useMemo(() => buildTree(features, runningFeatures), [features, runningFeatures]);
   const phaseGroups = useMemo(() => groupByPhase(trees), [trees]);
+
+  const queueableRootIds = useMemo(() => {
+    return trees
+      .filter((node) => !node.isOrphan)
+      .filter((node) => QUEUEABLE_STATUSES.has(node.feature.status))
+      .filter((node) => !runningFeatures.has(String(node.feature.id)))
+      .filter((node) => !featureQueueWaiters?.has(String(node.feature.id)))
+      .map((node) => node.feature.id);
+  }, [trees, runningFeatures, featureQueueWaiters]);
 
   // Collapsed phase state, persisted to localStorage
   const [collapsedPhases, setCollapsedPhases] = useState(() => {
@@ -534,6 +547,13 @@ export default function TreeView({
   return (
     <TreeCallbacksContext.Provider value={callbacksValue}>
       <TreeDataContext.Provider value={dataValue}>
+        <button
+          className="btn-bulk-queue"
+          disabled={queueableRootIds.length === 0}
+          onClick={() => onBulkQueue(queueableRootIds)}
+        >
+          Queue Roots ({queueableRootIds.length})
+        </button>
         <div className="tree-view">
           {phaseGroups.map((group) => {
             const isCollapsed = collapsedPhases.has(group.phase);

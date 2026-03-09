@@ -361,17 +361,16 @@ export class StreamParser {
       // to ensure stderr (rate limit detection) is fully drained first
       execution.resultExitCode = event.is_error ? 1 : 0;
       if (execution.pendingHandoff) {
-        // Input detected earlier — result event confirms session is saved.
-        // Cancel handoff timeout — let process complete normally.
-        // Browser UI shows answer buttons; terminal handoff is user-initiated fallback.
         claudeLog.info(
-          `[ClaudeService] Result event received with pending handoff — session saved, cancelling auto-handoff (browser-first)`,
+          `[ClaudeService] Result event with pending handoff — session saved, killing for browser answer`,
         );
         if (execution.pendingHandoffTimeout) {
           clearTimeout(execution.pendingHandoffTimeout);
           execution.pendingHandoffTimeout = null;
         }
         execution.pendingHandoff = null;
+        // Kill process — close event → _handleCompletion → Fix B guard holds slot while waitingForInput
+        this.killProcess(execution);
       }
       // Do NOT call handleCompletion here — let process 'close' event drive it
       // This prevents a race where stdout result fires before stderr rate-limit detection

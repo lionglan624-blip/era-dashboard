@@ -72,7 +72,7 @@ dr button                                   # pm2 restart all
 | Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit`. On exhaustion: email subject `context-limit 3/3` |
 | FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit` and `isContextExhausted`. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
 | Incomplete termination retry | 3x (5s delay) | Retry fc/fl/run when exit 0 + `subtype=success` but feature status didn't advance to expected state (`EXPECTED_STATUS_AFTER_COMMAND` mapping: fc→`[PROPOSED]`, fl→`[REVIEWED]`, run→`[DONE]`). Detects context/max_turns exhaustion mid-work where CLI reports success but command didn't finish. Uses `fileWatcher.statusCache` for status check. Counter: `incompleteRetryCount` (independent from `retryCount` and `contextRetryCount`). Skips when status is `[BLOCKED]` (legitimate). WS event: `chain-retry` with `retryType: 'incomplete'`. On exhaustion: prevents dead waiter registration, falls through to email notification with result `incomplete-retry-exhausted` |
-| Chain slot reservation | per-chain | Reserves execution slot for entire chain lifecycle (fc→fl→run→imp). `chainSlots` Set tracks root execution IDs. Non-chain executions limited to `maxConcurrent - idleChainSlots`. Released on chain completion, cancel, handoff, stale cleanup, or rate limit exhaustion. `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4) |
+| Chain slot reservation | per-chain | Reserves execution slot for entire chain lifecycle (fc→fl→run→imp). `chainSlots` Set tracks root execution IDs. Non-chain executions limited to `maxConcurrent - idleChainSlots`. Released on chain completion, cancel, handoff, stale cleanup, or rate limit exhaustion. `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4). Slash commands (`commit`, `sync-deps`) are slot-exempt (`SLOT_EXEMPT_COMMANDS`) — bypass queue limit and don't count toward `runningCount` |
 | Stale waiter → Auto-DR | 5min + 10min | Chain waiters older than `CHAIN_WAITER_TIMEOUT_MS` (5min) are cleaned by `_cleanupOldExecutions()` (runs every 10min). On cleanup, `onExecutionComplete()` is called to trigger deferred Auto-DR re-check |
 | Tmp cleanup interval | 6h | Purge old dashboard debug/daily logs (debug-*.log: 3 days, daily logs: 7 days) |
 | Insights capture | ~2min | `/insights` via node-pty ConPTY. Completion: dual detection (report.html mtime change + PTY `"report is ready"` pattern). Emails HTML report via `emailService.sendHtml()`. Scheduler: cron-style `setTimeout` (Monday 07:00 JST). API: `POST /api/insights/capture`, `GET /api/insights/status` |
@@ -100,6 +100,7 @@ Full config: `backend/src/config.js`
 | `/api/ratelimit/:profile` | POST | Manual rate limit cache injection |
 | `/api/execution/queue` | GET | Queue status |
 | `/api/execution/queue/clear` | POST | Clear queued items |
+| `/api/execution/queue/bulk` | POST | Bulk queue features |
 | `/api/features` | GET | List features |
 | `/api/features/:id` | GET | Feature detail |
 | `/api/health` | GET | Health check |
@@ -129,7 +130,7 @@ Full config: `backend/src/config.js`
 | `chain-blocked` | S→C (all) | Chain blocked by pending deps *(FE handler exists, not yet emitted from BE)* |
 | `features-updated` | S→C (all) | Feature file changed |
 | `status-changed` | S→C (all) | Feature status changed (e.g., [DRAFT]→[PROPOSED]) |
-| `queue-updated` | S→C (all) | Queue state changed |
+| `queue-updated` | S→C (all) | Queue state changed. FE also fetches `GET /api/execution/queue` on connect to restore state after F5 |
 | `execution-started` | S→C (all) | New execution started (API-spawned slash/debug). FE auto-subscribes |
 | `upd-complete` | S→C (all) | CCS update completed |
 | `shell-complete` | S→C (all) | Shell command (cs/dr/upd) completed |
@@ -333,8 +334,9 @@ All user input is whitelist-validated before passing to spawn:
 | `validateFeatureId()` | Numeric only (`/^\d+$/`) |
 | `validateCommand()` | `fc`, `fl`, `run`, `imp` only |
 | `runShellCommand()` | `cs`, `dr`, `upd` only |
-| `executeSlashCommand()` | `commit`, `sync-deps` only |
+| `executeSlashCommand()` | `commit`, `sync-deps` only. Queue bypass (slot-exempt) |
 | `answerInBrowser()` | `sanitizeInput(answer, 1000)` — control chars stripped, 1000 char limit |
+| `bulkQueue()` | Array of numeric IDs, max 30, deduplicated |
 
 ---
 

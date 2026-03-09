@@ -424,6 +424,22 @@ export function useExecution() {
     await fetch(`${API_BASE}/execution/${executionId}`, { method: 'DELETE' });
   }, []);
 
+  const bulkQueueRoots = useCallback(
+    async (featureIds) => {
+      const res = await fetch('/api/execution/queue/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureIds }),
+      });
+      const data = await res.json();
+      for (const item of data.queued) {
+        dispatch({ type: 'ADD_EXECUTION', exec: item });
+      }
+      return data;
+    },
+    [dispatch],
+  );
+
   // Fetch existing executions and their logs from API
   // Returns array of active execution IDs (running) for subscription
   // Replaces entire executions Map with backend state (clears stale frontend entries)
@@ -542,6 +558,7 @@ export function useExecution() {
     dispatch, // For WS_STATE, WS_HANDOFF, etc. from wsHandlers
     startCommand,
     killExecution,
+    bulkQueueRoots,
     addLog,
     updateStatus,
     fetchExecutions,
