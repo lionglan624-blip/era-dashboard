@@ -42,6 +42,7 @@ import {
   MAX_PROFILE_SWITCHES,
   MAX_INCOMPLETE_RETRIES,
   INPUT_EMAIL_DELAY_MS,
+  MAX_CONCURRENT_EXECUTIONS,
 } from '../config.js';
 
 // Import extracted modules
@@ -91,14 +92,15 @@ export class ClaudeService {
    * @param {string} projectRoot - Project root directory
    * @param {import('../websocket/logStreamer.js').LogStreamer} logStreamer - WebSocket broadcaster
    * @param {Object} [options]
-   * @param {number} [options.maxConcurrent=99] - Maximum concurrent executions
+   * @param {number} [options.maxConcurrent=MAX_CONCURRENT_EXECUTIONS] - Maximum concurrent executions
    */
-  constructor(projectRoot, logStreamer, { maxConcurrent = 99 } = {}) {
+  constructor(projectRoot, logStreamer, { maxConcurrent = MAX_CONCURRENT_EXECUTIONS } = {}) {
     this.projectRoot = projectRoot;
     this.logStreamer = logStreamer;
     this.maxConcurrent = maxConcurrent;
     this.executions = new Map();
     this.queue = [];
+    this.chainSlots = new Set();
     this._shellStatesPath = path.join(projectRoot, '_out', 'tmp', 'dashboard', 'shell-states.json');
     this.shellStates = this._loadShellStates();
     this.fileWatcher = null; // Set by server.js after construction for chain race condition fix
@@ -407,6 +409,7 @@ export class ClaudeService {
         exec.status = 'failed';
         exec.completedAt = new Date().toISOString();
         exec.process = null;
+        this._releaseChainSlot(exec);
       }
     }
     // Clean stale chain waiters (feature status change never arrived)
@@ -423,6 +426,7 @@ export class ClaudeService {
       this.chainExecutor.deleteWaiter(featureId);
       // Safety net: send email so user knows the chain stalled
       const stalledExec = this.executions.get(waiter.executionId);
+      if (stalledExec) this._releaseChainSlot(stalledExec);
       if (stalledExec) {
         const chainHistory = stalledExec.chain?.history || [];
         const finalHistory = [...chainHistory, { command: stalledExec.command, result: 'ok' }];
@@ -568,6 +572,12 @@ export class ClaudeService {
 
     this.executions.set(executionId, execution);
 
+    // Reserve chain slot for chain root (first step in chain)
+    if (chain && !chainParentId) {
+      this.chainSlots.add(executionId);
+      claudeLog.info(`[Queue] Chain slot reserved: ${executionId}`);
+    }
+
     // Shorten idle refresh intervals now that an execution is starting,
     // then trigger capture (uses cache if fresh after recompute)
     if (this.rateLimitService) {
@@ -575,12 +585,11 @@ export class ClaudeService {
       this.rateLimitService.capture().catch(() => {});
     }
 
-    const runBlocked = this._isRunBlocked(execution.command);
-
-    if (this.runningCount < this.maxConcurrent && !runBlocked) {
+    if (this._canStartNow(execution)) {
       this._startExecution(execution);
     } else {
       this.queue.push(executionId);
+      const runBlocked = this._isRunBlocked(execution.command);
       this._pushLog(execution, {
         line: runBlocked
           ? `Queued (position ${this.queue.length}). Waiting for running /run to complete...`
@@ -852,6 +861,7 @@ export class ClaudeService {
     }
 
     execution.status = 'handed-off';
+    this._releaseChainSlot(execution);
 
     const entry = {
       line: `[Handoff] ${reason} - Opening terminal for user input...`,
@@ -1199,12 +1209,24 @@ export class ClaudeService {
       (exitCode !== 0 && execution.resultSubtype === 'success' && !execution.accountLimitHit) ||
       (exitCode === 3 && !execution.resultSubtype);
 
+    // Skip context retry if command already achieved its expected status
+    const contextExpectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
+    const contextCurrentStatus = this.fileWatcher?.statusCache.get(execution.featureId);
+    const alreadyAchieved = contextExpectedStatus && contextCurrentStatus === contextExpectedStatus;
+
     const needsContextRetry =
       execution.chain?.enabled &&
       execution.chain.contextRetryCount < MAX_RETRIES &&
       !execution.killedByUser &&
       !execution.accountLimitHit &&
+      !alreadyAchieved &&
       isContextExhausted;
+
+    if (isContextExhausted && alreadyAchieved) {
+      claudeLog.info(
+        `[Chain] Context exhausted for F${execution.featureId} ${execution.command}, but status already ${contextCurrentStatus} — skipping retry`,
+      );
+    }
 
     if (needsContextRetry) {
       const contextRetryCount = execution.chain.contextRetryCount + 1;
@@ -1564,6 +1586,8 @@ export class ClaudeService {
       (!execution._hadInputWait || execution._resumedAnswer)
     ) {
       this.chainExecutor.registerWaiter(execution);
+    } else if (execution.chain?.enabled) {
+      this._releaseChainSlot(execution);
     }
 
     if (
@@ -1696,6 +1720,7 @@ export class ClaudeService {
     if (!resetTime) {
       claudeLog.warn(`[RateLimit] No safe profile and no reset time known. Cannot retry.`);
       // Remove from queue since we can't retry
+      this._releaseChainSlot(execution);
       this._rateLimitRetryQueue.length = 0;
       return null;
     }
@@ -1773,6 +1798,7 @@ export class ClaudeService {
       );
 
       for (const entry of this._rateLimitRetryQueue) {
+        this._releaseChainSlot(entry.execution);
         this._pushLog(entry.execution, {
           line: `[Chain] Rate limit retry failed — still at ${maxPercent}%. Manual re-run needed.`,
           timestamp: new Date().toISOString(),
@@ -2091,6 +2117,47 @@ export class ClaudeService {
     return false;
   }
 
+  _releaseChainSlot(execution) {
+    if (!execution.chain?.enabled) return false;
+    const rootId = execution.chainParentId || execution.id;
+    const released = this.chainSlots.delete(rootId);
+    if (released) {
+      claudeLog.info(`[Queue] Chain slot released: ${rootId}`);
+      this._dequeueNext();
+    }
+    return released;
+  }
+
+  _belongsToActiveChain(exec) {
+    if (!exec.chain?.enabled) return false;
+    const rootId = exec.chainParentId || exec.id;
+    return this.chainSlots.has(rootId);
+  }
+
+  _countIdleChainSlots() {
+    let count = 0;
+    for (const rootId of this.chainSlots) {
+      let hasRunning = false;
+      for (const exec of this.executions.values()) {
+        const execRoot = exec.chainParentId || (exec.chain?.enabled ? exec.id : null);
+        if (exec.status === 'running' && execRoot === rootId) {
+          hasRunning = true;
+          break;
+        }
+      }
+      if (!hasRunning) count++;
+    }
+    return count;
+  }
+
+  _canStartNow(execution) {
+    if (this._isRunBlocked(execution.command)) return false;
+    const belongsToChain = this._belongsToActiveChain(execution);
+    const idleChainSlots = this._countIdleChainSlots();
+    const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
+    return this.runningCount < limit;
+  }
+
   _dequeueNext() {
     if (this._rateLimitPaused) {
       claudeLog.info('[Queue] Dequeue blocked — rate limit retry pending');
@@ -2103,13 +2170,20 @@ export class ClaudeService {
         return exec && exec.status === 'queued';
       });
 
-      // Find first non-blocked item (skip /run if another /run is running)
+      // Recalculate idle chain slots each iteration (may change as items dequeue)
+      const idleChainSlots = this._countIdleChainSlots();
+
+      // Find first item that can start now (respects run-block and chain slot reservation)
       const idx = this.queue.findIndex((id) => {
         const exec = this.executions.get(id);
-        return !this._isRunBlocked(exec.command);
+        if (this._isRunBlocked(exec.command)) return false;
+
+        const belongsToChain = this._belongsToActiveChain(exec);
+        const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
+        return this.runningCount < limit;
       });
 
-      if (idx === -1) break; // All remaining items are run-blocked
+      if (idx === -1) break; // All remaining items are blocked
 
       const nextId = this.queue.splice(idx, 1)[0];
       const nextExec = this.executions.get(nextId);
@@ -2160,6 +2234,13 @@ export class ClaudeService {
       runningCount: running.length,
       queuedCount: queued.length,
       chainWaiterCount: this.chainExecutor.chainWaiters.size,
+      chainWaiters: Array.from(this.chainExecutor.chainWaiters.entries()).map(
+        ([featureId, waiter]) => ({
+          featureId,
+          executionId: waiter.executionId,
+          registeredAt: new Date(waiter.registeredAt).toISOString(),
+        }),
+      ),
       waitingForInputCount,
       running,
       queued,
@@ -2170,6 +2251,8 @@ export class ClaudeService {
         queuedAt: new Date(entry.queuedAt).toISOString(),
       })),
       rateLimitRetryAt: this._rateLimitRetryAt,
+      chainSlotCount: this.chainSlots.size,
+      idleChainSlotCount: this._countIdleChainSlots(),
     };
   }
 
@@ -2181,6 +2264,7 @@ export class ClaudeService {
       if (exec) {
         exec.status = 'cancelled';
         exec.completedAt = new Date().toISOString();
+        this._releaseChainSlot(exec);
         cleared.push(id);
         this.logStreamer?.broadcastAll({
           type: 'status',
@@ -2291,6 +2375,7 @@ export class ClaudeService {
         claudeLog.info(`[Chain] Removed chain waiter for F${exec.featureId} (killed)`);
       }
     }
+    this._releaseChainSlot(exec);
 
     // Remove from rate limit retry queue if queued
     const rlIdx = this._rateLimitRetryQueue.findIndex(
@@ -2315,6 +2400,7 @@ export class ClaudeService {
       this.queue = this.queue.filter((id) => id !== executionId);
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
+      this._releaseChainSlot(exec);
       this.logStreamer?.broadcastAll({
         type: 'status',
         executionId,
@@ -2335,6 +2421,7 @@ export class ClaudeService {
       exec.killedByUser = true;
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
+      this._releaseChainSlot(exec);
       exec._killedForAskUser = false;
       exec.inputRequired = null;
       exec.waitingForInput = false;
@@ -2377,6 +2464,7 @@ export class ClaudeService {
     }
     this._rateLimitRetryQueue.length = 0;
     this._rateLimitRetryAt = null;
+    this.chainSlots.clear();
 
     if (this._cleanupInterval) {
       clearInterval(this._cleanupInterval);
@@ -2958,17 +3046,8 @@ export class ClaudeService {
       this.rateLimitService.capture().catch(() => {});
     }
 
-    if (this.runningCount < this.maxConcurrent) {
-      this._startExecution(execution);
-    } else {
-      this.queue.push(executionId);
-      this._pushLog(execution, {
-        line: `Queued (position ${this.queue.length}). Waiting for slot...`,
-        timestamp: new Date().toISOString(),
-        level: 'info',
-      });
-      this._broadcastQueueUpdate();
-    }
+    // Slash commands (commit, sync-deps) bypass queue limit — lightweight, non-feature ops
+    this._startExecution(execution);
 
     return executionId;
   }
@@ -3000,7 +3079,7 @@ export class ClaudeService {
       command: 'debug',
     });
 
-    if (this.runningCount < this.maxConcurrent) {
+    if (this._canStartNow(execution)) {
       this._startExecution(execution);
     } else {
       this.queue.push(executionId);
@@ -3036,7 +3115,7 @@ export class ClaudeService {
       command: 'update-analysis',
     });
 
-    if (this.runningCount < this.maxConcurrent) {
+    if (this._canStartNow(execution)) {
       this._startExecution(execution);
     } else {
       this.queue.push(executionId);

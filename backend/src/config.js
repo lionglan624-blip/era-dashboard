@@ -48,6 +48,9 @@ export const STUCK_RUNNING_TIMEOUT_MS = 7200000; // 2 hours
 /** Interval for cleaning up old executions */
 export const CLEANUP_INTERVAL_MS = 600000; // 10 minutes
 
+/** Maximum concurrent executions (chain slots reserved within this limit) */
+export const MAX_CONCURRENT_EXECUTIONS = parseInt(process.env.MAX_CONCURRENT || '4');
+
 /** TTL for shell command button states (cs/dr/upd) */
 export const SHELL_STATE_TTL_MS = 300000; // 5 minutes
 

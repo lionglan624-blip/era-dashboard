@@ -9,6 +9,7 @@ export default function QueueIndicator({ queueStatus, onClearQueue, onCancelItem
     runningCount,
     queuedCount,
     maxConcurrent: _maxConcurrent,
+    chainSlotCount = 0,
     running = [],
     queued = [],
   } = queueStatus;
@@ -21,6 +22,7 @@ export default function QueueIndicator({ queueStatus, onClearQueue, onCancelItem
       <button className="queue-summary" onClick={() => setExpanded(!expanded)}>
         <span className="queue-running">Running: {runningCount}</span>
         {queuedCount > 0 && <span className="queue-pending">Queued: {queuedCount}</span>}
+        {chainSlotCount > 0 && <span className="queue-reserved">Reserved: {chainSlotCount}</span>}
         <span className="queue-expand">{expanded ? '▲' : '▼'}</span>
       </button>
 

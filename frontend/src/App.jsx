@@ -74,6 +74,7 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [shellStates, setShellStates] = useState({});
   const [drPending, setDrPending] = useState(false);
+  const [featureQueueWaiters, setFeatureQueueWaiters] = useState(new Set());
 
   // Health check state
   const [healthStatus, setHealthStatus] = useState({
@@ -454,6 +455,16 @@ export default function App() {
           [msg.command]: msg.success ? 'completed' : 'failed',
         }));
       },
+      'queue-updated': (msg) => {
+        const waiterIds = new Set();
+        if (msg.chainWaiters) {
+          for (const w of msg.chainWaiters) waiterIds.add(String(w.featureId));
+        }
+        if (msg.queued) {
+          for (const q of msg.queued) waiterIds.add(String(q.featureId));
+        }
+        setFeatureQueueWaiters(waiterIds);
+      },
       'auto-dr-pending': () => {
         setDrPending(true);
       },
@@ -504,6 +515,21 @@ export default function App() {
           setActiveExecutionId((prev) => prev ?? activeIds[0]);
         }
       });
+      // Restore queue waiters from backend (survives F5, cleared only by DR)
+      fetch('/api/execution/queue')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((qs) => {
+          if (!qs) return;
+          const waiterIds = new Set();
+          if (qs.chainWaiters) {
+            for (const w of qs.chainWaiters) waiterIds.add(String(w.featureId));
+          }
+          if (qs.queued) {
+            for (const q of qs.queued) waiterIds.add(String(q.featureId));
+          }
+          setFeatureQueueWaiters(waiterIds);
+        })
+        .catch(() => {});
       // Refetch features on reconnect (not on initial connect)
       if (wasConnectedRef.current) {
         refetch();
@@ -1210,6 +1236,7 @@ export default function App() {
           featureRunningCommand={featureRunningCommand}
           featureInputWaiting={featureInputWaiting}
           featureRetryInfo={featureRetryInfo}
+          featureQueueWaiters={featureQueueWaiters}
           onRunCommand={handleRunCommand}
           onOpenTerminal={handleOpenTerminal}
           onResumeBrowser={handleResumeBrowserByFeature}

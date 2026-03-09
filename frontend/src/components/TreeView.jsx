@@ -182,6 +182,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const lastOutcome = data.featureLastOutcome?.get(id);
   const runningCommand = data.featureRunningCommand?.get(id);
   const isInputWaiting = data.featureInputWaiting?.has(id) || false;
+  const isQueued = data.featureQueueWaiters?.has(String(id)) || false;
 
   // Local tick for running nodes only: re-render every second to update "Xs ago" display.
   // Only running TreeNodes pay this cost; non-running nodes skip the interval entirely.
@@ -211,15 +212,18 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
       ? 'state-failed'
       : !isRunning && lastOutcome?.status === 'handed-off'
         ? 'state-handed-off'
-        : executableCommand && !isRunning && lastOutcome?.status === 'completed'
-          ? 'state-step-done'
-          : isBlocked
-            ? ''
-            : executableCommand
-              ? 'state-executable'
-              : '';
+        : isQueued
+          ? 'state-queued'
+          : executableCommand && !isRunning && lastOutcome?.status === 'completed'
+            ? 'state-step-done'
+            : isBlocked
+              ? ''
+              : executableCommand
+                ? 'state-executable'
+                : '';
 
   const handleClick = () => {
+    if (isQueued) return;
     if (isInputWaiting) {
       callbacks.onInputWaitingClick(id);
     } else if (executableCommand) {
@@ -230,13 +234,15 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   return (
     <div className="tree-node">
       <div
-        className={`tree-item ${executableCommand ? 'executable' : ''} ${isBlocked ? 'blocked' : ''} ${stateClass} ${isRunning ? 'running' : ''}`}
+        className={`tree-item ${executableCommand && !isQueued ? 'executable' : ''} ${isBlocked ? 'blocked' : ''} ${stateClass} ${isRunning ? 'running' : ''}`}
         onClick={handleClick}
         style={{ marginLeft: depth * 24 }}
       >
         {/* Left: Running label (2-row spanning) or placeholder (root only) */}
         {isRunning ? (
           <div className="tree-running-label">{(runningCommand || 'run').toUpperCase()}</div>
+        ) : isQueued ? (
+          <div className="tree-waiting-label">WAIT</div>
         ) : depth === 0 ? (
           <div className="tree-running-placeholder" />
         ) : null}
@@ -396,6 +402,7 @@ export default function TreeView({
   featureLastOutcome,
   featureRunningCommand,
   featureInputWaiting,
+  featureQueueWaiters,
   onRunCommand,
   onOpenTerminal,
   onResumeBrowser,
@@ -501,6 +508,7 @@ export default function TreeView({
       featureLastOutcome,
       featureRunningCommand,
       featureInputWaiting,
+      featureQueueWaiters,
     }),
     [
       runningFeatures,
@@ -511,6 +519,7 @@ export default function TreeView({
       featureLastOutcome,
       featureRunningCommand,
       featureInputWaiting,
+      featureQueueWaiters,
     ],
   );
 

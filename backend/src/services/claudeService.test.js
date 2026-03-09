@@ -1819,7 +1819,7 @@ describe('ClaudeService', () => {
 
   describe('executeCommand', () => {
     it('starts execution immediately', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 99 });
       service._startExecution = vi.fn();
 
       const execId = service.executeCommand('100', 'fl');
@@ -1829,7 +1829,7 @@ describe('ClaudeService', () => {
     });
 
     it('starts multiple executions concurrently', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 99 });
       service._startExecution = vi.fn();
 
       const id1 = service.executeCommand('100', 'fl');
@@ -2078,7 +2078,7 @@ describe('ClaudeService', () => {
 
   describe('handleFeatureStatusChanged', () => {
     it('triggers next command when waiter exists', () => {
-      const { service, logStreamer } = createService();
+      const { service, logStreamer } = createService({ maxConcurrent: 99 });
       service._startExecution = vi.fn();
 
       const exec = service._createExecution({ featureId: '100', command: 'fc', chain: true });
@@ -2166,7 +2166,7 @@ describe('ClaudeService', () => {
 
   describe('getQueueStatus', () => {
     it('returns running and queued executions', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 4 });
       service._startExecution = vi.fn();
 
       const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
@@ -2177,7 +2177,7 @@ describe('ClaudeService', () => {
 
       const status = service.getQueueStatus();
 
-      expect(status.maxConcurrent).toBe(99);
+      expect(status.maxConcurrent).toBe(4);
       expect(status.runningCount).toBe(1);
       expect(status.running).toHaveLength(1);
       expect(status.running[0].featureId).toBe('100');
@@ -4054,7 +4054,7 @@ describe('ClaudeService', () => {
 
   describe('_dequeueNext', () => {
     it('starts queued executions when slots available', () => {
-      const { service, logStreamer } = createService();
+      const { service, logStreamer } = createService({ maxConcurrent: 99 });
       service._startExecution = vi.fn();
 
       const exec = service._createExecution({ featureId: '100', command: 'fl' });
@@ -4072,7 +4072,7 @@ describe('ClaudeService', () => {
     });
 
     it('skips non-queued executions in queue', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 99 });
       service._startExecution = vi.fn();
 
       const exec = service._createExecution({ featureId: '100', command: 'fl' });
@@ -4953,7 +4953,7 @@ describe('ClaudeService', () => {
 
   describe('getQueueStatus - detailed fields', () => {
     it('returns correct queue status with all fields', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 4 });
       service._startExecution = vi.fn();
 
       const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
@@ -4972,7 +4972,7 @@ describe('ClaudeService', () => {
 
       const status = service.getQueueStatus();
 
-      expect(status.maxConcurrent).toBe(99);
+      expect(status.maxConcurrent).toBe(4);
       expect(status.runningCount).toBe(1);
       expect(status.running).toHaveLength(1);
       expect(status.running[0]).toMatchObject({
@@ -6688,7 +6688,7 @@ describe('Scenario Tests', () => {
     });
 
     it('_dequeueNext unblocked after rate limit queue drains', () => {
-      const { service } = createService();
+      const { service } = createService({ maxConcurrent: 99 });
       service._broadcastState = vi.fn();
       vi.spyOn(service, '_startExecution').mockImplementation(() => {});
 

@@ -1053,6 +1053,22 @@ body {
   border-left: 3px solid var(--accent);
 }
 
+.tree-item.state-queued {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  animation: queued-pulse 2s ease-in-out infinite;
+}
+
+@keyframes queued-pulse {
+  0%,
+  100% {
+    background: rgba(245, 158, 11, 0.08);
+  }
+  50% {
+    background: rgba(245, 158, 11, 0.2);
+  }
+}
+
 .tree-item-row1 {
   display: flex;
   align-items: center;
@@ -1200,6 +1216,21 @@ body {
   font-weight: 700;
   color: var(--warning);
   background: rgba(245, 158, 11, 0.2);
+  padding: 8px 0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  flex-shrink: 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.tree-waiting-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
   padding: 8px 0;
   border-radius: 6px;
   display: flex;
