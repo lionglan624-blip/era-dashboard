@@ -42,7 +42,6 @@ import {
   MAX_PROFILE_SWITCHES,
   MAX_INCOMPLETE_RETRIES,
   INPUT_EMAIL_DELAY_MS,
-  INPUT_WAIT_CLEANUP_MS,
   MAX_CONCURRENT_EXECUTIONS,
 } from '../config.js';
 
@@ -1177,18 +1176,9 @@ export class ClaudeService {
       execution.process = null;
       execution.stdin = null;
 
-      // Safety timeout — force-complete if user never answers
-      execution._inputWaitExitCode = exitCode;
-      execution._inputWaitCleanupTimeout = setTimeout(() => {
-        if (execution.waitingForInput && execution.status === 'running') {
-          claudeLog.warn(
-            `[ClaudeService] Input wait cleanup timeout (${INPUT_WAIT_CLEANUP_MS}ms) — force completing exec ${execution.id}`,
-          );
-          execution.waitingForInput = false;
-          this._handleCompletion(execution, execution._inputWaitExitCode ?? 0);
-        }
-      }, INPUT_WAIT_CLEANUP_MS);
-
+      // Hold slot indefinitely — user must answer via browser or Stop manually.
+      // Releasing the slot would allow other features to start, breaking problem isolation
+      // (run lock ensures clean start + pre-commit test integrity).
       return;
     }
 
@@ -2611,10 +2601,6 @@ export class ClaudeService {
         clearInterval(exec.stallCheckInterval);
         exec.stallCheckInterval = null;
       }
-      if (exec._inputWaitCleanupTimeout) {
-        clearTimeout(exec._inputWaitCleanupTimeout);
-        exec._inputWaitCleanupTimeout = null;
-      }
       this.logStreamer?.broadcastAll({
         type: 'status',
         executionId,
@@ -2792,12 +2778,6 @@ export class ClaudeService {
       execution.pendingHandoffTimeout = null;
     }
     execution.pendingHandoff = null;
-
-    // Cancel input-wait cleanup timeout (user answered in time)
-    if (execution._inputWaitCleanupTimeout) {
-      clearTimeout(execution._inputWaitCleanupTimeout);
-      execution._inputWaitCleanupTimeout = null;
-    }
 
     // Cancel pending input email (user answered in time)
     if (execution._pendingInputEmailTimeout) {
