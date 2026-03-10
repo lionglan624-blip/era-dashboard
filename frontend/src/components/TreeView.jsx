@@ -185,6 +185,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const lastActivityTime = data.featureStartedAt?.get(id);
   const lastOutcome = data.featureLastOutcome?.get(id);
   const runningCommand = data.featureRunningCommand?.get(id);
+  const ccsProfile = data.featureProfiles?.get(id);
   const isInputWaiting = data.featureInputWaiting?.has(id) || false;
   const isQueued = data.featureQueueWaiters?.has(String(id)) || false;
 
@@ -301,6 +302,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
             )}
             {isRunning ? (
               <>
+                {ccsProfile && <span className="tree-profile">{ccsProfile}</span>}
                 {currentPhase &&
                   currentPhase.command === 'fl' &&
                   currentPhase.iteration !== null &&
@@ -415,6 +417,7 @@ export default function TreeView({
   featureLastOutcome,
   featureRunningCommand,
   featureInputWaiting,
+  featureProfiles,
   featureQueueWaiters,
   runLockFeatureId,
   onRunCommand,
@@ -535,6 +538,7 @@ export default function TreeView({
       featureLastOutcome,
       featureRunningCommand,
       featureInputWaiting,
+      featureProfiles,
       featureQueueWaiters,
       runLockFeatureId,
     }),
@@ -547,6 +551,7 @@ export default function TreeView({
       featureLastOutcome,
       featureRunningCommand,
       featureInputWaiting,
+      featureProfiles,
       featureQueueWaiters,
       runLockFeatureId,
     ],

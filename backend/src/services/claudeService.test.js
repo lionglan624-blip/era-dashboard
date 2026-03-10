@@ -3161,9 +3161,105 @@ describe('ClaudeService', () => {
 
       service._handleCompletion(execution, 0);
 
-      // [BLOCKED] is a legitimate status — register waiter, don't retry
-      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
+      // [BLOCKED] is a legitimate status — no waiter, no retry, chain slot released
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
       expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('skips incomplete retry for fl when status is [DRAFT] (fc re-run)', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['400', '[DRAFT]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '400',
+        command: 'fl',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // [DRAFT] after FL = fc_rerun decision — no retry, no waiter
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('skips waiter registration for fl when status is [DRAFT]', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._releaseChainSlot = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['401', '[DRAFT]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '401',
+        command: 'fl',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // [DRAFT] = chain slot released, no waiter
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      expect(service._releaseChainSlot).toHaveBeenCalled();
+    });
+
+    it('still triggers incomplete retry for fl when status is [PROPOSED]', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['402', '[PROPOSED]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '402',
+        command: 'fl',
+        chain: true,
+        incompleteRetryCount: 0,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn().mockReturnValue('new-exec-id');
+
+      service._handleCompletion(execution, 0);
+      vi.advanceTimersByTime(15000);
+
+      // [PROPOSED] after FL = incomplete termination — should retry
+      expect(service.executeCommand).toHaveBeenCalledWith(
+        '402',
+        'fl',
+        expect.objectContaining({ incompleteRetryCount: 1 }),
+      );
     });
 
     it('sends email on incomplete retry exhaustion for run', () => {
@@ -3236,6 +3332,123 @@ describe('ClaudeService', () => {
         incompleteRetryCount: 1, // incremented independently
         priority: true,
       });
+    });
+
+    it('hands off to terminal when lastAssistantText contains file deletion request', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['700', '[WIP]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '700',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      execution.lastAssistantText = 'Please delete the file _out/tmp/old-result.txt and re-run.';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // Should hand off to terminal, not retry
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('File deletion requested'),
+      );
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+    });
+
+    it('hands off to terminal when lastAssistantText contains (y/n) prompt', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['800', '[PROPOSED]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '800',
+        command: 'fl',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      execution.lastAssistantText = 'Do you want to proceed with this change? (y/n)';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('User confirmation pending'),
+      );
+      expect(service.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('retries normally when lastAssistantText has no user action pattern', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['900', '[WIP]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '900',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      execution.lastAssistantText = 'Task completed successfully. All tests pass.';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+
+      vi.useFakeTimers();
+      service._handleCompletion(execution, 0);
+      vi.advanceTimersByTime(5000);
+      vi.useRealTimers();
+
+      // Should retry, not hand off
+      expect(service._handoffToTerminal).not.toHaveBeenCalled();
+      expect(service.executeCommand).toHaveBeenCalled();
+    });
+
+    it('_detectUserActionRequired returns reason for Please delete', () => {
+      const { service } = createService();
+      const execution = { lastAssistantText: 'Please delete the old file first.' };
+      expect(service._detectUserActionRequired(execution)).toBe('File deletion requested');
+    });
+
+    it('_detectUserActionRequired returns null for normal text', () => {
+      const { service } = createService();
+      const execution = { lastAssistantText: 'All tasks completed. Feature is done.' };
+      expect(service._detectUserActionRequired(execution)).toBeNull();
     });
   });
 
@@ -6298,8 +6511,8 @@ describe('Scenario Tests', () => {
   // =========================================================================
   // S12: Chain [BLOCKED] → stop chain + email
   // =========================================================================
-  describe('S12: Chain [BLOCKED] → waiter registered, no incomplete retry', () => {
-    it('FL sets [BLOCKED] → waiter registered (deferred until unblock)', () => {
+  describe('S12: Chain [BLOCKED] → chain slot released, email sent', () => {
+    it('FL sets [BLOCKED] → no waiter, chain slot released, email sent', () => {
       const { service } = createScenarioService();
       const exec = createRunningChainExecution(service, { command: 'fl' });
       exec.resultSubtype = 'success';
@@ -6308,20 +6521,21 @@ describe('Scenario Tests', () => {
       service.fileWatcher.statusCache.set('100', '[BLOCKED]');
 
       const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
+      const releaseSpy = vi.spyOn(service, '_releaseChainSlot');
 
       service._handleCompletion(exec, 0);
 
-      // chainContinues is true (exit 0, success, chain.enabled)
-      // registerWaiter is called — waiter sits until status changes
-      expect(registerSpy).toHaveBeenCalled();
+      // [BLOCKED] skips waiter registration — chain slot released immediately
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect(releaseSpy).toHaveBeenCalledWith(exec);
       expect(exec.status).toBe('completed');
-      // No immediate next command (BLOCKED has no mapping)
+      // No immediate next command
       expect(service.executeCommand).not.toHaveBeenCalled();
-      // No email (chainContinues = true, waiter handles it)
-      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+      // Email sent (chain stopped due to BLOCKED)
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalled();
     });
 
-    it('[BLOCKED] waiter triggers when status changes to [REVIEWED]', () => {
+    it('[BLOCKED] does not register waiter (no stale waiter possible)', () => {
       const { service } = createScenarioService();
       const exec = createRunningChainExecution(service, { command: 'fl' });
       exec.resultSubtype = 'success';
@@ -6330,18 +6544,8 @@ describe('Scenario Tests', () => {
 
       service._handleCompletion(exec, 0);
 
-      // Waiter registered
-      expect(service.chainExecutor.hasWaiter('100')).toBe(true);
-
-      // Later, status changes from [BLOCKED] → [REVIEWED]
-      service.chainExecutor.handleStatusChanged('100', '[BLOCKED]', '[REVIEWED]');
-
-      // Now chain continues: run triggered
-      expect(service.executeCommand).toHaveBeenCalledWith(
-        '100',
-        'run',
-        expect.objectContaining({ chain: true }),
-      );
+      // No waiter registered — BLOCKED features don't wait
+      expect(service.chainExecutor.hasWaiter('100')).toBe(false);
     });
 
     it('[BLOCKED] skips incomplete retry (legitimate status)', () => {

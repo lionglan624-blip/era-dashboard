@@ -1140,6 +1140,13 @@ body {
   text-align: center;
 }
 
+.tree-profile {
+  font-size: 10px;
+  color: #a78bfa;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
 .tree-phase {
   background: rgba(59, 130, 246, 0.2);
   color: #60a5fa;

@@ -236,7 +236,7 @@ The word "session" appears in two unrelated contexts:
 Detects context/max_turns exhaustion mid-work where CLI reports success but FL didn't finish.
 - **Condition**: Exit 0 + `resultSubtype === 'success'` but status still `[PROPOSED]` (not `[REVIEWED]`, via `fileWatcher.statusCache`)
 - **Action**: Auto-retries FL as new execution (up to `MAX_FL_RETRIES`, shared counter with FL auto-retry)
-- **Skipped**: `[BLOCKED]` (legitimate) or `fileWatcher` null (fallback: register waiter normally)
+- **Skipped**: `[BLOCKED]` (legitimate), `[DRAFT]` after FL (fc_rerun decision), or `fileWatcher` null (fallback: register waiter normally)
 - **WS**: `chain-retry` with `retryType: 'incomplete'`. On exhaustion: falls through to email notification
 
 ## Tmp Cleanup (`cleanupService.js`)

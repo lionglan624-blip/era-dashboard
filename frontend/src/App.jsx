@@ -438,8 +438,20 @@ export default function App() {
         });
       },
       'execution-started': (msg) => {
-        // Handle executions started via external API (e.g., curl)
-        subscribeAndFetchExecution(msg.executionId, msg.command.toUpperCase());
+        if (msg.source === 'dequeue') {
+          // Dequeued execution: subscribe + fetch without switching active tab
+          if (!msg.executionId) return;
+          subscribeRef.current?.(msg.executionId);
+          fetch(`/api/execution/${msg.executionId}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((exec) => {
+              if (exec) dispatch({ type: 'ADD_EXECUTION', exec });
+            })
+            .catch(() => {});
+        } else {
+          // External API (curl) or slash/debug: subscribe + switch tab
+          subscribeAndFetchExecution(msg.executionId, msg.command.toUpperCase());
+        }
       },
       'upd-complete': (msg) => {
         const changed = msg.oldVersion !== msg.newVersion;
@@ -607,6 +619,7 @@ export default function App() {
     featureRunningCommand,
     featureInputWaiting,
     featureRetryInfo,
+    featureProfiles,
   } = useMemo(() => {
     const running = new Set();
     const sessionIds = new Map();
@@ -616,6 +629,7 @@ export default function App() {
     const runningCmd = new Map();
     const inputWaiting = new Set();
     const retryInfo = new Map();
+    const profiles = new Map();
 
     for (const [execId, exec] of executions) {
       const isStopped =
@@ -624,6 +638,7 @@ export default function App() {
       if (exec.status === 'running') {
         running.add(exec.featureId);
         if (exec.command) runningCmd.set(exec.featureId, exec.command.toUpperCase());
+        if (exec.ccsProfile) profiles.set(exec.featureId, exec.ccsProfile);
         const state = executionStates.get(execId);
         if (state?.contextPercent != null) contextPercent.set(exec.featureId, state.contextPercent);
         if (exec.startedAt != null) startedAt.set(exec.featureId, exec.startedAt);
@@ -692,6 +707,7 @@ export default function App() {
       featureRunningCommand: runningCmd,
       featureInputWaiting: inputWaiting,
       featureRetryInfo: retryInfo,
+      featureProfiles: profiles,
     };
   }, [executions, executionStates, inputRequests]);
 
@@ -1312,6 +1328,7 @@ export default function App() {
           featureRunningCommand={featureRunningCommand}
           featureInputWaiting={featureInputWaiting}
           featureRetryInfo={featureRetryInfo}
+          featureProfiles={featureProfiles}
           featureQueueWaiters={featureQueueWaiters}
           runLockFeatureId={healthStatus.runLockFeatureId}
           onReleaseLock={handleReleaseLock}

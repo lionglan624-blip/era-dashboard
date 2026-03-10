@@ -638,6 +638,7 @@ export class ClaudeService {
     execution.status = 'running';
     execution.startedAt = new Date().toISOString();
     execution.lastOutputTime = Date.now();
+    execution.ccsProfile = this.getCcsProfile();
 
     // Acquire run-lock when /run starts
     if (command === 'run') {
@@ -729,6 +730,15 @@ export class ClaudeService {
     execution.stallCheckInterval = setInterval(() => {
       this._checkStall(execution);
     }, STALL_CHECK_INTERVAL_MS);
+
+    // Notify frontend so it auto-subscribes to dequeued executions
+    // (without this, dequeue→running transitions are invisible until F5)
+    this.logStreamer?.broadcastAll({
+      type: 'execution-started',
+      executionId,
+      command: execution.command,
+      source: 'dequeue',
+    });
 
     this._broadcastQueueUpdate();
     this._broadcastState(execution);
@@ -1045,6 +1055,29 @@ export class ClaudeService {
     }
 
     return false;
+  }
+
+  /**
+   * Detect if assistant's last output requires user action (file deletion, confirmation, etc.)
+   * Used to avoid futile incomplete termination retries when user interaction is needed.
+   */
+  _detectUserActionRequired(execution) {
+    if (!execution.lastAssistantText) return null;
+    const text = execution.lastAssistantText;
+
+    const patterns = [
+      { pattern: /Please delete/i, reason: 'File deletion requested' },
+      { pattern: /削除してください/, reason: 'File deletion requested' },
+      { pattern: /手動で削除/, reason: 'Manual deletion requested' },
+      { pattern: /\(y\/n\)/i, reason: 'User confirmation pending' },
+    ];
+
+    for (const { pattern, reason } of patterns) {
+      if (pattern.test(text)) {
+        return reason;
+      }
+    }
+    return null;
   }
 
   /** Check if execution has stalled */
@@ -1582,7 +1615,33 @@ export class ClaudeService {
     const expectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
     if (chainContinues && !isLastChainStep && expectedStatus && !execution._hadInputWait) {
       const currentStatus = this.fileWatcher?.statusCache.get(execution.featureId);
-      if (currentStatus && currentStatus !== expectedStatus && currentStatus !== '[BLOCKED]') {
+      if (
+        currentStatus &&
+        currentStatus !== expectedStatus &&
+        currentStatus !== '[BLOCKED]' &&
+        !(execution.command === 'fl' && currentStatus === '[DRAFT]')
+      ) {
+        // Check if user action is required — skip retry, hand off to terminal instead
+        const userActionReason = this._detectUserActionRequired(execution);
+        if (userActionReason) {
+          const cmdUpper = execution.command.toUpperCase();
+          claudeLog.info(
+            `[Chain] ${cmdUpper} incomplete termination for F${execution.featureId}: ` +
+              `user action required (${userActionReason}). Handing off to terminal.`,
+          );
+          this._pushLog(execution, {
+            line: `[Chain] ${cmdUpper} incomplete — ${userActionReason}. Terminal resume recommended.`,
+            timestamp: new Date().toISOString(),
+            level: 'warning',
+          });
+          if (execution.command === 'run') {
+            this._releaseRunLock(execution.featureId, 'incomplete-handoff');
+          }
+          execution.process = null;
+          execution.stdin = null;
+          this._handoffToTerminal(execution, `${cmdUpper} incomplete — ${userActionReason}`);
+          return;
+        }
         // Command completed but didn't change status — incomplete termination
         // Auto-retry as a new chain execution instead of registering a dead waiter
         const cmdUpper = execution.command.toUpperCase();
@@ -1669,10 +1728,16 @@ export class ClaudeService {
       this._releaseRunLock(execution.featureId, execution.status);
     }
 
+    const currentStatusForWaiter = this.fileWatcher?.statusCache.get(execution.featureId);
+    const isBlocked = currentStatusForWaiter === '[BLOCKED]';
+    const isDraftAfterFl = execution.command === 'fl' && currentStatusForWaiter === '[DRAFT]';
+
     if (
       chainContinues &&
       !isLastChainStep &&
       !incompleteRetryExhausted &&
+      !isBlocked &&
+      !isDraftAfterFl &&
       (!execution._hadInputWait || execution._resumedAnswer)
     ) {
       this.chainExecutor.registerWaiter(execution);
@@ -1681,7 +1746,11 @@ export class ClaudeService {
     }
 
     if (
-      (!chainContinues || isLastChainStep || incompleteRetryExhausted) &&
+      (!chainContinues ||
+        isLastChainStep ||
+        incompleteRetryExhausted ||
+        isBlocked ||
+        isDraftAfterFl) &&
       !execution.waitingForInput &&
       !execution.inputRequired &&
       !execution._hadInputWait
@@ -1988,6 +2057,7 @@ export class ClaudeService {
       newExec.lastOutputTime = Date.now();
       newExec.sessionId = execution.sessionId;
       newExec._profileSwitchCount = execution._profileSwitchCount || 0;
+      newExec.ccsProfile = this.getCcsProfile(); // May have changed after profile switch
       newExec._rateLimitQueueContinue = this._rateLimitRetryQueue.length > 0;
       newExec.debugLogPath = path.join(this.tmpDir, `debug-${newExec.id}.log`);
       newExec.logs = [
@@ -2468,6 +2538,7 @@ export class ClaudeService {
       rateLimitSwitchedTo: exec.rateLimitSwitchedTo || null,
       contextPercent: exec.contextPercent,
       tokenUsage: exec.tokenUsage,
+      ccsProfile: exec.ccsProfile || null,
       chain: exec.chain
         ? {
             enabled: exec.chain.enabled,
@@ -2911,6 +2982,7 @@ export class ClaudeService {
     execution.startedAt = new Date().toISOString();
     execution.lastOutputTime = Date.now();
     execution.sessionId = sessionId;
+    execution.ccsProfile = this.getCcsProfile();
     execution.currentPhase = oldExec?.currentPhase || null;
     execution.currentPhaseName = oldExec?.currentPhaseName || null;
     execution.logs = [
