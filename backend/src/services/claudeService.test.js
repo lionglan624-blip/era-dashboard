@@ -2973,6 +2973,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        priority: true,
       });
 
       // chain-retry WS event must be broadcast
@@ -3084,6 +3085,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        priority: true,
       });
 
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
@@ -3130,6 +3132,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        priority: true,
       });
     });
 
@@ -3231,6 +3234,7 @@ describe('ClaudeService', () => {
         retryCount: 2, // preserved, not incremented
         contextRetryCount: 0,
         incompleteRetryCount: 1, // incremented independently
+        priority: true,
       });
     });
   });
@@ -4150,7 +4154,7 @@ describe('ClaudeService', () => {
       expect(newExec.command).toBe('run');
     });
 
-    it('resume path: rateLimitService.recomputeRefreshTimes and capture called', async () => {
+    it('resume path: rateLimitService.recomputeRefreshTimes called (capture removed)', async () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._attachStdoutHandler = vi.fn();
@@ -4175,7 +4179,7 @@ describe('ClaudeService', () => {
       service._startRateLimitRetry(execution);
 
       expect(mockRateLimitService.recomputeRefreshTimes).toHaveBeenCalled();
-      expect(mockRateLimitService.capture).toHaveBeenCalled();
+      expect(mockRateLimitService.capture).not.toHaveBeenCalled();
     });
   });
 

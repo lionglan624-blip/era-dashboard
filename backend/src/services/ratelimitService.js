@@ -83,23 +83,28 @@ export class RateLimitService {
    * @param {boolean} [options.forceRefresh=false] - Skip cache check
    * @returns {Promise<Object|null>} Rate limit data by profile or null
    */
-  async capture({ forceRefresh = false } = {}) {
+  async capture({ forceRefresh = false, profile = null } = {}) {
     // Prevent concurrent captures
     if (this._capturing) {
       return this.getCached();
     }
 
-    const profiles = this.getProfiles();
-    claudeLog.info(`[RateLimit] Profiles: [${profiles.join(', ')}]`);
-    if (profiles.length === 0) return null;
+    let staleProfiles;
+    if (profile !== null) {
+      // Single-profile mode: bypass stale filter, always capture
+      claudeLog.info(`[RateLimit] Profile: [${profile}]`);
+      staleProfiles = [profile];
+    } else {
+      // All-profile mode: enumerate and filter to stale profiles
+      const profiles = this.getProfiles();
+      claudeLog.info(`[RateLimit] Profiles: [${profiles.join(', ')}]`);
+      if (profiles.length === 0) return null;
 
-    this._capturing = true;
-    try {
       // Filter to profiles needing refresh
       // Check both refreshAt (normal polling cycle) and expiresAt (data no longer valid)
       // to prevent a gap where expired data isn't refreshed until the next polling cycle
-      const staleProfiles = profiles.filter((profile) => {
-        const cached = this._cache.get(profile);
+      staleProfiles = profiles.filter((p) => {
+        const cached = this._cache.get(p);
         return (
           forceRefresh ||
           !cached ||
@@ -107,7 +112,10 @@ export class RateLimitService {
           Date.now() >= cached.expiresAt
         );
       });
+    }
 
+    this._capturing = true;
+    try {
       // Capture all stale profiles in parallel
       if (staleProfiles.length > 0) {
         const results = await Promise.allSettled(
@@ -116,7 +124,11 @@ export class RateLimitService {
             env.CLAUDE_CONFIG_DIR = path.join(CCS_INSTANCES_DIR, profile);
             claudeLog.info(`[RateLimit] Starting capture for ${profile}`);
             const captureText = await this._runCapture(env);
+            claudeLog.info(
+              `[RateLimit] Capture text for ${profile} (${captureText?.length || 0} chars): ${(captureText || '').substring(0, 500).replace(/\n/g, '\\n').replace(/\0/g, '')}`,
+            );
             const rawData = this._parseUsageOutput(captureText);
+            claudeLog.info(`[RateLimit] Parsed data for ${profile}: ${JSON.stringify(rawData)}`);
             const mergedData = this._mergeWithCached(profile, rawData);
             const refreshAt = this._computeRefreshAt(mergedData);
             const expiresAt = mergedData ? this._computeExpiresAt(mergedData) : refreshAt;
@@ -276,11 +288,13 @@ export class RateLimitService {
       let usageSent = false;
       let usageDetected = false;
       let usageScreen = null; // Clean buffer for /usage output (no retainText artifacts)
+      let usageRetryCount = 0;
+      let usageRetrying = false; // Guard: ignore onData while waiting for retry
 
       ptyProcess.onData((data) => {
         screen.feed(data);
         if (usageScreen) usageScreen.feed(data);
-        if (resolved) return;
+        if (resolved || usageRetrying) return;
 
         const text = screen.getText();
 
@@ -303,14 +317,36 @@ export class RateLimitService {
 
         // Phase 3: After /usage sent, check for output completion
         // /usage renders multi-line sections: session → week (all models) → week (Sonnet only) → Extra usage → Esc to cancel
-        // Detect completion by "Esc to cancel" (final line) or "Sonnet" section appearing
+        // On rate_limit_error, /usage shows "r to retry · Esc to cancel" — retry with 'r' key
         if (usageSent && !usageDetected) {
-          const hasEsc = /Esc to cancel/i.test(text);
+          // Check rate_limit_error FIRST — its response also contains "Esc to cancel"
+          const isRateLimitError = /rate.limit/i.test(text) && /r to retry/i.test(text);
+          if (isRateLimitError) {
+            if (usageRetryCount < 3) {
+              usageRetryCount++;
+              usageRetrying = true;
+              claudeLog.info(
+                `[RateLimit] /usage rate limited, sending 'r' to retry (${usageRetryCount}/3) PID=${ptyProcess.pid}`,
+              );
+              setTimeout(() => {
+                if (resolved) return;
+                usageScreen = new VtScreenBuffer(120, 30);
+                ptyProcess.write('r');
+                usageRetrying = false;
+              }, 2000);
+            }
+            // If retries exhausted, let fallback/overall timeout handle it
+            return;
+          }
+
+          // Success: actual usage data (section headers + percentages)
+          const hasUsageData =
+            /Current\s*t?session/i.test(text) && /\d+%[^\d%]{0,15}used/i.test(text);
           const hasSonnet = /Sonnet\s+only/i.test(text) && /\d+%[^\d%]{0,15}used/i.test(text);
-          if (hasEsc || hasSonnet) {
+          if (hasUsageData || hasSonnet) {
             usageDetected = true;
             claudeLog.info(
-              `[RateLimit] Usage output detected (${hasEsc ? 'Esc' : 'Sonnet'}), waiting 500ms for complete render PID=${ptyProcess.pid}`,
+              `[RateLimit] Usage output detected (${hasUsageData ? 'session' : 'Sonnet'}), waiting 500ms for complete render PID=${ptyProcess.pid}`,
             );
             // Wait 500ms for remaining lines to render
             setTimeout(() => {
@@ -819,8 +855,8 @@ export class RateLimitService {
 
     this._expiryTimer = setTimeout(() => {
       this._expiryTimer = null;
-      claudeLog.info('[RateLimit] Expiry timer fired, refreshing all profiles');
-      this.capture({ forceRefresh: true }).catch((err) => {
+      claudeLog.info('[RateLimit] Expiry timer fired, capturing stale profiles');
+      this.capture().catch((err) => {
         claudeLog.error(`[RateLimit] Expiry-triggered capture failed: ${err.message}`);
       });
     }, delay);

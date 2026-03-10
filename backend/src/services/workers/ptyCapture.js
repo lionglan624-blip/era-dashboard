@@ -14,6 +14,9 @@ import { VtScreenBuffer } from '../vtScreenBuffer.js';
 
 const require = createRequire(import.meta.url);
 
+const USAGE_RETRY_DELAY_MS = 2000;
+const USAGE_MAX_RETRIES = 3;
+
 function killPty(ptyProcess) {
   try {
     ptyProcess.kill();
@@ -62,6 +65,8 @@ function runCapture({ env, cols, rows, timeoutMs }) {
   let usageSent = false;
   let usageDetected = false;
   let usageScreen = null;
+  let usageRetryCount = 0;
+  let usageRetrying = false; // Guard: ignore onData while waiting for retry
 
   const finish = (text) => {
     if (resolved) return;
@@ -76,7 +81,7 @@ function runCapture({ env, cols, rows, timeoutMs }) {
   ptyProcess.onData((data) => {
     screen.feed(data);
     if (usageScreen) usageScreen.feed(data);
-    if (resolved) return;
+    if (resolved || usageRetrying) return;
 
     const text = screen.getText();
 
@@ -98,10 +103,29 @@ function runCapture({ env, cols, rows, timeoutMs }) {
 
     // Phase 3: After /usage sent, check for output completion
     if (usageSent && !usageDetected) {
-      const hasEsc = /Esc to cancel/i.test(text);
+      // Check rate_limit_error FIRST — its response also contains "Esc to cancel"
+      const isRateLimitError = /rate.limit/i.test(text) && /r to retry/i.test(text);
+      if (isRateLimitError) {
+        if (usageRetryCount < USAGE_MAX_RETRIES) {
+          usageRetryCount++;
+          usageRetrying = true;
+          setTimeout(() => {
+            if (resolved) return;
+            usageScreen = new VtScreenBuffer(cols, rows);
+            ptyProcess.write('r');
+            usageRetrying = false;
+          }, USAGE_RETRY_DELAY_MS);
+        }
+        // If retries exhausted, let fallback/overall timeout handle it
+        return;
+      }
+
+      // Success: actual usage data (section headers + percentages)
+      const hasUsageData = /Current\s*t?session/i.test(text) && /\d+%[^\d%]{0,15}used/i.test(text);
       const hasSonnet = /Sonnet\s+only/i.test(text) && /\d+%[^\d%]{0,15}used/i.test(text);
-      if (hasEsc || hasSonnet) {
+      if (hasUsageData || hasSonnet) {
         usageDetected = true;
+        // Wait 500ms for remaining lines to render
         setTimeout(() => {
           finish(usageScreen?.getText() || screen.getText());
         }, 500);

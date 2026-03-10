@@ -9,15 +9,15 @@ Implementation details and design decisions. Read [HANDOFF.md](HANDOFF.md) first
 Tracks CCS **profile-level** usage (weekly/session/sonnet — API quota limits, NOT conversation context).
 
 - **expiresAt**: `min(weekly reset, session reset, sonnet reset, 1 week)`
-- **refreshAt**: Adaptive 5min–2h based on activity and max percent
-  - Idle (no running/queued executions): 2h
+- **refreshAt**: Adaptive 5min–6h based on activity and max percent
+  - Idle (no running/queued executions): 6h
   - Active ≥90%: 5min
   - Active 80–89%: 10min
   - Active <80%: 30min
 - **Session burn rate prediction**: When session elapsed ≥30min, percent ≥5%, and <100%, projects usage to end of 5h window
   - Projected >150%: 5min refresh
   - Projected >100%: 10min refresh (weekly unchanged)
-- **Triggers**: On-start `capture()`, on-completion `capture({ forceRefresh: true })`, on-FE-refresh (`/api/health?refresh=1`)
+- **Triggers**: Startup `capture({ forceRefresh: true })`, 5min periodic polling (stale filter), FE-refresh (`/api/health?refresh=1`), 429 path (per-profile), expiry timer
 - **Persistence**: `/usage` data preserves all types; capture failure preserves cache. Persisted to `_out/tmp/dashboard/ratelimit-cache.json`
 
 ## Account Limit (429) Details
@@ -172,7 +172,7 @@ Captures Claude Code's exact usage percentages via `/usage` slash command throug
 
 **Cache**: Per-profile `Map<profileName, {data, timestamp, expiresAt}>`, dynamic TTL (see [Rate Limit Cache Details](#rate-limit-cache-details)). On `/usage` success: all three types stored. On failure: existing cache preserved if not expired. Persisted to `_out/tmp/dashboard/ratelimit-cache.json` (loaded on startup, saved on every update). Manual injection via `POST /api/ratelimit/:profile`.
 
-**Triggers**: Startup (background) + 5min periodic polling + after each command completion (fire-and-forget).
+**Triggers**: Startup (background) + 5min periodic polling (stale filter) + 429 path (per-profile) + expiry timer. Command start calls `recomputeRefreshTimes()` only (no capture).
 
 **FE display**: Header shows `{profile} W:XX% S:XX%` with reset times (`↻W:` / `↻S:`) when percent > 75% (yellow ≥70%, red pulse ≥90%). Sonnet data captured but not displayed (used for auto-switch and rate limit retry).
 

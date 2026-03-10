@@ -158,6 +158,8 @@ const rateLimitService = new RateLimitService(PROJECT_ROOT, {
       level: 'info',
       timestamp: new Date().toISOString(),
     });
+    // Shorten refresh intervals after profile switch (new profile may need sooner refresh)
+    rateLimitService.recomputeRefreshTimes();
   },
 });
 
@@ -176,7 +178,7 @@ fileWatcher.onStatusChanged = (featureId, oldStatus, newStatus) => {
 // (allows checking current status when registering chain waiter)
 claudeService.fileWatcher = fileWatcher;
 
-// Provide rateLimitService to claudeService for post-completion capture
+// Provide rateLimitService to claudeService for 429 per-profile capture and refresh time recompute
 claudeService.rateLimitService = rateLimitService;
 
 // Provide featureService to claudeService for email notifications

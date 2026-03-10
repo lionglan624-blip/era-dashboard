@@ -120,7 +120,7 @@ export const RATE_LIMIT_POLL_INTERVAL_MS = 300000;
 export const RATE_LIMIT_CAPTURE_TIMEOUT_MS = 20000;
 
 /** Refresh interval when idle (no running/queued executions) */
-export const RATE_LIMIT_IDLE_REFRESH_MS = 7200000; // 2 hours
+export const RATE_LIMIT_IDLE_REFRESH_MS = 21600000; // 6 hours
 
 /** Session rate limit window (5 hours) — used for burn rate projection */
 export const SESSION_WINDOW_MS = 5 * 60 * 60 * 1000;

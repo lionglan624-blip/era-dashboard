@@ -563,6 +563,7 @@ export class ClaudeService {
    * @param {number} [options.retryCount=0] - Current retry count for FL auto-retry
    * @param {number} [options.incompleteRetryCount=0] - Current retry count for incomplete termination
    * @param {Array<{command: string, result: string, reason?: string}>} [options.chainHistory=[]] - Chain execution history
+   * @param {boolean} [options.priority=false] - Insert at queue front (for incomplete retries)
    * @returns {string} Execution ID
    */
   executeCommand(
@@ -575,6 +576,7 @@ export class ClaudeService {
       contextRetryCount = 0,
       incompleteRetryCount = 0,
       chainHistory = [],
+      priority = false,
     } = {},
   ) {
     // Validate inputs to prevent command injection
@@ -601,22 +603,25 @@ export class ClaudeService {
       claudeLog.info(`[Queue] Chain slot reserved: ${executionId}`);
     }
 
-    // Shorten idle refresh intervals now that an execution is starting,
-    // then trigger capture (uses cache if fresh after recompute)
+    // Shorten idle refresh intervals now that an execution is starting
     if (this.rateLimitService) {
       this.rateLimitService.recomputeRefreshTimes();
-      this.rateLimitService.capture().catch(() => {});
     }
 
     if (this._canStartNow(execution)) {
       this._startExecution(execution);
     } else {
-      this.queue.push(executionId);
+      if (priority) {
+        this.queue.unshift(executionId);
+      } else {
+        this.queue.push(executionId);
+      }
+      const queuePos = priority ? 1 : this.queue.length;
       const runBlocked = this._isRunBlocked(execution.command);
       this._pushLog(execution, {
         line: runBlocked
-          ? `Queued (position ${this.queue.length}). Waiting for running /run to complete...`
-          : `Queued (position ${this.queue.length}). Waiting for slot...`,
+          ? `Queued (position ${queuePos}). Waiting for running /run to complete...`
+          : `Queued (position ${queuePos}). Waiting for slot...`,
         timestamp: new Date().toISOString(),
         level: 'info',
       });
@@ -1517,9 +1522,10 @@ export class ClaudeService {
           .catch(() => {});
       }
 
-      // Refresh rate limit after command completion
+      // Refresh rate limit for the profile that hit 429
       if (this.rateLimitService) {
-        this.rateLimitService.capture({ forceRefresh: true }).catch(() => {});
+        const profile = this.getCcsProfile();
+        this.rateLimitService.capture({ forceRefresh: true, profile }).catch(() => {});
       }
 
       // Release run-lock so retry (or other queued /run) can start
@@ -1541,11 +1547,9 @@ export class ClaudeService {
     execution.stdin = null;
     this.streamParser.clearRingBuffer(execution.id);
 
-    // Release run-lock on completion (fileWatcher status-change may never fire
-    // for incomplete termination or context exhaustion mid-work)
-    if (execution.command === 'run') {
-      this._releaseRunLock(execution.featureId, execution.status);
-    }
+    // Run-lock release is deferred until after the incomplete termination check below.
+    // Early release here caused a race: _dequeueNext() started the next /run before
+    // incomplete detection could retry, pushing the retry to the queue tail.
 
     const completionMessage = isFlRetryExhausted
       ? `[FL retries exhausted (${execution.chain.retryCount}/${MAX_FL_RETRIES}) — manual re-run needed]`
@@ -1617,6 +1621,7 @@ export class ClaudeService {
                 retryCount: execution.chain.retryCount || 0,
                 contextRetryCount: execution.chain.contextRetryCount || 0,
                 incompleteRetryCount: incompleteCount,
+                priority: true,
               });
 
               this.logStreamer?.broadcastAll({
@@ -1667,6 +1672,13 @@ export class ClaudeService {
       }
     }
 
+    // Deferred run-lock release: now that incomplete termination check is done,
+    // release the lock for non-retry paths (normal completion, retries exhausted).
+    // The incomplete-retry path already released the lock and returned above.
+    if (execution.command === 'run') {
+      this._releaseRunLock(execution.featureId, execution.status);
+    }
+
     if (
       chainContinues &&
       !isLastChainStep &&
@@ -1714,11 +1726,6 @@ export class ClaudeService {
           featureInfo,
         )
         .catch(() => {});
-    }
-
-    // Refresh rate limit after command completion (fire-and-forget)
-    if (this.rateLimitService) {
-      this.rateLimitService.capture({ forceRefresh: true }).catch(() => {});
     }
 
     this._dequeueNext();
@@ -1857,7 +1864,8 @@ export class ClaudeService {
 
     // Re-capture to get fresh data
     try {
-      await this.rateLimitService?.capture({ forceRefresh: true });
+      const profile = this.getCcsProfile();
+      await this.rateLimitService?.capture({ forceRefresh: true, profile });
     } catch (err) {
       claudeLog.error(`[RateLimit] Re-capture failed: ${err.message}`);
     }
@@ -2056,7 +2064,6 @@ export class ClaudeService {
 
       if (this.rateLimitService) {
         this.rateLimitService.recomputeRefreshTimes();
-        this.rateLimitService.capture().catch(() => {});
       }
 
       newExecId = newExec.id;
@@ -3229,11 +3236,6 @@ export class ClaudeService {
       executionId,
       command: slashCommand,
     });
-
-    // Refresh rate limit on command start (fire-and-forget)
-    if (this.rateLimitService) {
-      this.rateLimitService.capture().catch(() => {});
-    }
 
     // Slash commands (commit, sync-deps) bypass queue limit — lightweight, non-feature ops
     this._startExecution(execution);

@@ -322,7 +322,7 @@ describe('RateLimitService', () => {
       expect(result).toBeLessThanOrEqual(expectedMax);
     });
 
-    it('returns 2 hours when idle regardless of data', () => {
+    it('returns 6 hours when idle regardless of data', () => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
         isIdle: () => true,
@@ -330,21 +330,21 @@ describe('RateLimitService', () => {
       const data = { weekly: { percent: 95, resetsAt: 'Feb 9' } };
       const before = Date.now();
       const result = service._computeRefreshAt(data);
-      const expectedMin = before + 2 * 60 * 60 * 1000 - 1000;
-      const expectedMax = Date.now() + 2 * 60 * 60 * 1000 + 1000;
+      const expectedMin = before + 6 * 60 * 60 * 1000 - 1000;
+      const expectedMax = Date.now() + 6 * 60 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
       expect(result).toBeLessThanOrEqual(expectedMax);
     });
 
-    it('returns 2 hours when idle even with null data', () => {
+    it('returns 6 hours when idle even with null data', () => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
         isIdle: () => true,
       });
       const before = Date.now();
       const result = service._computeRefreshAt(null);
-      const expectedMin = before + 2 * 60 * 60 * 1000 - 1000;
-      const expectedMax = Date.now() + 2 * 60 * 60 * 1000 + 1000;
+      const expectedMin = before + 6 * 60 * 60 * 1000 - 1000;
+      const expectedMax = Date.now() + 6 * 60 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
       expect(result).toBeLessThanOrEqual(expectedMax);
     });
