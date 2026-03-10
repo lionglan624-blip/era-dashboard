@@ -239,6 +239,11 @@ export class ClaudeService {
     this._persistShellStates();
   }
 
+  /** Exit process for PM2 autorestart — separated for testability */
+  _exitForRestart() {
+    process.exit(0);
+  }
+
   /** Persist shell states to disk */
   _persistShellStates() {
     try {
@@ -1344,6 +1349,11 @@ export class ClaudeService {
         });
       }, RETRY_DELAY_MS);
 
+      // Release run-lock so retry (or other queued /run) can start
+      if (execution.command === 'run') {
+        this._releaseRunLock(execution.featureId, 'context-retry');
+      }
+
       this._broadcastState(execution);
       this._dequeueNext();
       return;
@@ -1512,6 +1522,11 @@ export class ClaudeService {
         this.rateLimitService.capture({ forceRefresh: true }).catch(() => {});
       }
 
+      // Release run-lock so retry (or other queued /run) can start
+      if (execution.command === 'run') {
+        this._releaseRunLock(execution.featureId, 'rate-limit');
+      }
+
       // Don't dequeue (paused or immediate retry pending)
       this.onExecutionComplete?.(execution);
       return;
@@ -1525,6 +1540,12 @@ export class ClaudeService {
     execution.process = null;
     execution.stdin = null;
     this.streamParser.clearRingBuffer(execution.id);
+
+    // Release run-lock on completion (fileWatcher status-change may never fire
+    // for incomplete termination or context exhaustion mid-work)
+    if (execution.command === 'run') {
+      this._releaseRunLock(execution.featureId, execution.status);
+    }
 
     const completionMessage = isFlRetryExhausted
       ? `[FL retries exhausted (${execution.chain.retryCount}/${MAX_FL_RETRIES}) — manual re-run needed]`
@@ -1621,6 +1642,11 @@ export class ClaudeService {
           // Clear stale input-wait state so FE doesn't show input buttons for old execution
           execution.waitingForInput = false;
           execution.waitingInputPattern = null;
+
+          // Release run-lock so retry can acquire it (prevents deadlock)
+          if (execution.command === 'run') {
+            this._releaseRunLock(execution.featureId, 'incomplete-retry');
+          }
 
           // Skip waiter registration and email — retry will handle it
           this._dequeueNext();
@@ -3116,14 +3142,13 @@ export class ClaudeService {
         timestamp: new Date().toISOString(),
       });
       this._setShellState(command, true);
-      // pm2 restart all — EADDRINUSE handled by server.js polling retry
+      // Let PM2 handle restart via autorestart + restart_delay (5s).
+      // Detached spawn approaches (pm2 restart / pm2 stop+start) all cause cascade issues:
+      // orphan detached processes survive parent death and keep issuing restart commands.
+      // process.exit() is clean — PM2 waits restart_delay, port releases, no race conditions.
       setTimeout(() => {
-        spawn('pm2', ['restart', 'all'], {
-          cwd: this.projectRoot,
-          stdio: 'ignore',
-          shell: true,
-          windowsHide: true,
-        }).unref();
+        claudeLog.info('[DR] Exiting for PM2 autorestart (restart_delay: 5s)');
+        this._exitForRestart();
       }, 500);
     } else if (command === 'upd') {
       // Special handling: 'upd' updates CCS itself with version tracking

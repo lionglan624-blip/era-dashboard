@@ -155,6 +155,9 @@ export const MAX_PROFILE_SWITCHES = 2;
 /** Debounce delay for auto-DR file change detection (ms) */
 export const AUTO_DR_DEBOUNCE_MS = 2000;
 
+/** Cooldown after startup before auto-DR activates (ms) — prevents restart cascades */
+export const AUTO_DR_STARTUP_COOLDOWN_MS = 10000;
+
 // =============================================================================
 // Tmp Cleanup Configuration
 // =============================================================================

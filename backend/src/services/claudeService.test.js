@@ -4461,6 +4461,7 @@ describe('ClaudeService', () => {
   describe('runShellCommand', () => {
     it('accepts valid shell commands', () => {
       const { service } = createService();
+      vi.spyOn(service, '_exitForRestart').mockImplementation(() => {});
       // spawn is mocked at module level via vi.mock('child_process')
       expect(() => service.runShellCommand('cs')).not.toThrow();
       expect(() => service.runShellCommand('dr')).not.toThrow();
@@ -4474,20 +4475,17 @@ describe('ClaudeService', () => {
       expect(result.status).toBe('launched');
     });
 
-    it('uses pm2 restart for dr command', async () => {
+    it('exits process for dr command (PM2 autorestart)', async () => {
       vi.useFakeTimers();
       const { service } = createService();
-      const { spawn: mockSpawn } = await import('child_process');
+      const mockExit = vi.spyOn(service, '_exitForRestart').mockImplementation(() => {});
 
       service.runShellCommand('dr');
-      // dr delays spawn by 500ms to let shell-complete WS message reach clients first
+      // dr delays exit by 500ms to let shell-complete WS message reach clients first
       vi.advanceTimersByTime(500);
 
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'pm2',
-        ['restart', 'all'],
-        expect.objectContaining({ stdio: 'ignore', shell: true, windowsHide: true }),
-      );
+      expect(mockExit).toHaveBeenCalled();
+      mockExit.mockRestore();
       vi.useRealTimers();
     });
 

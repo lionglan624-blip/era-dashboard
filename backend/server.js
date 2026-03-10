@@ -27,6 +27,7 @@ import { decodeExitCode } from './src/utils/exitCodes.js';
 import {
   RATE_LIMIT_POLL_INTERVAL_MS,
   AUTO_DR_DEBOUNCE_MS,
+  AUTO_DR_STARTUP_COOLDOWN_MS,
   HEALTH_METRICS_INTERVAL_MS,
 } from './src/config.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -234,20 +235,12 @@ function triggerAutoDR() {
     });
     // Persist DR success to shell states so green button survives restart
     claudeService._setShellState('dr', true);
-    // NOTE: Must use spawn (async), NOT execSync — this process IS dashboard-backend,
-    // so execSync('pm2 stop/restart') deadlocks (blocks event loop, IPC shutdown handler never fires,
-    // PM2 force-kills after kill_timeout, port polling code never executes).
-    // The EADDRINUSE handler in the new process polls until the port is free.
-    const child = spawn('pm2', ['restart', 'dashboard-backend', '--update-env'], {
-      stdio: 'ignore',
-      shell: true,
-      windowsHide: true,
-      detached: true,
-    });
-    child.on('error', (err) =>
-      serverLog.error(`[Auto-DR] pm2 restart spawn failed: ${err.message}`),
-    );
-    child.unref();
+    // Let PM2 handle restart via autorestart + restart_delay (5s).
+    // Detached spawn approaches (pm2 restart / pm2 stop+start) all cause cascade issues:
+    // orphan detached processes survive parent death and keep issuing restart commands.
+    // process.exit() is clean — PM2 waits restart_delay, port releases, no race conditions.
+    serverLog.info('[Auto-DR] Exiting for PM2 autorestart (restart_delay: 5s)');
+    process.exit(0);
   } else {
     if (!pendingRestart) {
       pendingRestart = true;
@@ -275,8 +268,16 @@ const autoDRWatcher = chokidar.watch(
   },
 );
 
+const startupTime = Date.now();
+
 autoDRWatcher.on('change', (filePath) => {
   if (!filePath.endsWith('.js')) return;
+  if (Date.now() - startupTime < AUTO_DR_STARTUP_COOLDOWN_MS) {
+    serverLog.info(
+      `[Auto-DR] File changed during cooldown, ignoring: ${path.relative(__dirname, filePath)}`,
+    );
+    return;
+  }
   const relative = path.relative(__dirname, filePath);
   serverLog.info(`[Auto-DR] File changed: ${relative}`);
   clearTimeout(debounceTimer);

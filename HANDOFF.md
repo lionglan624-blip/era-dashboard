@@ -24,7 +24,9 @@ A browser-based dashboard for managing Claude Code feature workflows with automa
 > completion or warn the user before restarting.
 >
 > **NEVER use `pm2 delete all` or restart the proxy.** The proxy carries the active Claude Code
-> session — killing it severs the conversation with no recovery. Use `pm2 restart dashboard-backend` only.
+> session — killing it severs the conversation with no recovery. DR button and auto-DR use
+> `process.exit(0)` + PM2 `autorestart` (with `restart_delay: 5s`) — NOT `pm2 restart`, which
+> causes port cleanup cascades on Windows.
 
 ### Report Format
 
@@ -50,7 +52,7 @@ npx vitest run                              # both (via vitest.workspace.js)
 npm run test:mutation --workspace=backend    # backend mutation testing (incremental: changed files only)
 
 # Restart (from dashboard UI)
-dr button                                   # pm2 restart all
+dr button                                   # process.exit(0) → PM2 autorestart (5s delay)
 ```
 
 ### Key Timeouts

@@ -698,6 +698,20 @@ export default function App() {
   const handleRunCommand = useCallback(
     async (featureId, command) => {
       try {
+        // Auto-release stale run-lock before /run (avoids silent queueing)
+        if (command === 'run' && healthStatus.runLockFeatureId) {
+          const res = await fetch('/api/execution/run-lock', { method: 'DELETE' });
+          const data = await res.json();
+          if (data.released) {
+            addNotification({
+              type: 'info',
+              title: 'Run Lock',
+              message: `F${data.featureId} lock released`,
+            });
+            checkHealth();
+          }
+          // If 409 (active /run), proceed — backend will queue normally
+        }
         // Always chain: fc→fl→run auto-progression (stops on error/handoff/[DONE])
         const execId = await startCommand(featureId, command, { chain: true });
         setActiveExecutionId(execId);
@@ -711,7 +725,7 @@ export default function App() {
         });
       }
     },
-    [startCommand, subscribe, addNotification],
+    [startCommand, subscribe, addNotification, healthStatus.runLockFeatureId, checkHealth],
   );
 
   const handleReleaseLock = useCallback(

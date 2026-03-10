@@ -185,11 +185,20 @@ export function createExecutionRouter(claudeService) {
     res.json(claudeService.getQueueStatus());
   });
 
-  // DELETE /api/execution/run-lock - Release stale run-lock
+  // DELETE /api/execution/run-lock - Release stale run-lock (only when no /run is actively running)
   router.delete('/run-lock', (req, res) => {
     const held = claudeService.runLockFeatureId;
     if (!held) {
       return res.json({ released: false, message: 'No run-lock held' });
+    }
+    // Block release if a /run execution is actively running
+    const allExecs = claudeService.listExecutions();
+    const runningRun = allExecs.find((e) => e.command === 'run' && e.status === 'running');
+    if (runningRun) {
+      return res.status(409).json({
+        released: false,
+        message: `Cannot release — /run is active on F${runningRun.featureId}`,
+      });
     }
     claudeService._releaseRunLock(held, 'manual');
     res.json({ released: true, featureId: held });
