@@ -25,15 +25,18 @@ export class RateLimitService {
    * @param {Object} [options]
    * @param {function(): string[]} [options.getProfiles] - Function to get list of profiles
    * @param {function} [options.ptySpawn] - Optional pty.spawn function for testing
-   * @param {function} [options.isIdle] - Function returning true when no executions running/queued
+   * @param {function(string): boolean} [options.isProfileActive] - Function returning true when the given profile has running/queued executions
    */
-  constructor(projectRoot, { getProfiles, ptySpawn, getActiveProfile, onAutoSwitch, isIdle } = {}) {
+  constructor(
+    projectRoot,
+    { getProfiles, ptySpawn, getActiveProfile, onAutoSwitch, isProfileActive } = {},
+  ) {
     this.projectRoot = projectRoot;
     this.getProfiles = getProfiles || (() => []);
     this._ptySpawn = ptySpawn || null;
     this._getActiveProfile = getActiveProfile || (() => null);
     this._onAutoSwitch = onAutoSwitch || null;
-    this._isIdle = isIdle || (() => false);
+    this._isProfileActive = isProfileActive || (() => false);
     this._cache = new Map(); // Map<profileName, { data, timestamp, expiresAt, refreshAt }>
     this._capturing = false; // Prevent concurrent captures
     this._cacheFile = path.join(projectRoot, '_out', 'tmp', 'dashboard', 'ratelimit-cache.json');
@@ -130,7 +133,7 @@ export class RateLimitService {
             const rawData = this._parseUsageOutput(captureText);
             claudeLog.info(`[RateLimit] Parsed data for ${profile}: ${JSON.stringify(rawData)}`);
             const mergedData = this._mergeWithCached(profile, rawData);
-            const refreshAt = this._computeRefreshAt(mergedData);
+            const refreshAt = this._computeRefreshAt(mergedData, profile);
             const expiresAt = mergedData ? this._computeExpiresAt(mergedData) : refreshAt;
             this._cache.set(profile, {
               data: mergedData,
@@ -659,13 +662,13 @@ export class RateLimitService {
    * @param {Object|null} data - Parsed rate limit data
    * @returns {number} Refresh timestamp (ms)
    */
-  _computeRefreshAt(data) {
+  _computeRefreshAt(data, profile) {
     const REFRESH_30MIN = 30 * 60 * 1000;
     const REFRESH_10MIN = 10 * 60 * 1000;
     const REFRESH_5MIN = 5 * 60 * 1000;
 
-    // When idle (no running/queued executions), use 2-hour interval
-    if (this._isIdle()) {
+    // When profile has no running/queued executions, use long interval
+    if (!this._isProfileActive(profile)) {
       return Date.now() + RATE_LIMIT_IDLE_REFRESH_MS;
     }
 
@@ -753,7 +756,7 @@ export class RateLimitService {
    */
   setManualCache(profile, data) {
     const expiresAt = data ? this._computeExpiresAt(data) : Date.now() + RATE_LIMIT_CACHE_MS;
-    const refreshAt = this._computeRefreshAt(data);
+    const refreshAt = this._computeRefreshAt(data, profile);
     this._cache.set(profile, { data, timestamp: Date.now(), expiresAt, refreshAt });
     this._saveCache();
     this._scheduleExpiryCapture();
@@ -815,7 +818,7 @@ export class RateLimitService {
   recomputeRefreshTimes() {
     let changed = false;
     for (const [profile, entry] of this._cache) {
-      const newRefreshAt = this._computeRefreshAt(entry.data);
+      const newRefreshAt = this._computeRefreshAt(entry.data, profile);
       if (newRefreshAt < entry.refreshAt) {
         entry.refreshAt = newRefreshAt;
         changed = true;

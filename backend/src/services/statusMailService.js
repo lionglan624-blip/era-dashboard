@@ -143,8 +143,8 @@ export class StatusMailService {
 
       this.logger.info('IMAP connected, listening for new mail (IDLE mode)');
 
-      // Check latest message in case there's a pending request from before startup
-      await this._checkMessages('*');
+      // Check unseen GitHub notifications (release emails) missed during downtime
+      await this._checkStartupMessages();
     } catch (err) {
       this.logger.error(`Failed to connect IMAP: ${err.message}`);
       this._onDisconnect();
@@ -190,6 +190,7 @@ export class StatusMailService {
         if (this._processedUids.has(msg.uid)) continue;
         if (this._isStatusRequest(msg.envelope, msg.source)) {
           this.logger.info(`Status request found (uid: ${msg.uid})`);
+          this._processedUids.add(msg.uid);
           const report = this._buildStatusReport();
           await this._sendReply(msg.envelope, report);
           // Mark as Seen instead of deleting — delete/EXPUNGE disrupts IDLE connection
@@ -198,31 +199,64 @@ export class StatusMailService {
           } catch (flagErr) {
             this.logger.error(`Failed to flag message: ${flagErr.message}`);
           }
-          this._processedUids.add(msg.uid);
           this.logger.info(`Processed status request: ${msg.envelope.messageId}`);
         } else {
-          const releaseInfo = this._isReleaseNotification(msg.envelope);
-          if (releaseInfo && this.onReleaseEmail) {
-            this.logger.info(
-              `Release notification found: ${releaseInfo.version} (uid: ${msg.uid})`,
-            );
-            try {
-              await this.onReleaseEmail(releaseInfo.version, msg.envelope.subject, msg.source);
-            } catch (err) {
-              this.logger.error(`Release callback error: ${err.message}`);
-            }
-            try {
-              await this._client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
-            } catch (flagErr) {
-              this.logger.error(`Failed to flag message: ${flagErr.message}`);
-            }
-            this._processedUids.add(msg.uid);
-          }
+          await this._processReleaseMessage(msg, msg.uid);
         }
       }
     } catch (err) {
       this.logger.error(`Error checking messages: ${err.message}`);
     }
+  }
+
+  async _checkStartupMessages() {
+    if (!this._client || !this._lock) return;
+    try {
+      // Search for unseen GitHub notifications (release emails only)
+      const uids = await this._client.search(
+        {
+          seen: false,
+          from: 'notifications@github.com',
+        },
+        { uid: true },
+      );
+      if (uids.length === 0) return;
+      this.logger.info(`Startup: found ${uids.length} unseen GitHub notification(s)`);
+      for (const uid of uids) {
+        if (this._processedUids.has(uid)) continue;
+        for await (const msg of this._client.fetch(
+          uid,
+          { envelope: true, source: true, uid: true },
+          { uid: true },
+        )) {
+          await this._processReleaseMessage(msg, uid);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Startup IMAP search failed, falling back to latest message: ${err.message}`,
+      );
+      await this._checkMessages('*');
+    }
+  }
+
+  async _processReleaseMessage(msg, uid) {
+    const releaseInfo = this._isReleaseNotification(msg.envelope);
+    if (!releaseInfo || !this.onReleaseEmail) return false;
+
+    this.logger.info(`Release notification found: ${releaseInfo.version} (uid: ${uid})`);
+    this._processedUids.add(uid);
+    try {
+      await this.onReleaseEmail(releaseInfo.version, msg.envelope.subject, msg.source);
+    } catch (err) {
+      this.logger.error(`Release callback error: ${err.message}`);
+    }
+    try {
+      await this._client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+    } catch (flagErr) {
+      this.logger.error(`Failed to flag message: ${flagErr.message}`);
+    }
+    return true;
   }
 
   _isStatusRequest(envelope, rawSource) {

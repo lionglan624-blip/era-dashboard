@@ -9,11 +9,11 @@ Implementation details and design decisions. Read [HANDOFF.md](HANDOFF.md) first
 Tracks CCS **profile-level** usage (weekly/session/sonnet — API quota limits, NOT conversation context).
 
 - **expiresAt**: `min(weekly reset, session reset, sonnet reset, 1 week)`
-- **refreshAt**: Adaptive 5min–6h based on activity and max percent
-  - Idle (no running/queued executions): 6h
-  - Active ≥90%: 5min
-  - Active 80–89%: 10min
-  - Active <80%: 30min
+- **refreshAt**: Adaptive 5min–6h based on **per-profile** activity and max percent
+  - Profile idle (no running/queued executions using this profile): 6h
+  - Profile active ≥90%: 5min
+  - Profile active 80–89%: 10min
+  - Profile active <80%: 30min
 - **Session burn rate prediction**: When session elapsed ≥30min, percent ≥5%, and <100%, projects usage to end of 5h window
   - Projected >150%: 5min refresh
   - Projected >100%: 10min refresh (weekly unchanged)

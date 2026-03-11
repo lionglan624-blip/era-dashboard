@@ -137,6 +137,21 @@ export class UpdateWatcherService {
     return `Claude Code ${version} がリリースされました。以下の changelog を分析し、
 3つの観点から影響を報告してください。
 
+## 必須: 事前調査
+
+分析の前に、以下のファイルを必ず Read ツールで読んでください。
+読まずに推測で回答することは禁止です。
+
+1. **HANDOFF.md** (必須): C:\\Era\\dashboard\\HANDOFF.md — Dashboard の全体仕様・アーキテクチャ・実装詳細。
+   これを読まずに Dashboard 影響を判断することはできません。全文読んでください。
+2. **streamParser.js**: C:\\Era\\dashboard\\backend\\src\\utils\\streamParser.js — stream-json パース実装
+3. **claudeService.js**: C:\\Era\\dashboard\\backend\\src\\services\\claudeService.js — Claude CLI 呼び出し・実行管理
+4. **Skills ディレクトリ**: C:\\Era\\devkit\\.claude\\skills/ 配下の SKILL.md — 現行スキル定義
+5. **agent-registry.md**: C:\\Era\\devkit\\.claude\\reference\\agent-registry.md — サブエージェント定義・モデルテーブル
+
+changelog の各項目について、上記の実コードを確認した上で影響の有無を判断してください。
+「影響なし」と判断する場合も、該当コードのどの部分を確認して判断したか明記してください。
+
 ## A. Dashboard 影響 (feature-dashboard: Claude Code 自動化ダッシュボード)
 
 重点チェック項目:
@@ -175,8 +190,8 @@ ${changelog}
 - DASHBOARD_IMPACT: HIGH / MEDIUM / LOW / NONE
 - PROJECT_IMPACT: HIGH / MEDIUM / LOW / NONE
 - IMPACT: HIGH / MEDIUM / LOW / NONE (総合)
-- [Dashboard] 関連する変更のリスト（各項目に影響の説明）
-- [Project] 関連する変更のリスト（各項目に影響の説明）
+- [Dashboard] 関連する変更のリスト（各項目に影響の説明と、確認した実コード箇所）
+- [Project] 関連する変更のリスト（各項目に影響の説明と、確認した実コード箇所）
 - [活用提案] 新機能の具体的な活用案（各項目に効果の説明）
 - 推奨アクション（あれば）`;
   }

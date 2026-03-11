@@ -706,7 +706,7 @@ describe('StatusMailService', () => {
       expect(mockClient.getMailboxLock).toHaveBeenCalledWith('INBOX');
     });
 
-    it('calls _checkMessages after connection', async () => {
+    it('calls _checkStartupMessages after connection', async () => {
       const mockClient = makeMockImapClient();
       const factory = vi.fn().mockReturnValue(mockClient);
       const service = new StatusMailService({
@@ -715,7 +715,7 @@ describe('StatusMailService', () => {
         ...makeMockServices(),
       });
 
-      const checkSpy = vi.spyOn(service, '_checkMessages').mockResolvedValue();
+      const checkSpy = vi.spyOn(service, '_checkStartupMessages').mockResolvedValue();
 
       await service._connect();
 
@@ -1030,6 +1030,341 @@ describe('StatusMailService', () => {
       const envelope = { messageId: 'msg-123' };
 
       await expect(service._sendReply(envelope, 'Test Report')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('_processReleaseMessage', () => {
+    it('processes release and adds uid to _processedUids before callback', async () => {
+      const mockClient = makeMockImapClient();
+      const addOrder = [];
+      const onRelease = vi.fn().mockImplementation(() => {
+        // At the time callback fires, uid should already be in _processedUids
+        addOrder.push('callback');
+        return Promise.resolve();
+      });
+
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail: vi.fn() }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service.onReleaseEmail = onRelease;
+
+      const origAdd = service._processedUids.add.bind(service._processedUids);
+      service._processedUids.add = vi.fn((uid) => {
+        addOrder.push('add');
+        return origAdd(uid);
+      });
+
+      const msg = {
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.73 - v2.1.73',
+        },
+        source: Buffer.from('body'),
+      };
+
+      const result = await service._processReleaseMessage(msg, 42);
+
+      expect(result).toBe(true);
+      expect(addOrder).toEqual(['add', 'callback']);
+      expect(service._processedUids.has(42)).toBe(true);
+    });
+
+    it('returns false for non-release messages', async () => {
+      const mockClient = makeMockImapClient();
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service.onReleaseEmail = vi.fn();
+
+      const msg = {
+        envelope: {
+          from: [{ address: 'someone@example.com' }],
+          subject: 'Not a release',
+        },
+        source: Buffer.from('body'),
+      };
+
+      const result = await service._processReleaseMessage(msg, 99);
+      expect(result).toBe(false);
+      expect(service.onReleaseEmail).not.toHaveBeenCalled();
+    });
+
+    it('returns false when onReleaseEmail is null', async () => {
+      const mockClient = makeMockImapClient();
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service.onReleaseEmail = null;
+
+      const msg = {
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.73 - v2.1.73',
+        },
+        source: Buffer.from('body'),
+      };
+
+      const result = await service._processReleaseMessage(msg, 99);
+      expect(result).toBe(false);
+    });
+
+    it('still adds uid and flags even when callback throws', async () => {
+      const mockClient = makeMockImapClient();
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail: vi.fn() }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service.onReleaseEmail = vi.fn().mockRejectedValue(new Error('callback boom'));
+
+      const msg = {
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.73 - v2.1.73',
+        },
+        source: Buffer.from('body'),
+      };
+
+      const result = await service._processReleaseMessage(msg, 50);
+
+      expect(result).toBe(true);
+      expect(service._processedUids.has(50)).toBe(true);
+      expect(mockClient.messageFlagsAdd).toHaveBeenCalledWith(50, ['\\Seen'], { uid: true });
+    });
+
+    it('handles flag error gracefully', async () => {
+      const mockClient = makeMockImapClient();
+      mockClient.messageFlagsAdd.mockRejectedValue(new Error('flag boom'));
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail: vi.fn() }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service.onReleaseEmail = vi.fn().mockResolvedValue(undefined);
+
+      const msg = {
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.73 - v2.1.73',
+        },
+        source: Buffer.from('body'),
+      };
+
+      // Should not throw
+      const result = await service._processReleaseMessage(msg, 60);
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('_checkStartupMessages', () => {
+    it('searches for unseen GitHub notifications and processes releases', async () => {
+      const mockClient = makeMockImapClient();
+      mockClient.search.mockResolvedValue([100, 101]);
+
+      const releaseMsg = {
+        uid: 100,
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.73 - v2.1.73',
+        },
+        source: Buffer.from('body'),
+      };
+      const nonReleaseMsg = {
+        uid: 101,
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Issue #999',
+        },
+        source: Buffer.from('body'),
+      };
+
+      // fetch returns different messages for each uid
+      mockClient.fetch
+        .mockReturnValueOnce(makeAsyncIterable([releaseMsg]))
+        .mockReturnValueOnce(makeAsyncIterable([nonReleaseMsg]));
+
+      const onRelease = vi.fn().mockResolvedValue(undefined);
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail: vi.fn() }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+      service.onReleaseEmail = onRelease;
+
+      await service._checkStartupMessages();
+
+      expect(mockClient.search).toHaveBeenCalledWith(
+        { seen: false, from: 'notifications@github.com' },
+        { uid: true },
+      );
+      // fetch must use uid mode (3rd arg { uid: true }) — not sequence number
+      expect(mockClient.fetch).toHaveBeenCalledWith(
+        100,
+        { envelope: true, source: true, uid: true },
+        { uid: true },
+      );
+      expect(mockClient.fetch).toHaveBeenCalledWith(
+        101,
+        { envelope: true, source: true, uid: true },
+        { uid: true },
+      );
+      expect(onRelease).toHaveBeenCalledOnce();
+      expect(onRelease).toHaveBeenCalledWith('v2.1.73', expect.any(String), expect.any(Buffer));
+    });
+
+    it('skips already-processed uids', async () => {
+      const mockClient = makeMockImapClient();
+      mockClient.search.mockResolvedValue([200]);
+
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+      service._processedUids.add(200);
+
+      await service._checkStartupMessages();
+
+      expect(mockClient.fetch).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when no unseen messages', async () => {
+      const mockClient = makeMockImapClient();
+      mockClient.search.mockResolvedValue([]);
+
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+
+      await service._checkStartupMessages();
+
+      expect(mockClient.fetch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to _checkMessages on search failure', async () => {
+      const mockClient = makeMockImapClient();
+      mockClient.search.mockRejectedValue(new Error('SEARCH not supported'));
+
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+
+      const checkSpy = vi.spyOn(service, '_checkMessages').mockResolvedValue();
+
+      await service._checkStartupMessages();
+
+      expect(checkSpy).toHaveBeenCalledWith('*');
+    });
+
+    it('returns early when no client', async () => {
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        ...makeMockServices(),
+      });
+      service._client = null;
+
+      await expect(service._checkStartupMessages()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('duplicate uid prevention', () => {
+    it('does not re-process same uid on second _checkMessages call', async () => {
+      const mockClient = makeMockImapClient();
+      const releaseMessage = {
+        uid: 70,
+        envelope: {
+          from: [{ address: 'notifications@github.com' }],
+          subject: '[anthropics/claude-code] Release v2.1.72 - v2.1.72',
+          messageId: 'msg-dup',
+        },
+        source: Buffer.from('body'),
+      };
+      // Both calls return the same message
+      mockClient.fetch
+        .mockReturnValueOnce(makeAsyncIterable([releaseMessage]))
+        .mockReturnValueOnce(makeAsyncIterable([releaseMessage]));
+
+      const onRelease = vi.fn().mockResolvedValue(undefined);
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail: vi.fn() }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+      service.onReleaseEmail = onRelease;
+
+      await service._checkMessages('*');
+      await service._checkMessages('*');
+
+      expect(onRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it('adds uid to _processedUids before callback for status requests', async () => {
+      const mockClient = makeMockImapClient();
+      const addOrder = [];
+      const sendMail = vi.fn().mockImplementation(() => {
+        addOrder.push('sendMail');
+        return Promise.resolve({ messageId: 'reply' });
+      });
+
+      const statusMessage = {
+        uid: 80,
+        envelope: {
+          from: [{ address: 'test@gmail.com' }],
+          subject: '',
+          messageId: 'msg-status',
+        },
+        source: Buffer.from('From: test@gmail.com\r\nSubject: \r\n\r\n'),
+      };
+      mockClient.fetch.mockReturnValue(makeAsyncIterable([statusMessage]));
+
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: () => mockClient,
+        transportFactory: () => ({ sendMail }),
+        ...makeMockServices(),
+      });
+      service._client = mockClient;
+      service._lock = mockClient._mockLock;
+
+      const origAdd = service._processedUids.add.bind(service._processedUids);
+      service._processedUids.add = vi.fn((uid) => {
+        addOrder.push('add');
+        return origAdd(uid);
+      });
+
+      await service._checkMessages('*');
+
+      expect(addOrder).toEqual(['add', 'sendMail']);
     });
   });
 

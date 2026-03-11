@@ -253,12 +253,13 @@ describe('RateLimitService', () => {
     beforeEach(() => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
+        isProfileActive: () => true,
       });
     });
 
     it('returns 30 min for null data (below 70%)', () => {
       const before = Date.now();
-      const result = service._computeRefreshAt(null);
+      const result = service._computeRefreshAt(null, 'test-profile');
       const expectedMin = before + 30 * 60 * 1000 - 1000; // -1s tolerance
       const expectedMax = Date.now() + 30 * 60 * 1000 + 1000; // +1s tolerance
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -268,7 +269,7 @@ describe('RateLimitService', () => {
     it('returns 30 min for 75% weekly (70-79%)', () => {
       const data = { weekly: { percent: 75, resetsAt: 'Feb 9' } };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 30 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 30 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -278,7 +279,7 @@ describe('RateLimitService', () => {
     it('returns 10 min for 85% weekly (80-89%)', () => {
       const data = { weekly: { percent: 85, resetsAt: 'Feb 9' } };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 10 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 10 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -288,7 +289,7 @@ describe('RateLimitService', () => {
     it('returns 5 min for 95% weekly (90%+)', () => {
       const data = { weekly: { percent: 95, resetsAt: 'Feb 9' } };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 5 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 5 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -301,7 +302,7 @@ describe('RateLimitService', () => {
         session: { percent: 90, resetsAt: '12pm' },
       };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 5 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 5 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -315,21 +316,21 @@ describe('RateLimitService', () => {
         sonnet: { percent: 92, resetsAt: 'Feb 9' },
       };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 5 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 5 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
       expect(result).toBeLessThanOrEqual(expectedMax);
     });
 
-    it('returns 6 hours when idle regardless of data', () => {
+    it('returns 6 hours when profile is idle regardless of data', () => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
-        isIdle: () => true,
+        isProfileActive: () => false,
       });
       const data = { weekly: { percent: 95, resetsAt: 'Feb 9' } };
       const before = Date.now();
-      const result = service._computeRefreshAt(data);
+      const result = service._computeRefreshAt(data, 'test-profile');
       const expectedMin = before + 6 * 60 * 60 * 1000 - 1000;
       const expectedMax = Date.now() + 6 * 60 * 60 * 1000 + 1000;
       expect(result).toBeGreaterThanOrEqual(expectedMin);
@@ -339,7 +340,7 @@ describe('RateLimitService', () => {
     it('returns 6 hours when idle even with null data', () => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
-        isIdle: () => true,
+        isProfileActive: () => false,
       });
       const before = Date.now();
       const result = service._computeRefreshAt(null);
@@ -352,7 +353,7 @@ describe('RateLimitService', () => {
     it('uses adaptive interval when not idle', () => {
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['test-profile'],
-        isIdle: () => false,
+        isProfileActive: () => true,
       });
       const data = { weekly: { percent: 95, resetsAt: 'Feb 9' } };
       const before = Date.now();
@@ -370,7 +371,7 @@ describe('RateLimitService', () => {
         vi.setSystemTime(new Date(2026, 1, 21, 10, 0, 0, 0));
         service = new RateLimitService('/fake/root', {
           getProfiles: () => ['test-profile'],
-          isIdle: () => false,
+          isProfileActive: () => true,
         });
       });
 
@@ -1064,7 +1065,7 @@ describe('RateLimitService', () => {
       vi.setSystemTime(new Date(2026, 1, 21, 10, 0, 0, 0));
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['profile-a'],
-        isIdle: () => true, // starts idle (long refresh)
+        isProfileActive: () => false, // starts idle (long refresh)
       });
     });
 
@@ -1083,7 +1084,7 @@ describe('RateLimitService', () => {
       });
 
       // Now service becomes busy
-      service._isIdle = () => false;
+      service._isProfileActive = () => true;
       service.recomputeRefreshTimes();
 
       const entry = service._cache.get('profile-a');
@@ -1120,7 +1121,7 @@ describe('RateLimitService', () => {
         refreshAt: idleRefreshAt,
       });
 
-      service._isIdle = () => false;
+      service._isProfileActive = () => true;
       service.recomputeRefreshTimes();
 
       expect(fs.writeFileSync).toHaveBeenCalled();

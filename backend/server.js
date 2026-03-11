@@ -129,9 +129,20 @@ const fileWatcher = new FileWatcher(PROJECT_ROOT, featureService, logStreamer);
 const rateLimitService = new RateLimitService(PROJECT_ROOT, {
   getProfiles: getCcsProfiles,
   getActiveProfile: () => claudeService.getCcsProfile(),
-  isIdle: () => {
-    const { runningCount, queuedCount, chainWaiterCount } = claudeService.getQueueStatus();
-    return runningCount === 0 && queuedCount === 0 && chainWaiterCount === 0;
+  isProfileActive: (profile) => {
+    const executions = claudeService.executions;
+    for (const exec of executions.values()) {
+      if (exec.status === 'running' && exec.ccsProfile === profile) return true;
+    }
+    for (const qId of claudeService.queue) {
+      const exec = executions.get(qId);
+      if (exec && exec.ccsProfile === profile) return true;
+    }
+    for (const [, waiter] of claudeService.chainExecutor.chainWaiters) {
+      const exec = executions.get(waiter.executionId);
+      if (exec && exec.ccsProfile === profile) return true;
+    }
+    return false;
   },
   onAutoSwitch: (safeProfile) => {
     // Validate profile name against known profiles to prevent command injection
