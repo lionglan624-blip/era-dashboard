@@ -78,6 +78,7 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | Stale waiter → Auto-DR | 5min + 10min | Chain waiters older than `CHAIN_WAITER_TIMEOUT_MS` (5min) are cleaned by `_cleanupOldExecutions()` (runs every 10min). On cleanup, `onExecutionComplete()` is called to trigger deferred Auto-DR re-check |
 | Tmp cleanup interval | 6h | Purge old dashboard debug/daily logs (debug-*.log: 30 days, daily logs: 30 days) |
 | Insights capture | ~2min | `/insights` via node-pty ConPTY. Completion: dual detection (report.html mtime change + PTY `"report is ready"` pattern). Emails HTML report via `emailService.sendHtml()`. Scheduler: cron-style `setTimeout` (Monday 07:00 JST). API: `POST /api/insights/capture`, `GET /api/insights/status` |
+| Dependency updater | daily/weekly/monthly | Scheduled auto-update of CCS (daily), CodeRabbit/PM2 (weekly), NuGet-check/Go/pip/npm (monthly). Type A (global CLI): version check → update → version diff → email. Type B (repo): update → git diff → test → commit or revert. PM2/npm-dashboard require idle check (5 conditions). Master switch: `UPDATE_ENABLED` env var. API: `POST /api/deps/trigger`, `GET /api/deps/status` |
 | Update analysis | execution | Claude Code release detected via IMAP (GitHub notification) → `claudeService.executeUpdateAnalysis()` runs as `update-analysis` execution (tile, log, terminal resume). Analyzes 3 dimensions: Dashboard impact, Project impact (workflow/settings/env), and new feature adoption opportunities. Completion: `_onComplete` callback → HTML email with dual impact badges (D:/P:) + changelog. API: `GET /api/update/status` |
 
 Full config: `backend/src/config.js`
@@ -109,6 +110,8 @@ Full config: `backend/src/config.js`
 | `/api/insights/capture` | POST | Trigger `/insights` capture (fire-and-forget). Body: `{ sendEmail: bool }` (default true). Returns 409 if already running |
 | `/api/insights/status` | GET | Check capture status: `{ running, lastResult }` |
 | `/api/update/status` | GET | Claude Code update watcher status: `{ version, analyzing }` |
+| `/api/deps/trigger` | POST | Trigger dependency update tier. Body: `{ tier: 'daily'\|'weekly'\|'monthly'\|'all' }`. Returns 409 if tier already running |
+| `/api/deps/status` | GET | Dependency updater status: per-tier `{ running, scheduled, lastRun }` |
 
 ### WebSocket Events
 

@@ -49,7 +49,7 @@ export const STUCK_RUNNING_TIMEOUT_MS = 7200000; // 2 hours
 export const CLEANUP_INTERVAL_MS = 600000; // 10 minutes
 
 /** Maximum concurrent executions (chain slots reserved within this limit) */
-export const MAX_CONCURRENT_EXECUTIONS = parseInt(process.env.MAX_CONCURRENT || '4');
+export const MAX_CONCURRENT_EXECUTIONS = parseInt(process.env.MAX_CONCURRENT || '2');
 
 /** TTL for shell command button states (cs/dr/upd) */
 export const SHELL_STATE_TTL_MS = 300000; // 5 minutes
@@ -212,3 +212,40 @@ export const CLAUDE_STATUS_TIMEOUT_MS = 10000;
 
 /** Component IDs to monitor: Claude Code, Claude API */
 export const CLAUDE_STATUS_COMPONENT_IDS = ['yyzkbfz2thpt', 'k8w3r06qmzrp'];
+
+// =============================================================================
+// Dependency Updater Configuration
+// =============================================================================
+
+/** Master switch — set false to disable all scheduled dependency updates */
+export const UPDATE_ENABLED = process.env.UPDATE_ENABLED !== 'false'; // enabled by default
+
+/** Timeout per update command (npm update, go get, pip install, etc.) */
+export const UPDATE_COMMAND_TIMEOUT_MS = 300000; // 5 min
+
+/** Timeout per test suite (dotnet test, go test, npm test, pytest) */
+export const UPDATE_TEST_TIMEOUT_MS = 600000; // 10 min
+
+/** Interval between idle retries when dashboard is busy */
+export const UPDATE_IDLE_RETRY_MS = 1800000; // 30 min
+
+/** Maximum idle retry attempts before skipping (30min × 6 = 3 hours) */
+export const UPDATE_IDLE_MAX_RETRIES = 6;
+
+/** Daily schedule: hour in JST */
+export const UPDATE_DAILY_HOUR_JST = 6;
+
+/** Weekly schedule: day of week (1 = Monday) */
+export const UPDATE_WEEKLY_DAY = 1;
+
+/** Weekly schedule: hour in JST */
+export const UPDATE_WEEKLY_HOUR_JST = 6;
+
+/** Weekly schedule: minute in JST */
+export const UPDATE_WEEKLY_MINUTE_JST = 30;
+
+/** Monthly schedule: day of month */
+export const UPDATE_MONTHLY_DAY = 1;
+
+/** Monthly schedule: hour in JST */
+export const UPDATE_MONTHLY_HOUR_JST = 6;

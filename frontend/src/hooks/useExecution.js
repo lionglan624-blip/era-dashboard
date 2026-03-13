@@ -440,6 +440,10 @@ export function useExecution() {
     [dispatch],
   );
 
+  const cancelQueueItem = useCallback(async (executionId) => {
+    await fetch(`/api/execution/queue/${executionId}`, { method: 'DELETE' });
+  }, []);
+
   // Fetch existing executions and their logs from API
   // Returns array of active execution IDs (running) for subscription
   // Replaces entire executions Map with backend state (clears stale frontend entries)
@@ -559,6 +563,7 @@ export function useExecution() {
     startCommand,
     killExecution,
     bulkQueueRoots,
+    cancelQueueItem,
     addLog,
     updateStatus,
     fetchExecutions,

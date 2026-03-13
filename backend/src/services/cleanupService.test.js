@@ -92,7 +92,7 @@ describe('CleanupService', () => {
         }
         return Promise.resolve([]);
       });
-      stat.mockResolvedValue(statDaysAgo(5, 500000)); // 5 days old
+      stat.mockResolvedValue(statDaysAgo(35, 500000)); // 35 days old
       unlink.mockResolvedValue(undefined);
 
       const result = await svc.purge();
@@ -110,7 +110,7 @@ describe('CleanupService', () => {
         }
         return Promise.resolve([]);
       });
-      stat.mockResolvedValue(statDaysAgo(1, 500000)); // 1 day old, under 3 day retention
+      stat.mockResolvedValue(statDaysAgo(1, 500000)); // 1 day old, under retention period
 
       const result = await svc.purge();
       expect(unlink).not.toHaveBeenCalled();
@@ -131,7 +131,7 @@ describe('CleanupService', () => {
       expect(unlink).not.toHaveBeenCalled();
     });
 
-    it('purges daily rotated logs older than 7 days', async () => {
+    it('purges daily rotated logs older than retention period', async () => {
       const svc = createService();
       readdir.mockImplementation((dir) => {
         if (dir === svc.logsDir) {
@@ -145,7 +145,7 @@ describe('CleanupService', () => {
       });
       stat.mockImplementation((filePath) => {
         if (filePath.includes('02-01') || filePath.includes('01-25')) {
-          return Promise.resolve(statDaysAgo(14, 200000));
+          return Promise.resolve(statDaysAgo(35, 200000));
         }
         return Promise.resolve(statDaysAgo(1, 200000));
       });
@@ -155,7 +155,7 @@ describe('CleanupService', () => {
       expect(unlink).toHaveBeenCalledTimes(2);
     });
 
-    it('purges term debug logs older than 7 days', async () => {
+    it('purges term debug logs older than retention period', async () => {
       const svc = createService();
       readdir.mockImplementation((dir) => {
         if (dir === svc.dashboardTmpDir) {
@@ -163,14 +163,14 @@ describe('CleanupService', () => {
         }
         return Promise.resolve([]);
       });
-      stat.mockResolvedValue(statDaysAgo(10, 100000));
+      stat.mockResolvedValue(statDaysAgo(35, 100000));
       unlink.mockResolvedValue(undefined);
 
       const result = await svc.purge();
       expect(unlink).toHaveBeenCalledTimes(1);
     });
 
-    it('purges exec artifacts older than 7 days', async () => {
+    it('purges exec artifacts older than retention period', async () => {
       const svc = createService();
       readdir.mockImplementation((dir) => {
         if (dir === svc.dashboardTmpDir) {
@@ -178,7 +178,7 @@ describe('CleanupService', () => {
         }
         return Promise.resolve([]);
       });
-      stat.mockResolvedValue(statDaysAgo(10, 50000));
+      stat.mockResolvedValue(statDaysAgo(35, 50000));
       unlink.mockResolvedValue(undefined);
 
       const result = await svc.purge();
@@ -226,7 +226,7 @@ describe('CleanupService', () => {
         if (filePath.includes('fail')) {
           return Promise.reject(new Error('EPERM'));
         }
-        return Promise.resolve(statDaysAgo(5, 100000));
+        return Promise.resolve(statDaysAgo(35, 100000));
       });
       unlink.mockResolvedValue(undefined);
 

@@ -1369,6 +1369,7 @@ export class ClaudeService {
           contextRetryCount,
           incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
           chainHistory: updatedHistory,
+          priority: true,
         });
 
         this.logStreamer?.broadcastAll({
@@ -1391,6 +1392,11 @@ export class ClaudeService {
 
       this._broadcastState(execution);
       this._dequeueNext();
+
+      // Drain rate limit retry queue even on context retry path
+      if (execution._rateLimitQueueContinue && !execution.accountLimitHit) {
+        setTimeout(() => this._processNextInQueue(), RETRY_DELAY_MS);
+      }
       return;
     }
 
@@ -1442,6 +1448,7 @@ export class ClaudeService {
           contextRetryCount: execution.chain.contextRetryCount, // preserve context counter
           incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
           chainHistory: updatedHistory,
+          priority: true,
         });
 
         this.logStreamer?.broadcastAll({
@@ -1459,6 +1466,11 @@ export class ClaudeService {
 
       this._broadcastState(execution);
       this._dequeueNext();
+
+      // Drain rate limit retry queue even on FL retry path
+      if (execution._rateLimitQueueContinue && !execution.accountLimitHit) {
+        setTimeout(() => this._processNextInQueue(), RETRY_DELAY_MS);
+      }
       return;
     }
 
@@ -1834,18 +1846,31 @@ export class ClaudeService {
    */
   _scheduleRateLimitRetry(execution) {
     const isFirstEntry = this._rateLimitRetryQueue.length === 0;
-    this._rateLimitRetryQueue.push({ execution, queuedAt: Date.now() });
-    const queuePosition = this._rateLimitRetryQueue.length;
 
-    if (!isFirstEntry) {
-      // Queue behind existing retry — timer/strategy already active
+    // Re-retry (was draining queue): put at front to maintain retry continuity
+    if (execution._rateLimitQueueContinue) {
+      this._rateLimitRetryQueue.unshift({ execution, queuedAt: Date.now() });
+    } else {
+      this._rateLimitRetryQueue.push({ execution, queuedAt: Date.now() });
+    }
+    const queuePosition = this._rateLimitRetryQueue.findIndex((e) => e.execution === execution) + 1;
+
+    if (!isFirstEntry && this._rateLimitRetryTimer) {
+      // Queue behind existing retry — Strategy 2 timer still active
       claudeLog.info(
         `[RateLimit] Queued F${execution.featureId} ${execution.command} for retry (position ${queuePosition})`,
       );
       return { message: `Queued for rate limit retry (position ${queuePosition}).` };
     }
 
-    // First entry: try Strategy 1 (profile switch) or Strategy 2 (timed)
+    if (!isFirstEntry) {
+      // No active timer — previous drain completed. Restart strategy.
+      claudeLog.info(
+        `[RateLimit] Re-queued F${execution.featureId} ${execution.command} (position ${queuePosition}) — restarting strategy`,
+      );
+    }
+
+    // First entry or no active timer: try Strategy 1 (profile switch) or Strategy 2 (timed)
     const currentProfile = this.getCcsProfile();
 
     // Strategy 1: Find a safe profile and switch immediately
@@ -2459,6 +2484,25 @@ export class ClaudeService {
     return cleared;
   }
 
+  cancelQueueItem(executionId) {
+    const idx = this.queue.indexOf(executionId);
+    if (idx === -1) return false;
+    this.queue.splice(idx, 1);
+    const exec = this.executions.get(executionId);
+    if (exec) {
+      exec.status = 'cancelled';
+      exec.completedAt = new Date().toISOString();
+      this._releaseChainSlot(exec);
+      this.logStreamer?.broadcastAll({
+        type: 'status',
+        executionId,
+        status: 'cancelled',
+      });
+    }
+    this._broadcastQueueUpdate();
+    return true;
+  }
+
   /**
    * Bulk queue features based on their current status.
    * @param {string[]} featureIds - Array of feature IDs (already deduplicated and validated)
@@ -2476,7 +2520,20 @@ export class ClaudeService {
     const queued = [];
     const skipped = [];
 
-    for (const featureId of featureIds) {
+    // Sort by status priority: WIP > REVIEWED > PROPOSED > DRAFT
+    const STATUS_PRIORITY = {
+      '[WIP]': 0,
+      '[REVIEWED]': 1,
+      '[PROPOSED]': 2,
+      '[DRAFT]': 3,
+    };
+    const sortedIds = [...featureIds].sort((a, b) => {
+      const statusA = this.fileWatcher?.statusCache?.get(String(a)) || '[DRAFT]';
+      const statusB = this.fileWatcher?.statusCache?.get(String(b)) || '[DRAFT]';
+      return (STATUS_PRIORITY[statusA] ?? 99) - (STATUS_PRIORITY[statusB] ?? 99);
+    });
+
+    for (const featureId of sortedIds) {
       const featureIdStr = String(featureId);
 
       // Already running or queued

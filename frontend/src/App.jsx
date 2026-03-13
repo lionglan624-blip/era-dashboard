@@ -59,6 +59,7 @@ export default function App() {
     startCommand,
     killExecution,
     bulkQueueRoots,
+    cancelQueueItem,
     addLog,
     updateStatus,
     fetchExecutions,
@@ -75,7 +76,7 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [shellStates, setShellStates] = useState({});
   const [drPending, setDrPending] = useState(false);
-  const [featureQueueWaiters, setFeatureQueueWaiters] = useState(new Set());
+  const [featureQueueWaiters, setFeatureQueueWaiters] = useState(new Map());
 
   // Health check state
   const [healthStatus, setHealthStatus] = useState({
@@ -471,14 +472,20 @@ export default function App() {
         }));
       },
       'queue-updated': (msg) => {
-        const waiterIds = new Set();
+        const waiterMap = new Map();
         if (msg.chainWaiters) {
-          for (const w of msg.chainWaiters) waiterIds.add(String(w.featureId));
+          for (const w of msg.chainWaiters)
+            waiterMap.set(String(w.featureId), { position: null, executionId: w.executionId });
         }
         if (msg.queued) {
-          for (const q of msg.queued) waiterIds.add(String(q.featureId));
+          for (let i = 0; i < msg.queued.length; i++) {
+            waiterMap.set(String(msg.queued[i].featureId), {
+              position: i + 1,
+              executionId: msg.queued[i].id,
+            });
+          }
         }
-        setFeatureQueueWaiters(waiterIds);
+        setFeatureQueueWaiters(waiterMap);
       },
       'auto-dr-pending': () => {
         setDrPending(true);
@@ -535,14 +542,20 @@ export default function App() {
         .then((r) => (r.ok ? r.json() : null))
         .then((qs) => {
           if (!qs) return;
-          const waiterIds = new Set();
+          const waiterMap = new Map();
           if (qs.chainWaiters) {
-            for (const w of qs.chainWaiters) waiterIds.add(String(w.featureId));
+            for (const w of qs.chainWaiters)
+              waiterMap.set(String(w.featureId), { position: null, executionId: w.executionId });
           }
           if (qs.queued) {
-            for (const q of qs.queued) waiterIds.add(String(q.featureId));
+            for (let i = 0; i < qs.queued.length; i++) {
+              waiterMap.set(String(qs.queued[i].featureId), {
+                position: i + 1,
+                executionId: qs.queued[i].id,
+              });
+            }
           }
-          setFeatureQueueWaiters(waiterIds);
+          setFeatureQueueWaiters(waiterMap);
         })
         .catch(() => {});
       // Refetch features on reconnect (not on initial connect)
@@ -803,6 +816,27 @@ export default function App() {
     },
     [bulkQueueRoots, subscribe, addNotification],
   );
+
+  const handleCancelQueueItem = useCallback(
+    async (featureId) => {
+      const waiter = featureQueueWaiters.get(String(featureId));
+      if (!waiter?.executionId) return;
+      try {
+        await cancelQueueItem(waiter.executionId);
+      } catch (err) {
+        console.error('Cancel queue item failed:', err);
+      }
+    },
+    [cancelQueueItem, featureQueueWaiters],
+  );
+
+  const handleClearQueue = useCallback(async () => {
+    try {
+      await fetch('/api/execution/queue/clear', { method: 'POST' });
+    } catch (err) {
+      console.error('Clear queue failed:', err);
+    }
+  }, []);
 
   const handleOpenTerminal = useCallback(
     async (featureId, command) => {
@@ -1338,6 +1372,8 @@ export default function App() {
           onResumeTerminal={handleResumeByFeature}
           onInputWaitingClick={handleInputWaitingClick}
           onBulkQueue={handleBulkQueue}
+          onCancelQueueItem={handleCancelQueueItem}
+          onClearQueue={handleClearQueue}
           onSelect={setSelectedFeatureId}
         />
       </main>

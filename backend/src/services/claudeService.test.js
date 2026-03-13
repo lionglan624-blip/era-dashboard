@@ -2635,6 +2635,7 @@ describe('ClaudeService', () => {
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
+        priority: true,
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2706,6 +2707,7 @@ describe('ClaudeService', () => {
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
+        priority: true,
       });
     });
 
@@ -2856,6 +2858,7 @@ describe('ClaudeService', () => {
         contextRetryCount: 1,
         incompleteRetryCount: 0,
         chainHistory: [{ command: 'fl', result: 'retry', reason: 'Context limit (max_tokens)' }],
+        priority: true,
       });
     });
 
@@ -2895,6 +2898,7 @@ describe('ClaudeService', () => {
             reason: 'Context limit (success with is_error)',
           },
         ],
+        priority: true,
       });
     });
 
@@ -3494,6 +3498,7 @@ describe('ClaudeService', () => {
         chainHistory: [
           { command: 'fc', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
+        priority: true,
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3538,6 +3543,7 @@ describe('ClaudeService', () => {
         contextRetryCount: 1,
         incompleteRetryCount: 0,
         chainHistory: [{ command: 'run', result: 'retry', reason: 'Context limit (max_tokens)' }],
+        priority: true,
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3587,6 +3593,7 @@ describe('ClaudeService', () => {
             reason: 'Prompt too long (context exhausted)',
           },
         ],
+        priority: true,
       });
       // promptTooLong should prevent stale waiter registration
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
@@ -3631,6 +3638,7 @@ describe('ClaudeService', () => {
             reason: 'Prompt too long (context exhausted)',
           },
         ],
+        priority: true,
       });
       // promptTooLong should prevent stale waiter registration
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
@@ -3671,6 +3679,7 @@ describe('ClaudeService', () => {
         chainHistory: [
           { command: 'run', result: 'retry', reason: 'Max turns reached (exit code 3)' },
         ],
+        priority: true,
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3723,6 +3732,7 @@ describe('ClaudeService', () => {
             reason: 'Context limit (success with is_error)',
           },
         ],
+        priority: true,
       });
       expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3875,6 +3885,7 @@ describe('ClaudeService', () => {
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
+        priority: true,
       });
 
       // Check log contains context-related message (not FL-specific message)
@@ -6973,6 +6984,45 @@ describe('Scenario Tests', () => {
       vi.advanceTimersByTime(RETRY_DELAY_MS + 1000);
 
       expect(service._processNextInQueue).not.toHaveBeenCalled();
+    });
+
+    it('_rateLimitQueueContinue + context retry: drains queue even on early return', async () => {
+      const { service } = createScenarioService();
+      const { RETRY_DELAY_MS } = await import('../config.js');
+      service._processNextInQueue = vi.fn();
+
+      // Exit 1 + resultSubtype='success' triggers context retry
+      const exec = createRunningChainExecution(service, { command: 'fc' });
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+      exec._rateLimitQueueContinue = true;
+      service.fileWatcher.statusCache.set('100', '[DRAFT]');
+
+      service._handleCompletion(exec, 1);
+
+      // Context retry path was taken — verify _processNextInQueue scheduled
+      expect(service._processNextInQueue).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(RETRY_DELAY_MS);
+      expect(service._processNextInQueue).toHaveBeenCalled();
+    });
+
+    it('_rateLimitQueueContinue + FL retry: drains queue even on early return', async () => {
+      const { service } = createScenarioService();
+      const { RETRY_DELAY_MS } = await import('../config.js');
+      service._processNextInQueue = vi.fn();
+
+      // FL command + exit 1 + retryCount < MAX triggers FL retry
+      const exec = createRunningChainExecution(service, { command: 'fl' });
+      exec.resultSubtype = 'error';
+      exec.debugLogPath = null;
+      exec._rateLimitQueueContinue = true;
+
+      service._handleCompletion(exec, 1);
+
+      // FL retry path was taken — verify _processNextInQueue scheduled
+      expect(service._processNextInQueue).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(RETRY_DELAY_MS);
+      expect(service._processNextInQueue).toHaveBeenCalled();
     });
   });
 

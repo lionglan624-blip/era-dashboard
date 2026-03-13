@@ -1249,9 +1249,10 @@ body {
   font-weight: 700;
   color: #f59e0b;
   background: rgba(245, 158, 11, 0.15);
-  padding: 8px 0;
+  padding: 4px 0;
   border-radius: 6px;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   width: 48px;
@@ -1322,6 +1323,12 @@ body {
   color: #fbbf24;
 }
 
+.tree-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .btn-bulk-queue {
   background: rgba(59, 130, 246, 0.2);
   border: 1px solid #3b82f6;
@@ -1332,7 +1339,23 @@ body {
   padding: 4px 8px;
   cursor: pointer;
   transition: all 0.15s;
-  margin-bottom: 8px;
+}
+
+.btn-clear-queue {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid #ef4444;
+  border-radius: 4px;
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: bold;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-clear-queue:hover {
+  background: rgba(239, 68, 68, 0.4);
+  color: #f87171;
 }
 
 .btn-bulk-queue:hover {

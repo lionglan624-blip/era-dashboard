@@ -188,6 +188,7 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const ccsProfile = data.featureProfiles?.get(id);
   const isInputWaiting = data.featureInputWaiting?.has(id) || false;
   const isQueued = data.featureQueueWaiters?.has(String(id)) || false;
+  const queuePosition = data.featureQueueWaiters?.get(String(id))?.position ?? null;
 
   // Local tick for running nodes only: re-render every second to update "Xs ago" display.
   // Only running TreeNodes pay this cost; non-running nodes skip the interval entirely.
@@ -228,7 +229,10 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
                 : '';
 
   const handleClick = () => {
-    if (isQueued) return;
+    if (isQueued) {
+      callbacks.onCancelQueueItem(id);
+      return;
+    }
     if (isRunLocked && !isRunning) {
       callbacks.onReleaseLock(id);
       return;
@@ -251,7 +255,10 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
         {isRunning ? (
           <div className="tree-running-label">{(runningCommand || 'run').toUpperCase()}</div>
         ) : isQueued ? (
-          <div className="tree-waiting-label">WAIT</div>
+          <div className="tree-waiting-label">
+            <span>WAIT</span>
+            {queuePosition != null && <span>#{queuePosition}</span>}
+          </div>
         ) : depth === 0 ? (
           <div className="tree-running-placeholder" />
         ) : null}
@@ -427,6 +434,8 @@ export default function TreeView({
   onInputWaitingClick,
   onReleaseLock,
   onBulkQueue,
+  onCancelQueueItem,
+  onClearQueue,
   onSelect,
 }) {
   // Note: buildTree returns new objects each time, so TreeNode memo only helps when
@@ -516,6 +525,7 @@ export default function TreeView({
       onResumeBrowser: handleResumeBrowser,
       onInputWaitingClick: handleInputWaitingClick,
       onReleaseLock,
+      onCancelQueueItem,
     }),
     [
       handleTileClick,
@@ -525,6 +535,7 @@ export default function TreeView({
       handleResumeBrowser,
       handleInputWaitingClick,
       onReleaseLock,
+      onCancelQueueItem,
     ],
   );
 
@@ -568,13 +579,20 @@ export default function TreeView({
   return (
     <TreeCallbacksContext.Provider value={callbacksValue}>
       <TreeDataContext.Provider value={dataValue}>
-        <button
-          className="btn-bulk-queue"
-          disabled={queueableRootIds.length === 0}
-          onClick={() => onBulkQueue(queueableRootIds)}
-        >
-          Queue Roots ({queueableRootIds.length})
-        </button>
+        <div className="tree-toolbar">
+          <button
+            className="btn-bulk-queue"
+            disabled={queueableRootIds.length === 0}
+            onClick={() => onBulkQueue(queueableRootIds)}
+          >
+            Queue Roots ({queueableRootIds.length})
+          </button>
+          {featureQueueWaiters?.size > 0 && (
+            <button className="btn-clear-queue" onClick={onClearQueue}>
+              Clear Queue
+            </button>
+          )}
+        </div>
         <div className="tree-view">
           {phaseGroups.map((group) => {
             const isCollapsed = collapsedPhases.has(group.phase);

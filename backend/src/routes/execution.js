@@ -210,6 +210,16 @@ export function createExecutionRouter(claudeService) {
     res.json({ cleared: cleared.length, ids: cleared });
   });
 
+  // DELETE /api/execution/queue/:id - Cancel individual queued item
+  router.delete('/queue/:id', (req, res) => {
+    const { id } = req.params;
+    const cancelled = claudeService.cancelQueueItem(id);
+    if (!cancelled) {
+      return res.status(404).json({ error: 'Not found in queue' });
+    }
+    res.json({ cancelled: true, id });
+  });
+
   // POST /api/execution/queue/bulk - Bulk queue features
   router.post('/queue/bulk', (req, res) => {
     const { featureIds } = req.body;

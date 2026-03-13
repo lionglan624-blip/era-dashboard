@@ -41,7 +41,7 @@ Multiple concurrent 429 failures are queued in `_rateLimitRetryQueue` and draine
 1. First entry: try auto-switch to safe profile → immediate retry after 5s. If no safe profile → timed retry at earliest `resetsAt` + 1min buffer
 2. Subsequent entries: queued behind first entry (no duplicate timers/switches)
 3. After each retry completes (non-429), next queue entry starts after 5s delay
-4. If retry itself hits 429: re-queued, existing timer handles re-retry
+4. If retry itself hits 429: re-queued at **front** of queue (unshift via `_rateLimitQueueContinue`), strategy restarted if no active timer
 5. `_rateLimitPaused` is a getter (`queue.length > 0`) that blocks `_dequeueNext()`
 
 **Session resume**: When failed execution has `sessionId`, retry uses `claude -p "continue" --resume <sessionId>` (preserves context); falls back to fresh `executeCommand()` when no sessionId

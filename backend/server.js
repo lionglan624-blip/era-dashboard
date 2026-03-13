@@ -18,10 +18,12 @@ import { SmokeTestService } from './src/services/smokeTestService.js';
 import { InsightsService } from './src/services/insightsService.js';
 import { CleanupService } from './src/services/cleanupService.js';
 import { ClaudeStatusService } from './src/services/claudeStatusService.js';
+import { DependencyUpdaterService } from './src/services/dependencyUpdaterService.js';
 import { EmailService } from './src/services/emailService.js';
 import { getCcsProfiles } from './src/services/ccsUtils.js';
 import { createFeaturesRouter } from './src/routes/features.js';
 import { createExecutionRouter } from './src/routes/execution.js';
+import { createDepsRouter } from './src/routes/deps.js';
 import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
 import {
@@ -29,6 +31,7 @@ import {
   AUTO_DR_DEBOUNCE_MS,
   AUTO_DR_STARTUP_COOLDOWN_MS,
   HEALTH_METRICS_INTERVAL_MS,
+  UPDATE_ENABLED,
 } from './src/config.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -222,6 +225,13 @@ statusMailService.onReleaseEmail = (version, subject, rawSource) =>
 const cleanupService = new CleanupService(PROJECT_ROOT);
 const claudeStatusService = new ClaudeStatusService();
 
+// Dependency updater (scheduled CCS/CodeRabbit/PM2/NuGet/Go/pip/npm updates)
+const depUpdaterService = new DependencyUpdaterService({
+  emailService,
+  logStreamer,
+  claudeService,
+});
+
 // =============================================================================
 // Auto-DR: Watch backend source files, restart when idle
 // =============================================================================
@@ -231,13 +241,14 @@ let rateLimitInterval = null;
 let healthInterval = null;
 
 function triggerAutoDR() {
-  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount } =
+  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount, rateLimitQueue } =
     claudeService.getQueueStatus();
   if (
     runningCount === 0 &&
     queuedCount === 0 &&
     chainWaiterCount === 0 &&
-    waitingForInputCount === 0
+    waitingForInputCount === 0 &&
+    rateLimitQueue.length === 0
   ) {
     pendingRestart = false;
     serverLog.info('[Auto-DR] No running executions, restarting backend...');
@@ -264,7 +275,7 @@ function triggerAutoDR() {
       });
     }
     serverLog.info(
-      `[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting, ${waitingForInputCount} input-waiting`,
+      `[Auto-DR] Deferred: ${runningCount} running, ${queuedCount} queued, ${chainWaiterCount} chain-waiting, ${waitingForInputCount} input-waiting, ${rateLimitQueue.length} rate-limit-queued`,
     );
   }
 }
@@ -300,13 +311,14 @@ autoDRWatcher.on('change', (filePath) => {
 // When an execution completes, check if restart was deferred
 claudeService.onExecutionComplete = () => {
   if (!pendingRestart) return;
-  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount } =
+  const { runningCount, queuedCount, chainWaiterCount, waitingForInputCount, rateLimitQueue } =
     claudeService.getQueueStatus();
   if (
     runningCount === 0 &&
     queuedCount === 0 &&
     chainWaiterCount === 0 &&
-    waitingForInputCount === 0
+    waitingForInputCount === 0 &&
+    rateLimitQueue.length === 0
   ) {
     serverLog.info('[Auto-DR] All executions complete, executing deferred restart');
     triggerAutoDR();
@@ -343,6 +355,7 @@ app.use((req, res, next) => {
 // API routes
 app.use('/api/features', createFeaturesRouter(featureService));
 app.use('/api/execution', createExecutionRouter(claudeService));
+app.use('/api/deps', createDepsRouter(depUpdaterService));
 
 // Health check
 app.get('/api/health', async (req, res) => {
@@ -553,6 +566,11 @@ const onListening = () => {
   cleanupService.start();
   insightsService.startScheduler();
   claudeStatusService.start();
+  if (UPDATE_ENABLED) {
+    depUpdaterService.start();
+  } else {
+    serverLog.info('[DepUpdater] Disabled via UPDATE_ENABLED=false');
+  }
 
   // Periodic health metrics + exit marker refresh (sentinel keeps latest snapshot for hard-kill diagnosis)
   healthInterval = setInterval(() => {
@@ -622,6 +640,7 @@ async function shutdown(signal) {
   statusMailService.stop().catch(() => {});
   cleanupService.stop();
   claudeStatusService.stop();
+  depUpdaterService.stop();
   smokeTestService.stop();
   insightsService.stopScheduler();
   claudeService.killAllRunning();
