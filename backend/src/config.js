@@ -163,10 +163,10 @@ export const AUTO_DR_STARTUP_COOLDOWN_MS = 10000;
 export const TMP_CLEANUP_INTERVAL_MS = 21600000; // 6 hours
 
 /** Retention period for per-execution debug logs (dashboard/debug-*.log) */
-export const DEBUG_LOG_RETENTION_DAYS = 3;
+export const DEBUG_LOG_RETENTION_DAYS = 30;
 
 /** Retention period for daily rotated logs and other artifacts */
-export const DAILY_LOG_RETENTION_DAYS = 7;
+export const DAILY_LOG_RETENTION_DAYS = 30;
 
 // =============================================================================
 // Smoke Test Configuration

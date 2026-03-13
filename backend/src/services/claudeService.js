@@ -3184,6 +3184,7 @@ export class ClaudeService {
         ? { questions: e.inputRequired.questions, context: e.inputContext }
         : null,
       isStalled: e.isStalled || false,
+      ccsProfile: e.ccsProfile || null,
     }));
   }
 
