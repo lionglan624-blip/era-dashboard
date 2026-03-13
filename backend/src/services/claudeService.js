@@ -477,6 +477,13 @@ export class ClaudeService {
   _buildClaudeEnv(execution) {
     const env = { ...process.env };
     delete env.CLAUDECODE; // Prevent nested session detection
+    // Suppress CLI stop hook's 429 auto-resume — dashboard handles retries via
+    // _scheduleRateLimitRetry (Strategy 1: profile switch, Strategy 2: timed retry).
+    // Without this, the stop hook spawns competing --resume processes that loop
+    // when all profiles are exhausted. See: F886 2026-03-13 37-iteration loop.
+    if (!execution?.terminal) {
+      env.CLAUDE_DASHBOARD_MANAGED = '1';
+    }
     // Only set FORCE_COLOR=0 for non-terminal mode
     if (!execution?.terminal) {
       env.FORCE_COLOR = '0';

@@ -54,6 +54,17 @@ Multiple concurrent 429 failures are queued in `_rateLimitRetryQueue` and draine
 - `needsContextRetry` and `flWantsRetry` block all retries when `accountLimitHit` is true
 - `exitCode≠0 && subtype=success` context heuristic guarded by `!accountLimitHit` — debug log scan promoting 429 prevents false context retry
 
+#### Dashboard-Managed Process Guard
+
+Dashboard-spawned processes receive `CLAUDE_DASHBOARD_MANAGED=1` env var via `_buildClaudeEnv`.
+The CLI stop hook (`stop-ratelimit-resume.ps1`) checks this variable and exits immediately,
+deferring 429 recovery to dashboard's `_scheduleRateLimitRetry` (Strategy 1: profile switch,
+Strategy 2: timed retry until reset). Terminal-mode processes (user-initiated via "Terminal" button)
+do NOT receive this variable, preserving the hook's CLI-direct functionality.
+
+Without this guard, the stop hook competes with dashboard retry, and when all profiles are
+exhausted, loops indefinitely (~5s intervals, observed 37 iterations in F886 FL 2026-03-13).
+
 **CLI 429 not in streams**: Claude CLI writes `rate_limit_error` to `--debug-file` only, not to stdout/stderr stream-json. CLI emits `result { subtype: 'success', is_error: true }` for 429, same pattern as context exhaustion. Dashboard uses **two-pass debug log scan**: (1) immediate `readFileSync` at process `close` event, (2) deferred 500ms re-scan if immediate scan fails (Windows file lock / flush timing). Deferred detection cancels any in-flight context retry timer and routes to rate limit retry instead. If CLI changes to emit 429 in streams, the stderr/non-JSON detection will catch it first and the debug scan becomes redundant (harmless).
 
 ## Auto-Switch Details

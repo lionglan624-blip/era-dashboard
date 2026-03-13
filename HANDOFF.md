@@ -69,7 +69,7 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | Pending handoff timeout (y/n) | 10s | Fallback terminal handoff if result event never arrives for y/n prompts |
 | Input email delay | 5min | Delayed email for input-wait/askuserquestion; cancelled if user answers in browser |
 | AskUserQuestion | kill+resume | Process killed on tool_use detection; browser answer resumes via `--resume` |
-| Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
+| Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). Stop hook suppressed for dashboard-managed processes (`CLAUDE_DASHBOARD_MANAGED=1`). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
 | Auto-switch (≥80%) | proactive | Proactive profile switch at ≥80% usage. See [INTERNALS.md](INTERNALS.md) Auto-Switch Details |
 | Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit`. On exhaustion: email subject `context-limit 3/3` |
 | FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit` and `isContextExhausted`. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
