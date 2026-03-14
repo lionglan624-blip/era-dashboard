@@ -1214,7 +1214,9 @@ export class ClaudeService {
 
     // Promo auto-answer: AskUserQuestion → first option for fl/run/imp
     if (['fl', 'run', 'imp'].includes(execution.command)) {
-      const firstOption = execution.inputRequired?.questions?.[0]?.options?.[0] || '1';
+      const rawOption = execution.inputRequired?.questions?.[0]?.options?.[0];
+      const firstOption =
+        typeof rawOption === 'object' ? rawOption?.label || '1' : rawOption || '1';
       this._schedulePromoAutoAnswer(
         execution,
         firstOption,
