@@ -1287,6 +1287,21 @@ describe('RateLimitService', () => {
       expect(result.sonnet.percent).toBe(15);
       expect(result.sonnet.resetsAt).toBe('Feb 21, 6am');
     });
+
+    it('handles VT buffer corruption "Rese s" as "Resets" for session reset time', () => {
+      const text = [
+        'Current session',
+        '████████████████████████                           48% used',
+        'Rese s 1:59pm (Asia/Tokyo)',
+        'Current week (all models)',
+        '████████▌                                          17% used',
+        'Resets Mar 20, 12:59pm (Asia/Tokyo)',
+      ].join('\n');
+      const result = service._parseUsageOutput(text);
+      expect(result.session.percent).toBe(48);
+      expect(result.session.resetsAt).toBe('1:59pm');
+      expect(result.weekly.resetsAt).toBe('Mar 20, 12:59pm');
+    });
   });
 
   describe('_parseResetsAt - additional patterns', () => {

@@ -495,7 +495,8 @@ export class RateLimitService {
     }
 
     // Find all "Resets ..." lines (extract text before timezone parenthesis)
-    const resetsPattern = /Resets\s+(.+?)(?:\s*\(|$)/gim;
+    // VT buffer corruption sometimes renders "Resets" as "Rese s" (missing 't')
+    const resetsPattern = /Rese\s?t?s\s+(.+?)(?:\s*\(|$)/gim;
     const resetsMatches = [];
     while ((match = resetsPattern.exec(text)) !== null) {
       resetsMatches.push({ resetsAt: match[1].trim(), index: match.index });
