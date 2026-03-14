@@ -2368,6 +2368,21 @@ export class ClaudeService {
 
   _canStartNow(execution) {
     if (this._isRunBlocked(execution.command)) return false;
+    // If this is a /run and there's already a queued /run with higher priority (e.g. [WIP] retry),
+    // defer to queue so priority ordering is respected
+    if (execution.command === 'run') {
+      const execStatus =
+        this.fileWatcher?.statusCache?.get(String(execution.featureId)) || '[DRAFT]';
+      const execPriority = STATUS_PRIORITY[execStatus] ?? 99;
+      for (const qId of this.queue) {
+        const qExec = this.executions.get(qId);
+        if (qExec && qExec.command === 'run' && qExec.status === 'queued') {
+          const qStatus = this.fileWatcher?.statusCache?.get(String(qExec.featureId)) || '[DRAFT]';
+          const qPriority = STATUS_PRIORITY[qStatus] ?? 99;
+          if (qPriority < execPriority) return false; // Higher priority /run waiting in queue
+        }
+      }
+    }
     const belongsToChain = this._belongsToActiveChain(execution);
     const idleChainSlots = this._countIdleChainSlots();
     const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
@@ -2453,9 +2468,17 @@ export class ClaudeService {
     for (const qId of this.queue) {
       const exec = this.executions.get(qId);
       if (exec) {
-        queued.push({ id: exec.id, featureId: exec.featureId, command: exec.command });
+        const status = this.fileWatcher?.statusCache?.get(String(exec.featureId)) || '[DRAFT]';
+        queued.push({
+          id: exec.id,
+          featureId: exec.featureId,
+          command: exec.command,
+          priority: STATUS_PRIORITY[status] ?? 99,
+        });
       }
     }
+    // Sort by status priority so FE WAIT# reflects actual dequeue order
+    queued.sort((a, b) => a.priority - b.priority);
     return {
       maxConcurrent: this.maxConcurrent,
       runningCount: running.length,
