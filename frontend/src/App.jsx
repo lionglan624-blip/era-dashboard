@@ -1375,6 +1375,7 @@ export default function App() {
           onCancelQueueItem={handleCancelQueueItem}
           onClearQueue={handleClearQueue}
           onSelect={setSelectedFeatureId}
+          onStopExecution={killExecution}
         />
       </main>
 

@@ -239,7 +239,16 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
     }
     if (isInputWaiting) {
       callbacks.onInputWaitingClick(id);
-    } else if (executableCommand) {
+      return;
+    }
+    if (isRunning) {
+      const execInfo = data.featureSessionIds?.get(id);
+      if (execInfo?.executionId) {
+        callbacks.onStopExecution(execInfo.executionId);
+      }
+      return;
+    }
+    if (executableCommand) {
       callbacks.onTileClick(id, executableCommand);
     }
   };
@@ -437,6 +446,7 @@ export default function TreeView({
   onCancelQueueItem,
   onClearQueue,
   onSelect,
+  onStopExecution,
 }) {
   // Note: buildTree returns new objects each time, so TreeNode memo only helps when
   // features ref is stable (within the 2s featureService cache window).
@@ -526,6 +536,7 @@ export default function TreeView({
       onInputWaitingClick: handleInputWaitingClick,
       onReleaseLock,
       onCancelQueueItem,
+      onStopExecution,
     }),
     [
       handleTileClick,
@@ -536,6 +547,7 @@ export default function TreeView({
       handleInputWaitingClick,
       onReleaseLock,
       onCancelQueueItem,
+      onStopExecution,
     ],
   );
 
