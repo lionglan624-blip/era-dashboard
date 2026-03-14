@@ -914,7 +914,7 @@ export class ClaudeService {
     }, INPUT_EMAIL_DELAY_MS);
 
     // Promo auto-answer: y/n → auto-yes for fl/run/imp
-    if (['fl', 'run', 'imp'].includes(execution.command)) {
+    if (['fc', 'fl', 'run', 'imp'].includes(execution.command)) {
       this._schedulePromoAutoAnswer(execution, 'yes', `${execution.command} y/n auto-yes`);
     }
   }
@@ -1213,7 +1213,7 @@ export class ClaudeService {
     }, INPUT_EMAIL_DELAY_MS);
 
     // Promo auto-answer: AskUserQuestion → first option for fl/run/imp
-    if (['fl', 'run', 'imp'].includes(execution.command)) {
+    if (['fc', 'fl', 'run', 'imp'].includes(execution.command)) {
       const rawOption = execution.inputRequired?.questions?.[0]?.options?.[0];
       const firstOption =
         typeof rawOption === 'object' ? rawOption?.label || '1' : rawOption || '1';
