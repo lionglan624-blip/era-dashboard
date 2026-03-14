@@ -1485,30 +1485,30 @@ export class ClaudeService {
         { command: execution.command, result: 'retry', reason },
       ];
 
-      setTimeout(() => {
-        // Start new FL with incremented retry count
-        const newExecId = this.executeCommand(execution.featureId, 'fl', {
-          chain: true,
-          chainParentId: execution.chainParentId || execution.id,
-          retryCount,
-          contextRetryCount: execution.chain.contextRetryCount, // preserve context counter
-          incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
-          chainHistory: updatedHistory,
-          priority: true,
-        });
+      // Synchronous: no delay for FL re-run retry — previous session completed normally,
+      // no 429 risk. Sync call ensures the chain slot is used before _dequeueNext() can
+      // give it to another execution.
+      const newExecId = this.executeCommand(execution.featureId, 'fl', {
+        chain: true,
+        chainParentId: execution.chainParentId || execution.id,
+        retryCount,
+        contextRetryCount: execution.chain.contextRetryCount, // preserve context counter
+        incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
+        chainHistory: updatedHistory,
+        priority: true,
+      });
 
-        this.logStreamer?.broadcastAll({
-          type: 'chain-retry',
-          featureId: execution.featureId,
-          command: 'fl',
-          retryType: 'fl',
-          retryCount,
-          maxRetries: MAX_FL_RETRIES,
-          oldExecutionId: execution.id,
-          newExecutionId: newExecId,
-          timestamp: new Date().toISOString(),
-        });
-      }, RETRY_DELAY_MS);
+      this.logStreamer?.broadcastAll({
+        type: 'chain-retry',
+        featureId: execution.featureId,
+        command: 'fl',
+        retryType: 'fl',
+        retryCount,
+        maxRetries: MAX_FL_RETRIES,
+        oldExecutionId: execution.id,
+        newExecutionId: newExecId,
+        timestamp: new Date().toISOString(),
+      });
 
       this._broadcastState(execution);
       this._dequeueNext();
