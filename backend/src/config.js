@@ -58,8 +58,8 @@ export const SHELL_STATE_TTL_MS = 300000; // 5 minutes
 /** Delay before auto-handoff to terminal */
 export const HANDOFF_DELAY_MS = 300;
 
-/** Delay before sending email for browser-answerable input prompts (5 minutes) */
-export const INPUT_EMAIL_DELAY_MS = 300000;
+/** Delay before sending email for browser-answerable input prompts (2 minutes) */
+export const INPUT_EMAIL_DELAY_MS = 120000;
 
 /** Timeout for deferred y/n handoff — fallback if result event never arrives (ms) */
 export const PENDING_HANDOFF_TIMEOUT_MS = 10000;

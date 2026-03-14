@@ -67,7 +67,7 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | Execution TTL | 1h | Keep completed executions in memory |
 | Stuck cleanup | 2h | Force-terminate unresponsive executions |
 | Pending handoff timeout (y/n) | 10s | Fallback terminal handoff if result event never arrives for y/n prompts |
-| Input email delay | 5min | Delayed email for input-wait/askuserquestion; cancelled if user answers in browser |
+| Input email delay | 2min | Delayed email for input-wait/askuserquestion; cancelled if user answers in browser |
 | AskUserQuestion | kill+resume | Process killed on tool_use detection; browser answer resumes via `--resume` |
 | Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). Stop hook suppressed for dashboard-managed processes (`CLAUDE_DASHBOARD_MANAGED=1`). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
 | Auto-switch (≥80%) | proactive | Proactive profile switch at ≥80% usage. See [INTERNALS.md](INTERNALS.md) Auto-Switch Details |
