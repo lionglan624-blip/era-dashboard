@@ -1133,7 +1133,7 @@ export class ClaudeService {
       timestamp: new Date().toISOString(),
     });
 
-    // Write context % to file for FL Context Pressure Gate (statusline doesn't run in -p mode)
+    // Write context % to file for Context Pressure Gate (redundant: statusline.ps1 also writes per-turn)
     if (execution.featureId && execution.contextPercent != null) {
       const ctxFile = path.join(
         this.projectRoot,
@@ -2545,7 +2545,13 @@ export class ClaudeService {
       // Look up status from file watcher cache
       const status = this.fileWatcher?.statusCache.get(featureIdStr);
       if (!status) {
-        skipped.push({ featureId: featureIdStr, reason: 'status unknown' });
+        claudeLog.error(
+          `[bulkQueue] F${featureIdStr} status unknown — not in fileWatcher.statusCache. Feature file may have malformed Status line`,
+        );
+        skipped.push({
+          featureId: featureIdStr,
+          reason: 'status unknown (cache miss — check Status line format)',
+        });
         continue;
       }
 

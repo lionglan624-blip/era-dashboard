@@ -15,8 +15,9 @@ export const STALL_TIMEOUT_MS = 60000; // 60 seconds
 /** Interval for checking stall status (half of STALL_TIMEOUT_MS for ≤90s worst-case detection) */
 export const STALL_CHECK_INTERVAL_MS = 30000;
 
-/** Default context window size for token calculation when not provided by API */
-export const DEFAULT_CONTEXT_WINDOW = 200000;
+/** Default context window size for token calculation when not provided by API.
+ * Opus 4.6 / Sonnet 4.6 default to 1M context (no premium pricing above 200K). */
+export const DEFAULT_CONTEXT_WINDOW = 1000000;
 
 /** Timeout for proxy health check */
 export const PROXY_TIMEOUT_MS = 2000;

@@ -416,8 +416,8 @@ describe('ClaudeService', () => {
 
       service._updateTokenUsage(execution, { input_tokens: 100000, output_tokens: 0 }, null);
 
-      // Default is 200000 (DEFAULT_CONTEXT_WINDOW), so 100000/200000 = 50%
-      expect(execution.contextPercent).toBe(50);
+      // Default is 1000000 (DEFAULT_CONTEXT_WINDOW), so 100000/1000000 = 10%
+      expect(execution.contextPercent).toBe(10);
     });
 
     it('does nothing with null usage', () => {
@@ -1751,7 +1751,7 @@ describe('ClaudeService', () => {
           },
         },
       });
-      expect(execution.contextPercent).toBe(25); // (1+1393+48707)/200000
+      expect(execution.contextPercent).toBe(5); // (1+1393+48707)/1000000
 
       // Result event has cumulative usage (much larger) — should NOT overwrite
       service._handleStreamEvent(execution, {
