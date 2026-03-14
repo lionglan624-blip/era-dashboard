@@ -74,6 +74,15 @@ const STATUS_TO_FIRST_COMMAND = {
   '[WIP]': 'run',
 };
 
+// Status-based dequeue priority: lower = higher priority
+// Used by both bulkQueue (insertion sort) and _dequeueNext (dequeue sort)
+const STATUS_PRIORITY = {
+  '[WIP]': 0,
+  '[REVIEWED]': 1,
+  '[PROPOSED]': 2,
+  '[DRAFT]': 3,
+};
+
 // Re-export for backward compatibility
 export { validateFeatureId, validateCommand, INPUT_WAIT_PATTERNS };
 export { getNextChainCommand, isExpectedStatusAfterCommand };
@@ -2380,15 +2389,26 @@ export class ClaudeService {
       // Recalculate idle chain slots each iteration (may change as items dequeue)
       const idleChainSlots = this._countIdleChainSlots();
 
-      // Find first item that can start now (respects run-block and chain slot reservation)
-      const idx = this.queue.findIndex((id) => {
-        const exec = this.executions.get(id);
-        if (this._isRunBlocked(exec.command)) return false;
+      // Find highest-priority item that can start now
+      // Sort candidates by status priority (WIP > REVIEWED > PROPOSED > DRAFT)
+      // so advanced features dequeue before earlier-stage ones regardless of queue order
+      const startableIndices = [];
+      for (let i = 0; i < this.queue.length; i++) {
+        const exec = this.executions.get(this.queue[i]);
+        if (this._isRunBlocked(exec.command)) continue;
 
         const belongsToChain = this._belongsToActiveChain(exec);
         const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
-        return this.runningCount < limit;
-      });
+        if (this.runningCount < limit) {
+          const status = this.fileWatcher?.statusCache?.get(String(exec.featureId)) || '[DRAFT]';
+          startableIndices.push({ idx: i, priority: STATUS_PRIORITY[status] ?? 99 });
+        }
+      }
+      if (startableIndices.length === 0) break;
+
+      // Pick highest priority (lowest number); on tie, earlier queue position wins (stable)
+      startableIndices.sort((a, b) => a.priority - b.priority || a.idx - b.idx);
+      const idx = startableIndices[0].idx;
 
       if (idx === -1) break; // All remaining items are blocked
 
@@ -2520,13 +2540,7 @@ export class ClaudeService {
     const queued = [];
     const skipped = [];
 
-    // Sort by status priority: WIP > REVIEWED > PROPOSED > DRAFT
-    const STATUS_PRIORITY = {
-      '[WIP]': 0,
-      '[REVIEWED]': 1,
-      '[PROPOSED]': 2,
-      '[DRAFT]': 3,
-    };
+    // Sort by status priority (module-level STATUS_PRIORITY)
     const sortedIds = [...featureIds].sort((a, b) => {
       const statusA = this.fileWatcher?.statusCache?.get(String(a)) || '[DRAFT]';
       const statusB = this.fileWatcher?.statusCache?.get(String(b)) || '[DRAFT]';
