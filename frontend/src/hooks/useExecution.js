@@ -154,6 +154,13 @@ function reducer(state, action) {
         }
       }
 
+      // Clear inputRequests when input state is cleared (e.g., auto-answer via BE)
+      if (!msg.inputRequired && !msg.waitingForInput && state.inputRequests.has(msg.executionId)) {
+        const nextIR = new Map(state.inputRequests);
+        nextIR.delete(msg.executionId);
+        changes.inputRequests = nextIR;
+      }
+
       return { ...state, ...changes };
     }
 

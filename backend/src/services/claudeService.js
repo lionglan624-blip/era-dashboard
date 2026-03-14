@@ -3035,6 +3035,9 @@ export class ClaudeService {
     execution.inputContext = null;
     execution._killedForAskUser = false;
 
+    // Notify FE to clear input panels (especially for auto-answer where FE didn't initiate)
+    this._broadcastState(execution);
+
     // Kill the current process if still running
     if (execution.process && execution.status === 'running') {
       this._killProcess(execution.process);
