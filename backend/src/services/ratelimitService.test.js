@@ -891,9 +891,16 @@ describe('RateLimitService', () => {
 
   describe('getSafeProfile', () => {
     beforeEach(() => {
+      // Fix time outside promo window so getAutoSwitchThreshold() returns base value (80)
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-01T12:00:00Z'));
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['profile-a', 'profile-b', 'profile-c'],
       });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
     });
 
     it('returns null when no cached data exists', () => {
@@ -1151,12 +1158,19 @@ describe('RateLimitService', () => {
     let onAutoSwitch;
 
     beforeEach(() => {
+      // Fix time outside promo window so getAutoSwitchThreshold() returns base value (80)
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-01T12:00:00Z'));
       onAutoSwitch = vi.fn();
       service = new RateLimitService('/fake/root', {
         getProfiles: () => ['profile-a', 'profile-b'],
         getActiveProfile: () => 'profile-a',
         onAutoSwitch,
       });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
     });
 
     it('does nothing when no callback provided', () => {

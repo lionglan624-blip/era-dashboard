@@ -12,7 +12,8 @@ import {
   SESSION_WINDOW_MS,
   SESSION_BURN_RATE_MIN_ELAPSED_MS,
   SESSION_BURN_RATE_MIN_PERCENT,
-  AUTO_SWITCH_THRESHOLD,
+  getAutoSwitchThreshold,
+  isPromoActive,
 } from '../config.js';
 
 /**
@@ -684,8 +685,10 @@ export class RateLimitService {
     const sonnetPercent = data.sonnet?.percent || 0;
 
     // Predictive: if session burn rate projects to exceed limit, boost effective percent
+    // Skip during 2x promo — doubled capacity makes projections unreliable
     let effectiveSessionPercent = sessionPercent;
     if (
+      !isPromoActive() &&
       sessionPercent >= SESSION_BURN_RATE_MIN_PERCENT &&
       sessionPercent < 100 &&
       data.session?.resetsAt
@@ -806,7 +809,7 @@ export class RateLimitService {
           data.session?.percent || 0,
           data.sonnet?.percent || 0,
         );
-        return maxPercent < AUTO_SWITCH_THRESHOLD;
+        return maxPercent < getAutoSwitchThreshold();
       }) || null
     );
   }
@@ -891,9 +894,9 @@ export class RateLimitService {
       activeData.session?.percent || 0,
       activeData.sonnet?.percent || 0,
     );
-    if (activeMax < AUTO_SWITCH_THRESHOLD) return;
+    if (activeMax < getAutoSwitchThreshold()) return;
 
-    // Find any profile below AUTO_SWITCH_THRESHOLD
+    // Find any profile below getAutoSwitchThreshold()
     const profiles = this.getProfiles();
     const safeProfile = profiles.find((p) => {
       if (p === activeProfile) return false;
@@ -904,7 +907,7 @@ export class RateLimitService {
         data.session?.percent || 0,
         data.sonnet?.percent || 0,
       );
-      return pMax < AUTO_SWITCH_THRESHOLD;
+      return pMax < getAutoSwitchThreshold();
     });
 
     if (safeProfile) {

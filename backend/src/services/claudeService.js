@@ -42,7 +42,8 @@ import {
   MAX_PROFILE_SWITCHES,
   MAX_INCOMPLETE_RETRIES,
   INPUT_EMAIL_DELAY_MS,
-  MAX_CONCURRENT_EXECUTIONS,
+  getMaxConcurrentExecutions,
+  isPromoActive,
 } from '../config.js';
 
 // Import extracted modules
@@ -112,12 +113,12 @@ export class ClaudeService {
    * @param {string} projectRoot - Project root directory
    * @param {import('../websocket/logStreamer.js').LogStreamer} logStreamer - WebSocket broadcaster
    * @param {Object} [options]
-   * @param {number} [options.maxConcurrent=MAX_CONCURRENT_EXECUTIONS] - Maximum concurrent executions
+   * @param {number} [options.maxConcurrent] - Override max concurrent (test DI)
    */
-  constructor(projectRoot, logStreamer, { maxConcurrent = MAX_CONCURRENT_EXECUTIONS } = {}) {
+  constructor(projectRoot, logStreamer, { maxConcurrent } = {}) {
     this.projectRoot = projectRoot;
     this.logStreamer = logStreamer;
-    this.maxConcurrent = maxConcurrent;
+    this._maxConcurrentOverride = maxConcurrent; // test DI
     this.executions = new Map();
     this.queue = [];
     this.chainSlots = new Set();
@@ -171,6 +172,12 @@ export class ClaudeService {
     this._rateLimitRetryQueue = []; // Array of { execution, queuedAt }
     this._rateLimitRetryTimer = null;
     this._rateLimitRetryAt = null; // ISO string for UI
+  }
+
+  /** Dynamic max concurrent: promo-aware unless overridden by test DI */
+  get maxConcurrent() {
+    if (this._maxConcurrentOverride !== undefined) return this._maxConcurrentOverride;
+    return getMaxConcurrentExecutions();
   }
 
   /** @returns {boolean} True if rate limit retry queue is non-empty (blocks dequeue) */
@@ -892,6 +899,11 @@ export class ClaudeService {
         )
         .catch(() => {});
     }, INPUT_EMAIL_DELAY_MS);
+
+    // Promo auto-answer: y/n → auto-yes for fl/run/imp
+    if (isPromoActive() && ['fl', 'run', 'imp'].includes(execution.command)) {
+      this._schedulePromoAutoAnswer(execution, 'yes', `${execution.command} y/n auto-yes`);
+    }
   }
 
   /** Handoff execution to terminal when user input is required */
@@ -1186,6 +1198,16 @@ export class ClaudeService {
         )
         .catch(() => {});
     }, INPUT_EMAIL_DELAY_MS);
+
+    // Promo auto-answer: AskUserQuestion → first option for fl/run/imp
+    if (isPromoActive() && ['fl', 'run', 'imp'].includes(execution.command)) {
+      const firstOption = execution.inputRequired?.questions?.[0]?.options?.[0] || '1';
+      this._schedulePromoAutoAnswer(
+        execution,
+        firstOption,
+        `${execution.command} AskUserQuestion auto-first-option`,
+      );
+    }
   }
 
   /** Handle execution completion */
@@ -2928,6 +2950,26 @@ export class ClaudeService {
 
   /**
    * Answer a pending input prompt in browser mode (instead of terminal handoff).
+   * Schedule auto-answer during promo (temporary — remove after 2026-03-28).
+   * @param {Object} execution - Execution object
+   * @param {string} answer - Answer to send
+   * @param {string} reason - Reason for logging
+   * @param {number} [delayMs=2000] - Delay before auto-answering
+   */
+  _schedulePromoAutoAnswer(execution, answer, reason, delayMs = 2000) {
+    if (execution._promoAutoAnswerTimeout) clearTimeout(execution._promoAutoAnswerTimeout);
+    execution._promoAutoAnswerTimeout = setTimeout(() => {
+      execution._promoAutoAnswerTimeout = null;
+      if (execution.waitingForInput || execution.inputRequired) {
+        claudeLog.info(
+          `[ClaudeService] Promo auto-answer: ${reason}, answer="${answer}" (exec ${execution.id})`,
+        );
+        this.answerInBrowser(execution.id, answer);
+      }
+    }, delayMs);
+  }
+
+  /**
    * Cancels any pending handoff, kills current process, and resumes with user's answer.
    * @param {string} executionId - Execution waiting for input
    * @param {string} answer - User's answer (e.g., 'y', 'n', or selected option text)
@@ -2954,6 +2996,11 @@ export class ClaudeService {
     if (execution.pendingHandoffTimeout) {
       clearTimeout(execution.pendingHandoffTimeout);
       execution.pendingHandoffTimeout = null;
+    }
+    // Cancel promo auto-answer if user answered manually
+    if (execution._promoAutoAnswerTimeout) {
+      clearTimeout(execution._promoAutoAnswerTimeout);
+      execution._promoAutoAnswerTimeout = null;
     }
     execution.pendingHandoff = null;
 
