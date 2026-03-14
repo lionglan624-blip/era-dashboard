@@ -266,16 +266,18 @@ describe('FileWatcher', () => {
       expect(watcher._parseStatus('## Status: PROPOSED')).toBeNull();
     });
 
-    it('returns null for h1 header level (# Status)', () => {
+    it('matches plain Status without ## prefix', () => {
       const { watcher } = createWatcher();
-      // h1 (#) doesn't match ## pattern
-      expect(watcher._parseStatus('# Status: [PROPOSED]')).toBeNull();
+      expect(watcher._parseStatus('Status: [DRAFT]')).toBe('[DRAFT]');
+    });
+
+    it('matches h1 header level (# Status)', () => {
+      const { watcher } = createWatcher();
+      expect(watcher._parseStatus('# Status: [PROPOSED]')).toBe('[PROPOSED]');
     });
 
     it('matches h3 header level (### contains ##)', () => {
       const { watcher } = createWatcher();
-      // h3 (###) contains ## so it still matches - this is acceptable
-      // as feature files always use h2 for status
       expect(watcher._parseStatus('### Status: [PROPOSED]')).toBe('[PROPOSED]');
     });
   });

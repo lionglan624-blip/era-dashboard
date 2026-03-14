@@ -64,7 +64,7 @@ export class FileWatcher {
    * @private
    */
   _parseStatus(content) {
-    const match = content.match(/## Status:\s*\[([\w-]+)\]/);
+    const match = content.match(/(?:## )?Status:\s*\[([\w-]+)\]/);
     return match ? `[${match[1]}]` : null;
   }
 
