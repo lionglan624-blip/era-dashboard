@@ -43,7 +43,6 @@ import {
   MAX_INCOMPLETE_RETRIES,
   INPUT_EMAIL_DELAY_MS,
   getMaxConcurrentExecutions,
-  isPromoActive,
 } from '../config.js';
 
 // Import extracted modules
@@ -901,7 +900,7 @@ export class ClaudeService {
     }, INPUT_EMAIL_DELAY_MS);
 
     // Promo auto-answer: y/n → auto-yes for fl/run/imp
-    if (isPromoActive() && ['fl', 'run', 'imp'].includes(execution.command)) {
+    if (['fl', 'run', 'imp'].includes(execution.command)) {
       this._schedulePromoAutoAnswer(execution, 'yes', `${execution.command} y/n auto-yes`);
     }
   }
@@ -1200,7 +1199,7 @@ export class ClaudeService {
     }, INPUT_EMAIL_DELAY_MS);
 
     // Promo auto-answer: AskUserQuestion → first option for fl/run/imp
-    if (isPromoActive() && ['fl', 'run', 'imp'].includes(execution.command)) {
+    if (['fl', 'run', 'imp'].includes(execution.command)) {
       const firstOption = execution.inputRequired?.questions?.[0]?.options?.[0] || '1';
       this._schedulePromoAutoAnswer(
         execution,
