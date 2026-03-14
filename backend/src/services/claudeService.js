@@ -121,6 +121,7 @@ export class ClaudeService {
     this.executions = new Map();
     this.queue = [];
     this.chainSlots = new Set();
+    this._profileRoundRobinIndex = 0; // Round-robin counter for per-session profile allocation
     this.runLockFeatureId = null; // Feature ID holding /run exclusion lock
     this._shellStatesPath = path.join(projectRoot, '_out', 'tmp', 'dashboard', 'shell-states.json');
     this.shellStates = this._loadShellStates();
@@ -309,6 +310,19 @@ export class ClaudeService {
   getCcsProfile() {
     // Priority: CCS_PROFILE env var > config.yaml default
     return process.env.CCS_PROFILE || getCcsDefaultProfile();
+  }
+
+  /**
+   * Allocate a CCS profile for a new execution using round-robin.
+   * Each execution gets its own profile to distribute session usage evenly.
+   * @returns {string|null} Allocated profile name, or null if no profiles available
+   */
+  _allocateProfile() {
+    const profiles = getCcsProfiles();
+    if (profiles.length === 0) return this.getCcsProfile(); // fallback to global default
+    const profile = profiles[this._profileRoundRobinIndex % profiles.length];
+    this._profileRoundRobinIndex = (this._profileRoundRobinIndex + 1) % profiles.length;
+    return profile;
   }
 
   /** Get current CCS version */
@@ -510,8 +524,9 @@ export class ClaudeService {
       env.HTTPS_PROXY = PROXY_URL;
       env.HTTP_PROXY = PROXY_URL;
     }
-    // CCS profile integration: point to CCS instance directory
-    const profile = this.getCcsProfile();
+    // CCS profile integration: use per-execution profile (round-robin allocated),
+    // falling back to global default for terminal mode
+    const profile = execution?.ccsProfile || this.getCcsProfile();
     if (profile) {
       env.CLAUDE_CONFIG_DIR = path.join(CCS_INSTANCES_DIR, profile);
     }
@@ -660,7 +675,7 @@ export class ClaudeService {
     execution.status = 'running';
     execution.startedAt = new Date().toISOString();
     execution.lastOutputTime = Date.now();
-    execution.ccsProfile = this.getCcsProfile();
+    execution.ccsProfile = this._allocateProfile();
 
     // Acquire run-lock when /run starts
     if (command === 'run') {
@@ -680,9 +695,8 @@ export class ClaudeService {
     const debugLogPath = path.join(this.tmpDir, `debug-${executionId}.log`);
     execution.debugLogPath = debugLogPath;
 
-    const ccsProfile = this.getCcsProfile();
     claudeLog.info(
-      `[ClaudeService] Launching: ${claudePath} -p "${cliPrompt}" (CCS profile: ${ccsProfile || 'default'})`,
+      `[ClaudeService] Launching: ${claudePath} -p "${cliPrompt}" (CCS profile: ${execution.ccsProfile || 'default'})`,
     );
     debugLog(`[ClaudeService] Debug log: ${debugLogPath}`);
 
@@ -1901,9 +1915,9 @@ export class ClaudeService {
     }
 
     // First entry or no active timer: try Strategy 1 (profile switch) or Strategy 2 (timed)
-    const currentProfile = this.getCcsProfile();
+    const currentProfile = execution.ccsProfile || this.getCcsProfile();
 
-    // Strategy 1: Find a safe profile and switch immediately
+    // Strategy 1: Find a safe profile and switch immediately (per-execution, no global switch)
     const switchCount = execution._profileSwitchCount || 0;
     const safeProfile = this.rateLimitService?.getSafeProfile(currentProfile);
     if (safeProfile) {
@@ -1913,7 +1927,7 @@ export class ClaudeService {
         );
         // Fall through to Strategy 2
       } else {
-        this._switchProfile(safeProfile);
+        execution.ccsProfile = safeProfile; // Per-execution profile switch (no global default change)
         execution.rateLimitSwitchedTo = safeProfile;
         execution._profileSwitchCount = switchCount + 1;
 
@@ -2119,7 +2133,7 @@ export class ClaudeService {
       newExec.lastOutputTime = Date.now();
       newExec.sessionId = execution.sessionId;
       newExec._profileSwitchCount = execution._profileSwitchCount || 0;
-      newExec.ccsProfile = this.getCcsProfile(); // May have changed after profile switch
+      newExec.ccsProfile = execution.rateLimitSwitchedTo || execution.ccsProfile; // Use switched profile or inherit
       newExec._rateLimitQueueContinue = this._rateLimitRetryQueue.length > 0;
       newExec.debugLogPath = path.join(this.tmpDir, `debug-${newExec.id}.log`);
       newExec.logs = [
@@ -3163,7 +3177,7 @@ export class ClaudeService {
     ];
 
     claudeLog.info(
-      `[ClaudeService] Resuming session: ${sessionId} (CCS profile: ${this.getCcsProfile() || 'default'})`,
+      `[ClaudeService] Resuming session: ${sessionId} (CCS profile: ${execution.ccsProfile || 'default'})`,
     );
     debugLog(`[ClaudeService] spawn args:`, [claudePath, ...args].join(' '));
 
