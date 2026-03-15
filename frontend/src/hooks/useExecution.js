@@ -225,23 +225,6 @@ function reducer(state, action) {
       return { ...state, ...changes };
     }
 
-    // Feature status changed: clear stale executions for that feature
-    case 'WS_STATUS_CHANGED': {
-      const { featureId } = action;
-      const next = new Map(state.executions);
-      let changed = false;
-      for (const [execId, exec] of next) {
-        if (
-          exec.featureId === String(featureId) &&
-          (exec.status === 'completed' || exec.status === 'failed' || exec.status === 'handed-off')
-        ) {
-          next.delete(execId);
-          changed = true;
-        }
-      }
-      return changed ? { ...state, executions: next } : state;
-    }
-
     case 'SET_FEATURE_PHASE': {
       const { featureId, phase, name } = action;
       const next = new Map(state.featurePhases);
@@ -255,7 +238,21 @@ function reducer(state, action) {
     }
 
     case 'SET_EXECUTIONS': {
-      return { ...state, executions: action.executions };
+      // Merge: preserve locally-known completed/failed/handed-off tabs that the backend
+      // has TTL-cleaned. This prevents tabs from disappearing on WS reconnect.
+      const merged = new Map(action.executions);
+      for (const [id, exec] of state.executions) {
+        if (
+          !merged.has(id) &&
+          (exec.status === 'completed' ||
+            exec.status === 'failed' ||
+            exec.status === 'handed-off') &&
+          exec.logs?.length > 0
+        ) {
+          merged.set(id, exec);
+        }
+      }
+      return { ...state, executions: merged };
     }
 
     case 'INIT_EXECUTION_STATES': {
