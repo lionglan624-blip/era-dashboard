@@ -227,6 +227,30 @@ export class ClaudeService {
     return false;
   }
 
+  /**
+   * Scan debug log file for OAuth permission errors (403 permission_error).
+   * Returns true if auth error was detected and execution.authError was set.
+   */
+  _scanDebugLogForAuthError(execution) {
+    try {
+      if (existsSync(execution.debugLogPath)) {
+        const tail = readFileSync(execution.debugLogPath, 'utf8').slice(-16384);
+        if (/permission_error/i.test(tail)) {
+          execution.authError = true;
+          claudeLog.info(
+            `[ClaudeService] Auth error (permission_error) detected from debug log for F${execution.featureId} ${execution.command}`,
+          );
+          return true;
+        }
+      }
+    } catch (err) {
+      claudeLog.debug(
+        `[ClaudeService] Auth error debug log scan failed for ${execution.id}: ${err.code || err.message}`,
+      );
+    }
+    return false;
+  }
+
   /** Load shell states from disk (survives restart) */
   _loadShellStates() {
     try {
@@ -315,14 +339,21 @@ export class ClaudeService {
   /**
    * Allocate a CCS profile for a new execution using round-robin.
    * Each execution gets its own profile to distribute session usage evenly.
+   * @param {string|null} [avoidProfile=null] - Profile to skip if possible (e.g., the one that just failed)
    * @returns {string|null} Allocated profile name, or null if no profiles available
    */
-  _allocateProfile() {
+  _allocateProfile(avoidProfile = null) {
     const profiles = getCcsProfiles();
     if (profiles.length === 0) return this.getCcsProfile(); // fallback to global default
-    const profile = profiles[this._profileRoundRobinIndex % profiles.length];
-    this._profileRoundRobinIndex = (this._profileRoundRobinIndex + 1) % profiles.length;
-    return profile;
+
+    // Try up to profiles.length times to find a non-avoided profile
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[this._profileRoundRobinIndex % profiles.length];
+      this._profileRoundRobinIndex = (this._profileRoundRobinIndex + 1) % profiles.length;
+      if (profile !== avoidProfile) return profile;
+    }
+    // All profiles exhausted (only 1 profile = avoided), fall back
+    return profiles[this._profileRoundRobinIndex % profiles.length];
   }
 
   /** Get current CCS version */
@@ -362,6 +393,7 @@ export class ClaudeService {
     contextRetryCount = 0,
     incompleteRetryCount = 0,
     chainHistory = [],
+    avoidProfile = null,
   } = {}) {
     return {
       id: crypto.randomUUID(),
@@ -409,6 +441,8 @@ export class ClaudeService {
       killedByUser: false,
       promptTooLong: false,
       accountLimitHit: false,
+      authError: false,
+      avoidProfile,
     };
   }
 
@@ -613,6 +647,7 @@ export class ClaudeService {
       incompleteRetryCount = 0,
       chainHistory = [],
       priority = false,
+      avoidProfile = null,
     } = {},
   ) {
     // Validate inputs to prevent command injection
@@ -628,6 +663,7 @@ export class ClaudeService {
       contextRetryCount,
       incompleteRetryCount,
       chainHistory,
+      avoidProfile,
     });
     const executionId = execution.id;
 
@@ -675,7 +711,7 @@ export class ClaudeService {
     execution.status = 'running';
     execution.startedAt = new Date().toISOString();
     execution.lastOutputTime = Date.now();
-    execution.ccsProfile = this._allocateProfile();
+    execution.ccsProfile = this._allocateProfile(execution.avoidProfile);
 
     // Acquire run-lock when /run starts
     if (command === 'run') {
@@ -1348,13 +1384,22 @@ export class ClaudeService {
       }
     }
 
+    // Late-stage auth error detection: scan debug log for permission_error (e.g. expired subscription).
+    // If detected, skip context retry entirely to avoid wasting retries on an unrecoverable error.
+    if (!execution.authError && exitCode !== 0 && execution.debugLogPath) {
+      this._scanDebugLogForAuthError(execution);
+    }
+
     // Context exhaustion retry for all commands (fc, fl, run)
     // subtype=success with non-zero exit (is_error=true) indicates context limit
     // reached during a successful operation — CLI couldn't continue but last response was ok
     const isContextExhausted =
       ['error_max_turns', 'max_tokens'].includes(execution.resultSubtype) ||
       execution.promptTooLong ||
-      (exitCode !== 0 && execution.resultSubtype === 'success' && !execution.accountLimitHit) ||
+      (exitCode !== 0 &&
+        execution.resultSubtype === 'success' &&
+        !execution.accountLimitHit &&
+        !execution.authError) ||
       (exitCode === 3 && !execution.resultSubtype);
 
     // Skip context retry if command already achieved its expected status
@@ -1416,6 +1461,7 @@ export class ClaudeService {
           incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
           chainHistory: updatedHistory,
           priority: true,
+          avoidProfile: execution.ccsProfile,
         });
 
         this.logStreamer?.broadcastAll({
@@ -1496,6 +1542,7 @@ export class ClaudeService {
         incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
         chainHistory: updatedHistory,
         priority: true,
+        avoidProfile: execution.ccsProfile,
       });
 
       this.logStreamer?.broadcastAll({
@@ -1736,6 +1783,7 @@ export class ClaudeService {
                 contextRetryCount: execution.chain.contextRetryCount || 0,
                 incompleteRetryCount: incompleteCount,
                 priority: true,
+                avoidProfile: execution.ccsProfile,
               });
 
               this.logStreamer?.broadcastAll({
@@ -2218,6 +2266,7 @@ export class ClaudeService {
         contextRetryCount: execution.chain?.contextRetryCount || 0,
         incompleteRetryCount: execution.chain?.incompleteRetryCount || 0,
         chainHistory: updatedHistory,
+        avoidProfile: execution.ccsProfile,
       });
 
       // Set queue continuation flag on the new execution

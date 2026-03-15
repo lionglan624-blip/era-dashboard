@@ -51,7 +51,11 @@ export default function ExecutionPanel({
   };
 
   const visibleExecs = Array.from(executions.values())
-    .filter((e) => e.logs?.length > 0 || e.status === 'running' || e.status === 'handed-off')
+    .filter(
+      (e) =>
+        e.status !== 'queued' &&
+        (e.logs?.length > 0 || e.status === 'running' || e.status === 'handed-off'),
+    )
     .sort((a, b) => {
       if (a.status === 'running' && b.status !== 'running') return -1;
       if (b.status === 'running' && a.status !== 'running') return 1;
