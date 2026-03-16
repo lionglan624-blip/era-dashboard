@@ -26,6 +26,7 @@ import { createExecutionRouter } from './src/routes/execution.js';
 import { createDepsRouter } from './src/routes/deps.js';
 import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
+import { exitWithPm2Update } from './src/utils/exitHelpers.js';
 import {
   RATE_LIMIT_POLL_INTERVAL_MS,
   AUTO_DR_DEBOUNCE_MS,
@@ -198,6 +199,11 @@ claudeService.rateLimitService = rateLimitService;
 // Provide featureService to claudeService for email notifications
 claudeService.featureService = featureService;
 
+// Wire fileWatcher features-updated to claudeService for dep-aware dequeue
+fileWatcher.onFeaturesUpdated = () => {
+  claudeService._dequeueNext();
+};
+
 // Status mail service (IMAP IDLE - replies to empty self-sent emails with dashboard status)
 const statusMailService = new StatusMailService({
   featureService,
@@ -264,7 +270,7 @@ function triggerAutoDR() {
     // orphan detached processes survive parent death and keep issuing restart commands.
     // process.exit() is clean — PM2 waits restart_delay, port releases, no race conditions.
     serverLog.info('[Auto-DR] Exiting for PM2 autorestart (restart_delay: 5s)');
-    process.exit(0);
+    exitWithPm2Update(0);
   } else {
     if (!pendingRestart) {
       pendingRestart = true;

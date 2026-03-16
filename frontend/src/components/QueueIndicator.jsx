@@ -17,11 +17,17 @@ export default function QueueIndicator({ queueStatus, onClearQueue, onCancelItem
 
   if (!hasActivity) return null;
 
+  const slotWaiting = queued.filter((item) => !item.depBlocked);
+  const depWaiting = queued.filter((item) => item.depBlocked);
+
   return (
     <div className="queue-indicator">
       <button className="queue-summary" onClick={() => setExpanded(!expanded)}>
         <span className="queue-running">Running: {runningCount}</span>
         {queuedCount > 0 && <span className="queue-pending">Queued: {queuedCount}</span>}
+        {depWaiting.length > 0 && (
+          <span className="queue-dep-blocked">Dep Wait: {depWaiting.length}</span>
+        )}
         {chainSlotCount > 0 && <span className="queue-reserved">Reserved: {chainSlotCount}</span>}
         <span className="queue-expand">{expanded ? '▲' : '▼'}</span>
       </button>
@@ -40,10 +46,10 @@ export default function QueueIndicator({ queueStatus, onClearQueue, onCancelItem
             </div>
           )}
 
-          {queued.length > 0 && (
+          {slotWaiting.length > 0 && (
             <div className="queue-section">
               <h4>Queued</h4>
-              {queued.map((item) => (
+              {slotWaiting.map((item) => (
                 <div key={item.id} className="queue-item queued">
                   <span className="qi-label">F{item.featureId}</span>
                   <span className="qi-command">/{item.command}</span>
@@ -52,10 +58,33 @@ export default function QueueIndicator({ queueStatus, onClearQueue, onCancelItem
                   </button>
                 </div>
               ))}
-              <button className="btn-clear-queue" onClick={onClearQueue}>
-                Clear Queue
-              </button>
             </div>
+          )}
+
+          {depWaiting.length > 0 && (
+            <div className="queue-section">
+              <h4>Dep Waiting</h4>
+              {depWaiting.map((item) => (
+                <div key={item.id} className="queue-item dep-blocked">
+                  <span className="qi-label">F{item.featureId}</span>
+                  <span className="qi-command">/{item.command}</span>
+                  {item.pendingDeps && item.pendingDeps.length > 0 && (
+                    <span className="qi-deps">
+                      waiting: {item.pendingDeps.map((d) => `F${d}`).join(', ')}
+                    </span>
+                  )}
+                  <button className="qi-cancel" onClick={() => onCancelItem(item.id)}>
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {queued.length > 0 && (
+            <button className="btn-clear-queue" onClick={onClearQueue}>
+              Clear Queue
+            </button>
           )}
         </div>
       )}

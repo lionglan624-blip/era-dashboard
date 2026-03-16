@@ -188,7 +188,9 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const ccsProfile = data.featureProfiles?.get(id);
   const isInputWaiting = data.featureInputWaiting?.has(id) || false;
   const isQueued = data.featureQueueWaiters?.has(String(id)) || false;
-  const queuePosition = data.featureQueueWaiters?.get(String(id))?.position ?? null;
+  const queueWaiterEntry = data.featureQueueWaiters?.get(String(id));
+  const queuePosition = queueWaiterEntry?.position ?? null;
+  const isDepBlocked = queueWaiterEntry?.depBlocked || false;
 
   // Local tick for running nodes only: re-render every second to update "Xs ago" display.
   // Only running TreeNodes pay this cost; non-running nodes skip the interval entirely.
@@ -265,8 +267,14 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
           <div className="tree-running-label">{(runningCommand || 'run').toUpperCase()}</div>
         ) : isQueued ? (
           <div className="tree-waiting-label">
-            <span>WAIT</span>
-            {queuePosition != null && <span>#{queuePosition}</span>}
+            {isDepBlocked ? (
+              <span className="queue-dep-blocked">DEP</span>
+            ) : (
+              <>
+                <span>WAIT</span>
+                {queuePosition != null && <span>#{queuePosition}</span>}
+              </>
+            )}
           </div>
         ) : depth === 0 ? (
           <div className="tree-running-placeholder" />
@@ -454,13 +462,21 @@ export default function TreeView({
   const trees = useMemo(() => buildTree(features, runningFeatures), [features, runningFeatures]);
   const phaseGroups = useMemo(() => groupByPhase(trees), [trees]);
 
-  const queueableRootIds = useMemo(() => {
-    return trees
-      .filter((node) => !node.isOrphan)
-      .filter((node) => QUEUEABLE_STATUSES.has(node.feature.status))
-      .filter((node) => !runningFeatures.has(String(node.feature.id)))
-      .filter((node) => !featureQueueWaiters?.has(String(node.feature.id)))
-      .map((node) => node.feature.id);
+  const queueableAllIds = useMemo(() => {
+    const ids = [];
+    function collectIds(node) {
+      if (node.isOrphan) return;
+      if (
+        QUEUEABLE_STATUSES.has(node.feature.status) &&
+        !runningFeatures.has(String(node.feature.id)) &&
+        !featureQueueWaiters?.has(String(node.feature.id))
+      ) {
+        ids.push(node.feature.id);
+      }
+      for (const child of node.children) collectIds(child);
+    }
+    trees.forEach(collectIds);
+    return ids;
   }, [trees, runningFeatures, featureQueueWaiters]);
 
   // Collapsed phase state, persisted to localStorage
@@ -594,10 +610,10 @@ export default function TreeView({
         <div className="tree-toolbar">
           <button
             className="btn-bulk-queue"
-            disabled={queueableRootIds.length === 0}
-            onClick={() => onBulkQueue(queueableRootIds)}
+            disabled={queueableAllIds.length === 0}
+            onClick={() => onBulkQueue(queueableAllIds)}
           >
-            Queue Roots ({queueableRootIds.length})
+            Queue All ({queueableAllIds.length})
           </button>
           {featureQueueWaiters?.size > 0 && (
             <button className="btn-clear-queue" onClick={onClearQueue}>

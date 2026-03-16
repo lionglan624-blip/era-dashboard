@@ -12,6 +12,12 @@ vi.mock('child_process', () => ({
   }),
 }));
 
+// Mock exitHelpers
+vi.mock('../utils/exitHelpers.js', () => ({
+  exitWithPm2Update: vi.fn(),
+  setPm2UpdatePending: vi.fn(),
+}));
+
 // Mock logger
 vi.mock('../utils/logger.js', () => ({
   createLogger: vi.fn(() => ({
@@ -316,13 +322,51 @@ describe('DependencyUpdaterService', () => {
       });
 
       await service._runGlobal({
+        name: 'Test',
+        cmd: 'npm update -g test',
+        versionCmd: 'test --version',
+        postCmd: 'test reload',
+      });
+
+      expect(service._exec).toHaveBeenCalledWith('test reload', { timeout: 5000 });
+    });
+
+    it('sets pendingReload flag for PM2 when version changes', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      let callNum = 0;
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('--version')) {
+          callNum++;
+          return { success: true, stdout: callNum <= 1 ? '5.3.0' : '5.4.0' };
+        }
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._runGlobal({
         name: 'PM2',
         cmd: 'npm update -g pm2',
         versionCmd: 'pm2 --version',
-        postCmd: 'pm2 update',
       });
 
-      expect(service._exec).toHaveBeenCalledWith('pm2 update', { timeout: 5000 });
+      expect(result.pendingReload).toBe(true);
+      expect(result.versionBefore).toBe('5.3.0');
+      expect(result.versionAfter).toBe('5.4.0');
+    });
+
+    it('does not set pendingReload for PM2 when version unchanged', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      service._exec = vi.fn(async () => ({ success: true, stdout: '5.3.0' }));
+
+      const result = await service._runGlobal({
+        name: 'PM2',
+        cmd: 'npm update -g pm2',
+        versionCmd: 'pm2 --version',
+      });
+
+      expect(result.pendingReload).toBeUndefined();
+      expect(result.skipped).toBe('already latest');
     });
   });
 
@@ -680,6 +724,122 @@ describe('DependencyUpdaterService', () => {
       ]);
 
       expect(emailService.sendHtml).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // Weekly summary
+  // =========================================================================
+
+  describe('_sendWeeklySummary', () => {
+    it('sends summary email with all tiers', async () => {
+      vi.useRealTimers();
+      const emailService = makeMockEmailService();
+      const service = createService({ emailService });
+
+      // Populate results
+      service._lastResults.set('daily', {
+        timestamp: new Date().toISOString(),
+        results: [{ name: 'CCS', success: true, skipped: 'already latest' }],
+      });
+      service._lastResults.set('weekly', {
+        timestamp: new Date().toISOString(),
+        results: [{ name: 'CodeRabbit', success: true, versionBefore: '2.0', versionAfter: '2.1' }],
+      });
+
+      await service._sendWeeklySummary();
+
+      expect(emailService.sendHtml).toHaveBeenCalledWith(
+        expect.stringContaining('[Dep-Summary] Weekly'),
+        expect.stringContaining('CCS'),
+      );
+    });
+
+    it('shows "No recent results" for tiers without data', async () => {
+      vi.useRealTimers();
+      const emailService = makeMockEmailService();
+      const service = createService({ emailService });
+
+      await service._sendWeeklySummary();
+
+      expect(emailService.sendHtml).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('No recent results'),
+      );
+    });
+
+    it('shows pendingReload for PM2', async () => {
+      vi.useRealTimers();
+      const emailService = makeMockEmailService();
+      const service = createService({ emailService });
+
+      service._lastResults.set('weekly', {
+        timestamp: new Date().toISOString(),
+        results: [
+          {
+            name: 'PM2',
+            success: true,
+            versionBefore: '5.3.0',
+            versionAfter: '5.4.0',
+            pendingReload: true,
+          },
+        ],
+      });
+
+      await service._sendWeeklySummary();
+
+      expect(emailService.sendHtml).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('daemon reload pending'),
+      );
+    });
+
+    it('does not send when emailService is null', async () => {
+      vi.useRealTimers();
+      const service = createService({ emailService: null });
+      // Should not throw
+      await service._sendWeeklySummary();
+    });
+  });
+
+  describe('weekly email suppression', () => {
+    it('does not send per-tier email for weekly tier', async () => {
+      vi.useRealTimers();
+      const emailService = makeMockEmailService();
+      const service = createService({ emailService });
+      service._exec = vi.fn(async () => ({ success: true, stdout: '1.0.0' }));
+
+      await service._runTier('weekly', [
+        { name: 'Test', type: 'global', cmd: 'a', versionCmd: 'a --v', needsIdle: false },
+      ]);
+
+      // Should not have sent [Dep-Update] weekly email
+      const calls = emailService.sendHtml.mock.calls;
+      const hasDepUpdate = calls.some(([subject]) => subject.includes('[Dep-Update]'));
+      expect(hasDepUpdate).toBe(false);
+    });
+
+    it('still sends per-tier email for daily tier', async () => {
+      vi.useRealTimers();
+      const emailService = makeMockEmailService();
+      const service = createService({ emailService });
+      let callNum = 0;
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('--v')) {
+          callNum++;
+          return { success: true, stdout: callNum <= 1 ? '1.0.0' : '1.1.0' };
+        }
+        return { success: true, stdout: '' };
+      });
+
+      await service._runTier('daily', [
+        { name: 'CCS', type: 'global', cmd: 'a', versionCmd: 'a --v', needsIdle: false },
+      ]);
+
+      expect(emailService.sendHtml).toHaveBeenCalledWith(
+        expect.stringContaining('[Dep-Update] daily'),
+        expect.any(String),
+      );
     });
   });
 

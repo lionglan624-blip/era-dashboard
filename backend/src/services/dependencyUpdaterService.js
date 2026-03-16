@@ -11,6 +11,7 @@ import {
   UPDATE_IDLE_MAX_RETRIES,
   // Schedule constants exported from config for external use (scheduling uses private methods)
 } from '../config.js';
+import { exitWithPm2Update, setPm2UpdatePending } from '../utils/exitHelpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execAsync = promisify(exec);
@@ -45,7 +46,7 @@ export class DependencyUpdaterService {
       cmd: 'npm update -g pm2',
       versionCmd: 'pm2 --version',
       needsIdle: true,
-      postCmd: 'pm2 update',
+      // postCmd removed: daemon reload deferred to next clean exit via exitHelpers.js
     },
   ];
 
@@ -236,6 +237,7 @@ export class DependencyUpdaterService {
       this._weeklyTimeout = null;
       log.info('[Weekly] Triggered');
       this._runTier('weekly', DependencyUpdaterService.WEEKLY)
+        .then(() => this._sendWeeklySummary())
         .catch((err) => log.error(`[Weekly] Error: ${err.message}`))
         .finally(() => this._scheduleWeeklyNext());
     }, ms);
@@ -354,7 +356,10 @@ export class DependencyUpdaterService {
         results.push(result);
         log.info(`[${tierName}] ${item.name}: ${JSON.stringify(result)}`);
       }
-      await this._sendSummaryEmail(tierName, results);
+      // Weekly tier email is replaced by the cross-tier weekly summary
+      if (tierName !== 'weekly') {
+        await this._sendSummaryEmail(tierName, results);
+      }
     } finally {
       this._running.set(tierName, false);
       this._lastResults.set(tierName, { timestamp: new Date().toISOString(), results });
@@ -392,6 +397,15 @@ export class DependencyUpdaterService {
     if (item.postCmd && result.versionBefore !== result.versionAfter) {
       log.info(`[${item.name}] Running post-command: ${item.postCmd}`);
       await this._exec(item.postCmd, { timeout: 5000 });
+    }
+
+    // PM2: defer daemon reload to next clean process exit
+    if (item.name === 'PM2' && result.versionBefore !== result.versionAfter) {
+      setPm2UpdatePending(result.versionAfter);
+      result.pendingReload = true;
+      log.info(
+        `[PM2] Daemon reload deferred to next exit (${result.versionBefore} → ${result.versionAfter})`,
+      );
     }
 
     return result;
@@ -470,7 +484,7 @@ export class DependencyUpdaterService {
       this._saveResultsSync();
       // Small delay to allow email send to complete
       await new Promise((r) => setTimeout(r, 1000));
-      process.exit(0);
+      exitWithPm2Update(0);
     }
 
     return result;
@@ -571,7 +585,8 @@ export class DependencyUpdaterService {
       if (!r.success) return `❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
       if (r.committed) return `📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
       if (r.versionBefore && r.versionAfter) {
-        return `🔄 ${r.name}: ${r.versionBefore} → ${r.versionAfter}`;
+        const suffix = r.pendingReload ? ' (daemon reload pending)' : '';
+        return `🔄 ${r.name}: ${r.versionBefore} → ${r.versionAfter}${suffix}`;
       }
       if (r.outdated?.length > 0) {
         const pkgs = r.outdated.map((p) => `${p.package} ${p.current}→${p.latest}`).join(', ');
@@ -587,6 +602,50 @@ export class DependencyUpdaterService {
       log.info(`[Email] Sent: ${subject}`);
     } catch (err) {
       log.error(`[Email] Failed: ${err.message}`);
+    }
+  }
+
+  // =========================================================================
+  // Weekly cross-tier summary
+  // =========================================================================
+
+  async _sendWeeklySummary() {
+    if (!this._emailService) return;
+
+    const TIER_WINDOWS = { daily: 2, weekly: 8, monthly: 32 }; // days
+    const now = Date.now();
+    const sections = [];
+
+    for (const [tier, windowDays] of Object.entries(TIER_WINDOWS)) {
+      const entry = this._lastResults.get(tier);
+      if (!entry || now - new Date(entry.timestamp).getTime() > windowDays * 86400000) {
+        sections.push(`<b>${tier}</b>\n  No recent results`);
+        continue;
+      }
+      const lines = entry.results.map((r) => {
+        if (r.skipped) return `  ✅ ${r.name}: ${r.skipped}`;
+        if (!r.success) return `  ❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
+        if (r.committed) return `  📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
+        if (r.versionBefore && r.versionAfter) {
+          const suffix = r.pendingReload ? ' (daemon reload pending)' : '';
+          return `  🔄 ${r.name}: ${r.versionBefore} → ${r.versionAfter}${suffix}`;
+        }
+        if (r.outdated?.length > 0) {
+          const pkgs = r.outdated.map((p) => `${p.package} ${p.current}→${p.latest}`).join(', ');
+          return `  📋 ${r.name}: outdated — ${pkgs}`;
+        }
+        return `  ✅ ${r.name}: ok`;
+      });
+      sections.push(`<b>${tier}</b> (${entry.timestamp.slice(0, 10)})\n${lines.join('\n')}`);
+    }
+
+    const subject = `[Dep-Summary] Weekly — ${new Date().toISOString().slice(0, 10)}`;
+    const html = `<pre style="font-family:monospace;font-size:14px">${sections.join('\n\n')}</pre>`;
+    try {
+      await this._emailService.sendHtml(subject, html);
+      log.info(`[Email] Sent: ${subject}`);
+    } catch (err) {
+      log.error(`[Email] Weekly summary failed: ${err.message}`);
     }
   }
 

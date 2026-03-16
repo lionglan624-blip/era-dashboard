@@ -504,6 +504,8 @@ export default function App() {
             waiterMap.set(String(msg.queued[i].featureId), {
               position: i + 1,
               executionId: msg.queued[i].id,
+              depBlocked: msg.queued[i].depBlocked || false,
+              pendingDeps: msg.queued[i].pendingDeps || [],
             });
           }
         }
@@ -817,13 +819,13 @@ export default function App() {
         if (qCount > 0) {
           addNotification({
             type: 'info',
-            title: 'Queue Roots',
+            title: 'Queue All',
             message: `${qCount} queued${sCount > 0 ? `, ${sCount} skipped` : ''}`,
           });
         } else {
           addNotification({
             type: 'warning',
-            title: 'Queue Roots',
+            title: 'Queue All',
             message: sCount > 0 ? `${sCount} skipped` : 'Nothing to queue',
           });
         }
@@ -831,7 +833,7 @@ export default function App() {
         console.error('Bulk queue failed:', err);
         addNotification({
           type: 'warning',
-          title: 'Queue Roots Failed',
+          title: 'Queue All Failed',
           message: err.message,
         });
       }

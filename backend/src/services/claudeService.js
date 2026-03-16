@@ -17,6 +17,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import net from 'net';
 import { claudeLog } from '../utils/logger.js';
+import { exitWithPm2Update } from '../utils/exitHelpers.js';
 import {
   STALL_TIMEOUT_MS,
   STALL_CHECK_INTERVAL_MS,
@@ -281,7 +282,7 @@ export class ClaudeService {
 
   /** Exit process for PM2 autorestart — separated for testability */
   _exitForRestart() {
-    process.exit(0);
+    exitWithPm2Update(0);
   }
 
   /** Persist shell states to disk */
@@ -706,12 +707,21 @@ export class ClaudeService {
       } else {
         this.queue.push(executionId);
       }
+      // Release chain slot for dep-blocked items to prevent starvation
+      // (re-reserved at dequeue time in _dequeueNext)
+      const pendingDeps = this._getPendingDeps(execution.featureId);
+      if (pendingDeps === null || pendingDeps.length > 0) {
+        this._releaseChainSlot(execution);
+      }
       const queuePos = priority ? 1 : this.queue.length;
       const runBlocked = this._isRunBlocked(execution.command);
+      const depBlocked = pendingDeps === null || pendingDeps.length > 0;
       this._pushLog(execution, {
-        line: runBlocked
-          ? `Queued (position ${queuePos}). Waiting for running /run to complete...`
-          : `Queued (position ${queuePos}). Waiting for slot...`,
+        line: depBlocked
+          ? `Queued (position ${queuePos}). Waiting for dependencies...`
+          : runBlocked
+            ? `Queued (position ${queuePos}). Waiting for running /run to complete...`
+            : `Queued (position ${queuePos}). Waiting for slot...`,
         timestamp: new Date().toISOString(),
         level: 'info',
       });
@@ -1062,11 +1072,13 @@ export class ClaudeService {
 
     setTimeout(() => {
       this.resumeInTerminal(execution.id);
+      // Notify after terminal is opened — prevents Auto-DR from killing
+      // the process before the 300ms handoff delay completes.
+      this.onExecutionComplete?.(execution);
     }, HANDOFF_DELAY_MS);
 
     this._broadcastState(execution);
     this._dequeueNext();
-    this.onExecutionComplete?.(execution);
   }
 
   /** Append a history entry to the persistent JSONL file */
@@ -2406,6 +2418,11 @@ export class ClaudeService {
     if (newStatus !== '[WIP]') {
       this._releaseRunLock(featureId, newStatus);
     }
+    // Dep resolution: invalidate cache for fresh dep check, then re-evaluate queue
+    if (newStatus === '[DONE]' || newStatus === '[CANCELLED]') {
+      this.featureService?.invalidateCache();
+      this._dequeueNext();
+    }
   }
 
   /**
@@ -2471,8 +2488,36 @@ export class ClaudeService {
     return count;
   }
 
+  /**
+   * Get unresolved dependency IDs for a feature.
+   * Reuses featureService.getAllFeatures() (2s cache) as single source of truth.
+   * Returns null on error (fail-closed: treat as blocked).
+   * @param {string} featureId
+   * @param {Array} [cachedFeatures] - Optional pre-fetched features array for batch use
+   * @returns {string[]|null} Pending dep IDs, empty array if none, null on error
+   */
+  _getPendingDeps(featureId, cachedFeatures = null) {
+    if (!this.featureService) return [];
+    if (!featureId) return [];
+    try {
+      const features = cachedFeatures || this.featureService.getAllFeatures().features;
+      const feature = features.find((f) => f.id === String(featureId));
+      if (!feature?.pendingDeps) return [];
+      return feature.pendingDeps
+        .split(',')
+        .map((d) => d.trim().replace(/\D/g, ''))
+        .filter(Boolean);
+    } catch (err) {
+      claudeLog.error(`[DepCheck] Failed for F${featureId}: ${err.message}`);
+      return null;
+    }
+  }
+
   _canStartNow(execution) {
     if (this._isRunBlocked(execution.command)) return false;
+    // Block if feature has unresolved dependencies (fail-closed: null = blocked)
+    const pendingDeps = this._getPendingDeps(execution.featureId);
+    if (pendingDeps === null || pendingDeps.length > 0) return false;
     // If this is a /run and there's already a queued /run with higher priority (e.g. [WIP] retry),
     // defer to queue so priority ordering is respected
     if (execution.command === 'run') {
@@ -2499,6 +2544,14 @@ export class ClaudeService {
       claudeLog.info('[Queue] Dequeue blocked — rate limit retry pending');
       return;
     }
+    // Fetch features once for batch dep-check (avoids N cache lookups per iteration)
+    let cachedFeatures = null;
+    try {
+      cachedFeatures = this.featureService?.getAllFeatures()?.features;
+    } catch {
+      // featureService unavailable — dep check will fail-closed per item
+    }
+
     while (this.queue.length > 0 && this.runningCount < this.maxConcurrent) {
       // Purge non-queued items (cancelled, already started, etc.)
       this.queue = this.queue.filter((id) => {
@@ -2517,6 +2570,10 @@ export class ClaudeService {
         const exec = this.executions.get(this.queue[i]);
         if (this._isRunBlocked(exec.command)) continue;
 
+        // Skip if dep check fails (null = fail-closed) or has pending deps
+        const pendingDeps = this._getPendingDeps(exec.featureId, cachedFeatures);
+        if (pendingDeps === null || pendingDeps.length > 0) continue;
+
         const belongsToChain = this._belongsToActiveChain(exec);
         const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
         if (this.runningCount < limit) {
@@ -2534,6 +2591,10 @@ export class ClaudeService {
 
       const nextId = this.queue.splice(idx, 1)[0];
       const nextExec = this.executions.get(nextId);
+      // Re-reserve chain slot for dep-resolved items that had it released
+      if (nextExec.chain?.enabled && !nextExec.chainParentId && !this.chainSlots.has(nextExec.id)) {
+        this.chainSlots.add(nextExec.id);
+      }
       this._pushLog(nextExec, {
         line: 'Dequeued. Starting execution...',
         timestamp: new Date().toISOString(),
@@ -2570,15 +2631,25 @@ export class ClaudeService {
         waitingForInputCount++;
       }
     }
+    // Fetch features once for batch dep-check
+    let cachedFeatures = null;
+    try {
+      cachedFeatures = this.featureService?.getAllFeatures()?.features;
+    } catch {
+      // featureService unavailable — depBlocked will default to false
+    }
     for (const qId of this.queue) {
       const exec = this.executions.get(qId);
       if (exec) {
         const status = this.fileWatcher?.statusCache?.get(String(exec.featureId)) || '[DRAFT]';
+        const pendingDeps = this._getPendingDeps(exec.featureId, cachedFeatures);
         queued.push({
           id: exec.id,
           featureId: exec.featureId,
           command: exec.command,
           priority: STATUS_PRIORITY[status] ?? 99,
+          depBlocked: pendingDeps !== null && pendingDeps.length > 0,
+          pendingDeps: pendingDeps ? pendingDeps.map((d) => `F${d}`) : [],
         });
       }
     }
@@ -2708,9 +2779,21 @@ export class ClaudeService {
       }
 
       // Attempt to queue the execution
+      // (executeCommand handles chain slot release for dep-blocked items)
       try {
         const executionId = this.executeCommand(featureIdStr, command, { chain: true });
         queued.push({ id: executionId, featureId: featureIdStr, command });
+
+        // Emit chain-blocked for FE notification if dep-blocked
+        const pendingDeps = this._getPendingDeps(featureIdStr);
+        if (pendingDeps && pendingDeps.length > 0) {
+          this.logStreamer?.broadcastAll({
+            type: 'chain-blocked',
+            featureId: featureIdStr,
+            pendingDeps: pendingDeps.map((d) => `F${d}`).join(', '),
+            timestamp: new Date().toISOString(),
+          });
+        }
       } catch (err) {
         skipped.push({ featureId: featureIdStr, reason: err.message });
       }

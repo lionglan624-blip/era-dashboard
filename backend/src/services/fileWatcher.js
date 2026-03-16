@@ -55,6 +55,8 @@ export class FileWatcher {
     this.statusCache = new Map();
     /** @type {OnStatusChangedCallback|null} */
     this.onStatusChanged = null;
+    /** @type {Function|null} */
+    this.onFeaturesUpdated = null;
   }
 
   /**
@@ -216,6 +218,7 @@ export class FileWatcher {
     clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.featureService.invalidateCache();
+      this.onFeaturesUpdated?.();
       this.logStreamer?.broadcastAll({
         type: 'features-updated',
         timestamp: new Date().toISOString(),
