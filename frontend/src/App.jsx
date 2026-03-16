@@ -9,6 +9,21 @@ import ExecutionPanel from './components/ExecutionPanel.jsx';
 // UI timing constants
 const CS_PROFILE_SWITCH_DELAY_MS = 1500; // Wait for cs.bat profile switch to complete
 
+// March 2026 promo lamp (mirrors backend config.js getPromoMultiplier)
+const PROMO_START = new Date('2026-03-13T00:00:00-07:00').getTime();
+const PROMO_END = new Date('2026-03-28T07:00:00Z').getTime();
+
+function getPromoState(nowMs = Date.now()) {
+  if (nowMs < PROMO_START || nowMs >= PROMO_END) return { multiplier: 1, reason: 'expired' };
+  const ptMs = nowMs - 7 * 60 * 60 * 1000;
+  const ptDate = new Date(ptMs);
+  const dayOfWeek = ptDate.getUTCDay(); // 0=Sun, 6=Sat
+  if (dayOfWeek === 0 || dayOfWeek === 6) return { multiplier: 2, reason: 'weekend' };
+  const ptHour = ptDate.getUTCHours();
+  if (ptHour >= 4 && ptHour < 11) return { multiplier: 1, reason: 'peak' };
+  return { multiplier: 2, reason: 'offpeak' };
+}
+
 // Month abbreviation → number mapping for reset time formatting
 const MONTH_MAP = {
   jan: 1,
@@ -99,6 +114,13 @@ export default function App() {
 
   // CCS enabled status (read-only, managed via ~/.ccs/)
   const [ccsProfile, setCcsProfile] = useState(null);
+
+  // Promo lamp (1x/2x indicator, updates every minute)
+  const [promoState, setPromoState] = useState(getPromoState);
+  useEffect(() => {
+    const id = setInterval(() => setPromoState(getPromoState()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // Measure header height for execution panel positioning
   useEffect(() => {
@@ -1232,6 +1254,20 @@ export default function App() {
               className={`system-status ${!healthStatus.backend || !connected ? 'has-error' : ''}`}
             >
               <div className="status-indicators">
+                {promoState.reason !== 'expired' && (
+                  <span
+                    className={`status-item ${promoState.multiplier === 2 ? 'promo-double' : 'promo-single'}`}
+                    title={
+                      promoState.reason === 'weekend'
+                        ? '2x Weekend (Sat-Sun PT / 土16:00-月16:00 JST)'
+                        : promoState.reason === 'offpeak'
+                          ? '2x Off-peak (平日 03:00-20:00 JST)'
+                          : '1x Peak (平日 21:00-03:00 JST)'
+                    }
+                  >
+                    {promoState.multiplier === 2 ? '●●' : '●'} {promoState.multiplier}x
+                  </span>
+                )}
                 <span
                   className={`status-item ${healthStatus.backend === false ? 'error' : ''}`}
                   title="Backend API"
