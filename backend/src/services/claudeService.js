@@ -54,6 +54,7 @@ import {
   ChainExecutor,
   getNextChainCommand,
   isExpectedStatusAfterCommand,
+  isStatusBeyond,
   EXPECTED_STATUS_AFTER_COMMAND,
 } from './chainExecutor.js';
 import { EmailService } from './emailService.js';
@@ -653,6 +654,23 @@ export class ClaudeService {
     // Validate inputs to prevent command injection
     const validatedFeatureId = validateFeatureId(featureId);
     const validatedCommand = validateCommand(command);
+
+    // Prevent duplicate execution for same feature+command (race condition guard).
+    // Skip for chain continuations/retries (chainParentId set) and imp (always allowed).
+    if (!chainParentId && validatedCommand !== 'imp') {
+      for (const exec of this.executions.values()) {
+        if (
+          String(exec.featureId) === String(validatedFeatureId) &&
+          exec.command === validatedCommand &&
+          (exec.status === 'running' || exec.status === 'queued')
+        ) {
+          claudeLog.warn(
+            `[Queue] Duplicate ${validatedCommand} for F${validatedFeatureId} rejected (existing: ${exec.id})`,
+          );
+          return exec.id;
+        }
+      }
+    }
 
     const execution = this._createExecution({
       featureId: validatedFeatureId,
@@ -1730,6 +1748,7 @@ export class ClaudeService {
       if (
         currentStatus &&
         currentStatus !== expectedStatus &&
+        !isStatusBeyond(currentStatus, expectedStatus) &&
         currentStatus !== '[BLOCKED]' &&
         !(execution.command === 'fl' && currentStatus === '[DRAFT]')
       ) {

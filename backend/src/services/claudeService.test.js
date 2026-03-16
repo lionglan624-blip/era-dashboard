@@ -1846,6 +1846,57 @@ describe('ClaudeService', () => {
       expect(() => service.executeCommand('100', 'invalid')).toThrow('Invalid command');
     });
 
+    it('rejects duplicate execution for same feature+command', () => {
+      const { service } = createService({ maxConcurrent: 99 });
+      service._startExecution = vi.fn();
+
+      const id1 = service.executeCommand('100', 'fc');
+      const exec1 = service.executions.get(id1);
+      exec1.status = 'running';
+
+      // Second fc for same feature should be rejected
+      const id2 = service.executeCommand('100', 'fc');
+      expect(id2).toBe(id1); // Returns existing execution ID
+      expect(service._startExecution).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows same feature with different command', () => {
+      const { service } = createService({ maxConcurrent: 99 });
+      service._startExecution = vi.fn();
+
+      const id1 = service.executeCommand('100', 'fc');
+      service.executions.get(id1).status = 'running';
+
+      const id2 = service.executeCommand('100', 'fl');
+      expect(id2).not.toBe(id1);
+      expect(service._startExecution).toHaveBeenCalledTimes(2);
+    });
+
+    it('allows duplicate when chainParentId is set (chain continuation)', () => {
+      const { service } = createService({ maxConcurrent: 99 });
+      service._startExecution = vi.fn();
+
+      const id1 = service.executeCommand('100', 'fl');
+      service.executions.get(id1).status = 'running';
+
+      const id2 = service.executeCommand('100', 'fl', {
+        chain: true,
+        chainParentId: id1,
+      });
+      expect(id2).not.toBe(id1);
+    });
+
+    it('allows duplicate imp command', () => {
+      const { service } = createService({ maxConcurrent: 99 });
+      service._startExecution = vi.fn();
+
+      const id1 = service.executeCommand('100', 'imp');
+      service.executions.get(id1).status = 'running';
+
+      const id2 = service.executeCommand('100', 'imp');
+      expect(id2).not.toBe(id1);
+    });
+
     it('queues execution when maxConcurrent limit reached', () => {
       const { service, logStreamer } = createService({ maxConcurrent: 1 });
       service._startExecution = vi.fn();
@@ -3441,6 +3492,97 @@ describe('ClaudeService', () => {
       // Should retry, not hand off
       expect(service._handoffToTerminal).not.toHaveBeenCalled();
       expect(service.executeCommand).toHaveBeenCalled();
+    });
+
+    it('skips incomplete retry when status is beyond expected (fl: [DONE] vs [REVIEWED])', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      // Status already [DONE] — another chain completed /run before this FL finished
+      service.fileWatcher = {
+        statusCache: new Map([['929', '[DONE]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '929',
+        command: 'fl',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // Status beyond expected — no retry, waiter registered for normal chain progression
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
+    });
+
+    it('skips incomplete retry when status is beyond expected (fl: [WIP] vs [REVIEWED])', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      // Status already [WIP] — another chain started /run
+      service.fileWatcher = {
+        statusCache: new Map([['929', '[WIP]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '929',
+        command: 'fl',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      // [WIP] is beyond [REVIEWED] — should not trigger incomplete retry
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
+    });
+
+    it('skips incomplete retry when status is beyond expected (fc: [REVIEWED] vs [PROPOSED])', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._dequeueNext = vi.fn();
+      service.chainExecutor.registerWaiter = vi.fn();
+
+      service.fileWatcher = {
+        statusCache: new Map([['100', '[REVIEWED]']]),
+      };
+
+      const execution = service._createExecution({
+        featureId: '100',
+        command: 'fc',
+        chain: true,
+      });
+      execution.status = 'running';
+      execution.startedAt = new Date().toISOString();
+      execution.lastOutputTime = Date.now();
+      execution.resultSubtype = 'success';
+      service.executions.set(execution.id, execution);
+
+      service.executeCommand = vi.fn();
+
+      service._handleCompletion(execution, 0);
+
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
     });
 
     it('_detectUserActionRequired returns reason for Please delete', () => {

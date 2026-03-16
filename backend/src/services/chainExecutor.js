@@ -70,6 +70,28 @@ export function isExpectedStatusAfterCommand(command, status) {
 }
 
 /**
+ * Status progression order (lower index = more advanced in the workflow)
+ * @type {string[]}
+ */
+const STATUS_PROGRESSION = ['[DONE]', '[WIP]', '[REVIEWED]', '[PROPOSED]', '[DRAFT]'];
+
+/**
+ * Check if currentStatus is more advanced than expectedStatus in the workflow.
+ * Used to skip incomplete-termination retries when another chain has already
+ * progressed the feature beyond the expected state.
+ *
+ * @param {string} currentStatus - Actual feature status from cache
+ * @param {string} expectedStatus - Expected status after the command
+ * @returns {boolean} True if current is strictly more advanced than expected
+ */
+export function isStatusBeyond(currentStatus, expectedStatus) {
+  const currentIdx = STATUS_PROGRESSION.indexOf(currentStatus);
+  const expectedIdx = STATUS_PROGRESSION.indexOf(expectedStatus);
+  if (currentIdx === -1 || expectedIdx === -1) return false;
+  return currentIdx < expectedIdx;
+}
+
+/**
  * Chain Executor - manages chain waiter registration and status change handling
  *
  * @example

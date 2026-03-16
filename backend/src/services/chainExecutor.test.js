@@ -3,6 +3,7 @@ import {
   ChainExecutor,
   getNextChainCommand,
   isExpectedStatusAfterCommand,
+  isStatusBeyond,
 } from './chainExecutor.js';
 
 describe('Chain Execution Pure Functions', () => {
@@ -67,6 +68,48 @@ describe('Chain Execution Pure Functions', () => {
 
     it('returns false for unknown command', () => {
       expect(isExpectedStatusAfterCommand('unknown', '[PROPOSED]')).toBe(false);
+    });
+  });
+
+  describe('isStatusBeyond', () => {
+    it('returns true when [DONE] is beyond [REVIEWED] (fl expected)', () => {
+      expect(isStatusBeyond('[DONE]', '[REVIEWED]')).toBe(true);
+    });
+
+    it('returns true when [WIP] is beyond [REVIEWED] (fl expected)', () => {
+      expect(isStatusBeyond('[WIP]', '[REVIEWED]')).toBe(true);
+    });
+
+    it('returns true when [DONE] is beyond [PROPOSED] (fc expected)', () => {
+      expect(isStatusBeyond('[DONE]', '[PROPOSED]')).toBe(true);
+    });
+
+    it('returns true when [REVIEWED] is beyond [PROPOSED] (fc expected)', () => {
+      expect(isStatusBeyond('[REVIEWED]', '[PROPOSED]')).toBe(true);
+    });
+
+    it('returns false when statuses are equal', () => {
+      expect(isStatusBeyond('[REVIEWED]', '[REVIEWED]')).toBe(false);
+    });
+
+    it('returns false when current is behind expected ([DRAFT] vs [PROPOSED])', () => {
+      expect(isStatusBeyond('[DRAFT]', '[PROPOSED]')).toBe(false);
+    });
+
+    it('returns false when current is behind expected ([PROPOSED] vs [REVIEWED])', () => {
+      expect(isStatusBeyond('[PROPOSED]', '[REVIEWED]')).toBe(false);
+    });
+
+    it('returns false for unknown current status', () => {
+      expect(isStatusBeyond('[UNKNOWN]', '[REVIEWED]')).toBe(false);
+    });
+
+    it('returns false for unknown expected status', () => {
+      expect(isStatusBeyond('[DONE]', '[UNKNOWN]')).toBe(false);
+    });
+
+    it('returns false for [BLOCKED] (not in progression)', () => {
+      expect(isStatusBeyond('[BLOCKED]', '[REVIEWED]')).toBe(false);
     });
   });
 });
