@@ -20,7 +20,7 @@ Linux/macOS: Limited support. Process termination (`SIGTERM`) works, but Termina
 
 **pm2**:
 ```bash
-cd src/tools/node/feature-dashboard && pm2 start ecosystem.config.cjs    # proxy(8888) + backend(3001) + frontend(5173)
+cd C:\Era\dashboard && pm2 start ecosystem.config.cjs    # proxy(8888) + backend(3001) + frontend(5173)
 pm2 save                          # Persist
 ```
 
@@ -163,7 +163,7 @@ Backend logs rotate automatically at midnight (UTC). Session JSONL files are man
 
 **Re-apply after**: `npm update -g pm2` (overwrites the patch). Run:
 ```bash
-node src/tools/node/feature-dashboard/patch-pm2.js && pm2 kill && cd src/tools/node/feature-dashboard && pm2 start ecosystem.config.cjs
+node C:\Era\dashboard\patch-pm2.js && pm2 kill && cd C:\Era\dashboard && pm2 start ecosystem.config.cjs
 ```
 
 ## pm2 Restart Port Retention (`detached: false`)

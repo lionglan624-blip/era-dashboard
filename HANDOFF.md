@@ -346,6 +346,72 @@ All user input is whitelist-validated before passing to spawn:
 
 ---
 
+## Diagnostics
+
+Dashboard の問題調査には **devkit の `dashboard_diag.py` を使う**。手動 `grep`/`tail`/`cat` は禁止 — dashboard_diag.py で 87% の grep を削減できる（バックテスト実証済み）。
+
+```bash
+cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
+```
+
+### Scenario-Based Quick Reference
+
+| シナリオ | まずこれを実行 | 追加で必要なら |
+|---------|---------------|--------------|
+| **実行が失敗した** | `--exec {ID}` | `--exec {ID} --verbose` で全イベント |
+| **Feature の全履歴** | `--feature {ID} --after DATE` | — (1コマンドで完結) |
+| **429/Rate Limit 調査** | `--exec {ID}` (429 自動検出) | `--debug-grep {ID} "rate_limit"` |
+| **Queue/Slot 競合** | `--search "queue\|dequeue" -i --after DATE` | `--feature {ID}` で特定 Feature 追跡 |
+| **Chain retry 傾向** | `--events context-retry,handoff --after DATE` | `--events ... --by-feature` |
+| **Exec ID が何か不明** | `--resolve {ID}` | `--list-debug` で debug log 一覧 |
+| **PM2 クラッシュ** | `--pm2 --pm2-type crash` | `--pm2 "ACCESS_VIOLATION"` |
+| **debug log 内を検索** | `--debug-grep {ID} "pattern"` | `-i -C 3` でコンテキスト付き |
+| **全ログ横断検索** | `--search "pattern" -i -C 3` | 全4ログ源を横断。`--after DATE` で絞り込み |
+
+### Log Sources (4種類、全て自動検出)
+
+| Log | Path | 内容 |
+|-----|------|------|
+| App log | `~/.pm2/logs/dashboard-backend-out.log` | spawn, broadcast, chain, status 変更 |
+| Error log | `~/.pm2/logs/dashboard-backend-error.log` | stderr (uncaught exceptions) |
+| PM2 system log | `~/.pm2/pm2.log` | プロセス restart/crash/exit code |
+| Debug log | `C:\Era\devkit\_out\tmp\dashboard\debug-{execId}.log` | 429 検出、CLI 内部エラー |
+
+### Tips
+
+- **`--resolve {ID}`**: Exec ID → Feature/Command 解決。API evict 後 (TTL 1h) も app log から検索可能
+- **`--list-debug --after DATE`**: debug log 一覧（サイズ、日時、Feature 自動解決付き）
+- **`--verbose`**: `--exec` と組み合わせると全ログイベントを表示
+- **`--width 0`**: 出力トランケーションを無効化
+- **`-C N`**: `--search` / `--debug-grep` でコンテキスト行を表示
+
+---
+
+## Known Issues
+
+### Claude Code proxy bypass required
+
+Claude Code の Bash 環境に `HTTP_PROXY=http://127.0.0.1:8888` が設定されている（CCS proxy）。Dashboard API (`localhost:3001`) への `curl` はプロキシ経由になり、CONNECT 専用プロキシが HTTP GET を拒否する。
+
+```bash
+# NG — プロキシ経由で失敗
+curl http://localhost:3001/api/health
+
+# OK — プロキシをバイパス
+curl --noproxy localhost http://localhost:3001/api/health
+```
+
+**背景**: 2026-03-17 に Dashboard 稼働中にもかかわらず「not reachable」と誤認。プロキシの `"This proxy only supports CONNECT method for HTTPS"` レスポンスが JSON parse 失敗し、fallback メッセージが出力された。
+
+### Chain slot re-reservation ordering bug in `_dequeueNext()` — FIXED
+
+`_dequeueNext()` (`claudeService.js`) で、dep-blocked により chain slot が release された実行が、deps 解決後も non-chain 扱いされ `maxConcurrent - idleChainSlots` の縮小 limit で起動不能になっていた。
+
+**原因**: `_belongsToActiveChain()` が chain slot を持たない chain root を false と判定していた。
+**修正**: `_belongsToActiveChain()` で chain root (`!exec.chainParentId`) は常に true を返すよう変更。chain child は従来通り親の slot 状態で判定。
+
+---
+
 ## See Also
 
 - [INTERNALS.md](INTERNALS.md) — Design decisions, detailed flows (rate limit, input handling, retry logic)
