@@ -7398,3 +7398,80 @@ describe('Scenario Tests', () => {
     });
   });
 });
+
+// =============================================================================
+// Chain slot: dep-blocked re-reservation ordering
+// =============================================================================
+
+describe('Chain slot dep-blocked re-reservation', () => {
+  it('dep-released chain root dequeues when idle chain slots exist', () => {
+    const { service } = createService({ maxConcurrent: 2 });
+    service._startExecution = vi.fn();
+    service.featureService = {
+      getAllFeatures: () => ({ features: [{ id: '100' }, { id: '200' }] }),
+    };
+    service.fileWatcher = {
+      statusCache: new Map([
+        ['100', '[DRAFT]'],
+        ['200', '[WIP]'],
+      ]),
+    };
+
+    // Chain C2: running execution with active chain slot (makes idle=0 once running)
+    const execC2 = service._createExecution({ featureId: '200', command: 'fc', chain: true });
+    execC2.status = 'running';
+    execC2.startedAt = new Date().toISOString();
+    service.executions.set(execC2.id, execC2);
+    service.chainSlots.add(execC2.id); // active chain slot for C2
+
+    // Chain C1 root: dep-blocked at queue time, chain slot was released
+    const execC1 = service._createExecution({ featureId: '100', command: 'fc', chain: true });
+    execC1.status = 'queued';
+    service.executions.set(execC1.id, execC1);
+    // chain slot NOT in chainSlots (was released due to dep-blocked)
+    service.queue.push(execC1.id);
+
+    // maxConcurrent=2, 1 running → should be able to dequeue C1
+    service._dequeueNext();
+
+    expect(service._startExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ featureId: '100' }),
+    );
+  });
+
+  it('chain child with released parent slot returns false from _belongsToActiveChain', () => {
+    const { service } = createService();
+
+    const child = service._createExecution({
+      featureId: '100',
+      command: 'run',
+      chain: true,
+      chainParentId: 'parent-id-123',
+    });
+    // Parent slot NOT in chainSlots (was released)
+    expect(service._belongsToActiveChain(child)).toBe(false);
+  });
+
+  it('chain root always returns true from _belongsToActiveChain even without slot', () => {
+    const { service } = createService();
+
+    const root = service._createExecution({
+      featureId: '100',
+      command: 'fc',
+      chain: true,
+    });
+    // No chain slot reserved
+    expect(service._belongsToActiveChain(root)).toBe(true);
+  });
+
+  it('non-chain execution returns false from _belongsToActiveChain', () => {
+    const { service } = createService();
+
+    const exec = service._createExecution({
+      featureId: '100',
+      command: 'fc',
+      chain: false,
+    });
+    expect(service._belongsToActiveChain(exec)).toBe(false);
+  });
+});

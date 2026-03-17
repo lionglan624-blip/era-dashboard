@@ -2468,8 +2468,12 @@ export class ClaudeService {
 
   _belongsToActiveChain(exec) {
     if (!exec.chain?.enabled) return false;
-    const rootId = exec.chainParentId || exec.id;
-    return this.chainSlots.has(rootId);
+    // Chain roots always "belong to a chain" for slot limit purposes,
+    // even if their slot was released (dep-blocked at queue time).
+    // Without this, dep-resolved chain roots get reduced limit
+    // (maxConcurrent - idleChainSlots) and may never dequeue.
+    if (!exec.chainParentId) return true;
+    return this.chainSlots.has(exec.chainParentId);
   }
 
   _countIdleChainSlots() {
