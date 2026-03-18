@@ -42,6 +42,8 @@ import {
   RATE_LIMIT_SAFE_THRESHOLD,
   MAX_PROFILE_SWITCHES,
   MAX_INCOMPLETE_RETRIES,
+  MAX_SERVER_ERROR_RETRIES,
+  SERVER_ERROR_BACKOFF_MS,
   INPUT_EMAIL_DELAY_MS,
   getMaxConcurrentExecutions,
 } from '../config.js';
@@ -174,6 +176,11 @@ export class ClaudeService {
     this._rateLimitRetryQueue = []; // Array of { execution, queuedAt }
     this._rateLimitRetryTimer = null;
     this._rateLimitRetryAt = null; // ISO string for UI
+
+    // Server error (500/529) retry state (exponential backoff)
+    this._serverErrorRetryQueue = []; // Array of { execution, retryCount, queuedAt }
+    this._serverErrorRetryTimer = null;
+    this._serverErrorRetryAt = null; // ISO string for UI
   }
 
   /** Dynamic max concurrent: promo-aware unless overridden by test DI */
@@ -185,6 +192,11 @@ export class ClaudeService {
   /** @returns {boolean} True if rate limit retry queue is non-empty (blocks dequeue) */
   get _rateLimitPaused() {
     return this._rateLimitRetryQueue.length > 0;
+  }
+
+  /** @returns {boolean} True if server error retry is pending (blocks dequeue) */
+  get _serverErrorPaused() {
+    return this._serverErrorRetryQueue.length > 0;
   }
 
   /**
@@ -248,6 +260,40 @@ export class ClaudeService {
     } catch (err) {
       claudeLog.debug(
         `[ClaudeService] Auth error debug log scan failed for ${execution.id}: ${err.code || err.message}`,
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Scan debug log file for server errors (500/529 overloaded_error, api_error).
+   * Returns true if detected and execution.serverErrorHit was set.
+   */
+  _scanDebugLogForServerError(execution) {
+    try {
+      if (existsSync(execution.debugLogPath)) {
+        const tail = readFileSync(execution.debugLogPath, 'utf8').slice(-16384);
+        if (/overloaded_error|api_error|internal_server_error/i.test(tail)) {
+          const TELEMETRY_PATTERN =
+            /client_data|event.?logging|events? failed to export|datadoghq|OTEL|telemetry/i;
+          const lines = tail.split('\n');
+          for (const line of lines) {
+            if (
+              /overloaded_error|api_error|internal_server_error/i.test(line) &&
+              !TELEMETRY_PATTERN.test(line)
+            ) {
+              execution.serverErrorHit = true;
+              claudeLog.info(
+                `[ServerError] Detected from debug log for F${execution.featureId} ${execution.command}`,
+              );
+              return true;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      claudeLog.debug(
+        `[ServerError] Debug log scan failed for ${execution.id}: ${err.code || err.message}`,
       );
     }
     return false;
@@ -394,6 +440,7 @@ export class ClaudeService {
     retryCount = 0,
     contextRetryCount = 0,
     incompleteRetryCount = 0,
+    serverErrorRetryCount = 0,
     chainHistory = [],
     avoidProfile = null,
   } = {}) {
@@ -435,6 +482,7 @@ export class ClaudeService {
             retryCount,
             contextRetryCount,
             incompleteRetryCount,
+            serverErrorRetryCount,
             history: chainHistory,
           }
         : null,
@@ -443,6 +491,7 @@ export class ClaudeService {
       killedByUser: false,
       promptTooLong: false,
       accountLimitHit: false,
+      serverErrorHit: false,
       authError: false,
       avoidProfile,
     };
@@ -456,7 +505,7 @@ export class ClaudeService {
     for (const [id, exec] of this.executions) {
       if (exec.completedAt) {
         // Don't clean up executions still waiting for user input (y/n or AskUserQuestion)
-        if (exec.waitingForInput || exec.inputRequired) continue;
+        if (exec.waitingForInput || exec.inputRequired || exec.terminalActive) continue;
         const completedTime = new Date(exec.completedAt).getTime();
         if (now - completedTime > EXECUTION_TTL_MS) {
           idsToDelete.push(id);
@@ -470,6 +519,17 @@ export class ClaudeService {
     }
     // Detect stuck running executions (process likely dead, no output for extended period)
     for (const [id, exec] of this.executions) {
+      if (exec.terminalActive) {
+        const terminalAge = now - exec.terminalActiveAt;
+        if (terminalAge > STUCK_RUNNING_TIMEOUT_MS) {
+          claudeLog.warn(
+            `[Queue] Stale terminal-active cleanup: F${exec.featureId} (${Math.round(terminalAge / 60000)}min)`,
+          );
+          exec.terminalActive = false;
+          this._releaseChainSlot(exec);
+        }
+        continue;
+      }
       if (
         exec.status === 'running' &&
         !exec.inputRequired &&
@@ -493,12 +553,28 @@ export class ClaudeService {
         exec.completedAt = new Date().toISOString();
         exec.process = null;
         this._releaseChainSlot(exec);
-        // Release run-lock for stuck /run executions
-        if (exec.command === 'run') {
-          this._releaseRunLock(exec.featureId, 'stale-cleanup');
-        }
       }
     }
+    // Queue state snapshot (periodic, for diagnostic log analysis)
+    const snapshot = {
+      running: 0,
+      queued: this.queue.length,
+      chainWaiters: this.chainExecutor.chainWaiters.size,
+      chainSlots: this.chainSlots.size,
+      idleChainSlots: this._countIdleChainSlots(),
+      waitingInput: 0,
+      total: this.executions.size,
+    };
+    const inputIds = [];
+    for (const [id, exec] of this.executions) {
+      if (exec.status === 'running') snapshot.running++;
+      if (exec.waitingForInput || exec.inputRequired) {
+        snapshot.waitingInput++;
+        inputIds.push(id.substring(0, 8));
+      }
+    }
+    if (inputIds.length > 0) snapshot.inputIds = inputIds;
+    claudeLog.info(`[Queue] STATE ${JSON.stringify(snapshot)}`);
     // Clean stale chain waiters (feature status change never arrived)
     const staleFeatureIds = [];
     for (const [featureId, waiter] of this.chainExecutor.getAllWaiters()) {
@@ -714,7 +790,7 @@ export class ClaudeService {
         this._releaseChainSlot(execution);
       }
       const queuePos = priority ? 1 : this.queue.length;
-      const runBlocked = this._isRunBlocked(execution.command);
+      const runBlocked = this._isRunBlocked(execution.command, execution.featureId);
       const depBlocked = pendingDeps === null || pendingDeps.length > 0;
       this._pushLog(execution, {
         line: depBlocked
@@ -725,6 +801,10 @@ export class ClaudeService {
         timestamp: new Date().toISOString(),
         level: 'info',
       });
+      claudeLog.info(
+        `[Queue] Queued F${execution.featureId} ${execution.command} ` +
+          `(exec: ${executionId}, pos: ${queuePos}${depBlocked ? ', dep-blocked' : ''})`,
+      );
       this._broadcastQueueUpdate();
     }
 
@@ -937,6 +1017,9 @@ export class ClaudeService {
       ) {
         execution.accountLimitHit = true;
       }
+      if (/overloaded_error|api_error|internal_server_error/i.test(line)) {
+        execution.serverErrorHit = true;
+      }
       const entry = {
         line: `[stderr] ${line}`,
         timestamp: new Date().toISOString(),
@@ -1017,7 +1100,9 @@ export class ClaudeService {
     }
 
     execution.status = 'handed-off';
-    this._releaseChainSlot(execution);
+    if (!execution.terminalActive) {
+      this._releaseChainSlot(execution);
+    }
 
     const entry = {
       line: `[Handoff] ${reason} - Opening terminal for user input...`,
@@ -1094,6 +1179,16 @@ export class ClaudeService {
         startedAt: execution.startedAt ?? null,
         completedAt: execution.completedAt ?? null,
         contextPercent: execution.contextPercent ?? null,
+        ccsProfile: execution.ccsProfile ?? null,
+        resultSubtype: execution.resultSubtype ?? null,
+        killedByUser: execution.killedByUser ?? false,
+        tokenUsage: execution.tokenUsage
+          ? {
+              input: execution.tokenUsage.input,
+              output: execution.tokenUsage.output,
+              cacheRead: execution.tokenUsage.cacheRead,
+            }
+          : null,
       };
       appendFileSync(this._historyPath, JSON.stringify(entry) + '\n', 'utf8');
     } catch (err) {
@@ -1301,7 +1396,7 @@ export class ClaudeService {
     // If killed for AskUserQuestion, don't complete — wait for browser answer → resume
     if (execution._killedForAskUser) {
       claudeLog.info(
-        `[ClaudeService] Process killed for AskUserQuestion — waiting for browser answer (exec ${execution.id})`,
+        `[ClaudeService] Process killed for AskUserQuestion — waiting for browser answer (exec ${execution.id}, F${execution.featureId}, ${execution.command})`,
       );
       if (execution.stallCheckInterval) {
         clearInterval(execution.stallCheckInterval);
@@ -1319,7 +1414,7 @@ export class ClaudeService {
     // and a subsequent answerInBrowser() would push runningCount over maxConcurrent.
     if (execution.waitingForInput) {
       claudeLog.info(
-        `[ClaudeService] Process exited while waiting for browser input — holding slot (exec ${execution.id})`,
+        `[ClaudeService] Process exited while waiting for browser input — holding slot (exec ${execution.id}, F${execution.featureId}, ${execution.command})`,
       );
       if (execution.stallCheckInterval) {
         clearInterval(execution.stallCheckInterval);
@@ -1338,6 +1433,19 @@ export class ClaudeService {
     claudeLog.info(
       `[ClaudeService] Execution ${executionId} completed with code ${exitCode}, subtype=${execution.resultSubtype}`,
     );
+    if (execution.waitingForInput || execution.inputRequired || execution.chain?.enabled) {
+      claudeLog.info(
+        `[Queue] COMPLETION ${JSON.stringify({
+          id: executionId.substring(0, 8),
+          featureId: execution.featureId,
+          command: execution.command,
+          waitingForInput: !!execution.waitingForInput,
+          inputRequired: !!execution.inputRequired,
+          chain: !!execution.chain?.enabled,
+          status: execution.status,
+        })}`,
+      );
+    }
 
     if (execution.stallCheckInterval) {
       clearInterval(execution.stallCheckInterval);
@@ -1368,6 +1476,13 @@ export class ClaudeService {
       claudeLog.info(`[ClaudeService] Completed with pending question - handing off to terminal`);
       execution.process = null;
       execution.stdin = null;
+      if (execution.command === 'run' && this.runLockFeatureId === execution.featureId) {
+        execution.terminalActive = true;
+        execution.terminalActiveAt = Date.now();
+        claudeLog.info(
+          `[Queue] Terminal-active: F${execution.featureId} (pending question handoff)`,
+        );
+      }
       this._handoffToTerminal(execution, 'Completed with unanswered question');
       return;
     }
@@ -1414,10 +1529,79 @@ export class ClaudeService {
       }
     }
 
+    // Late-stage server error detection: scan debug log for 500/529 (overloaded_error, api_error)
+    if (!execution.serverErrorHit && exitCode !== 0 && execution.debugLogPath) {
+      this._scanDebugLogForServerError(execution);
+    }
+
     // Late-stage auth error detection: scan debug log for permission_error (e.g. expired subscription).
     // If detected, skip context retry entirely to avoid wasting retries on an unrecoverable error.
     if (!execution.authError && exitCode !== 0 && execution.debugLogPath) {
       this._scanDebugLogForAuthError(execution);
+    }
+
+    // Server error (500/529) retry — before context retry to avoid consuming context retries
+    // on server-side issues. Profile switch won't help; use exponential backoff.
+    if (execution.serverErrorHit && !execution.killedByUser && !execution.accountLimitHit) {
+      const retryCount = execution.chain?.serverErrorRetryCount || 0;
+      if (retryCount < MAX_SERVER_ERROR_RETRIES) {
+        execution.status = 'failed';
+        execution.completedAt = new Date().toISOString();
+        execution.exitCode = exitCode;
+        execution.process = null;
+        execution.stdin = null;
+        this.streamParser.clearRingBuffer(execution.id);
+
+        const scheduled = this._scheduleServerErrorRetry(execution, retryCount);
+
+        this._pushLog(execution, {
+          line: scheduled
+            ? `[Chain] Server error (500/529) detected. ${scheduled.message}`
+            : `[Chain] Server error (500/529) detected. No retry possible.`,
+          timestamp: execution.completedAt,
+          level: 'warning',
+        });
+
+        this.logStreamer?.broadcastAll({
+          type: 'status',
+          executionId,
+          status: execution.status,
+          exitCode,
+        });
+
+        this._broadcastState(execution);
+        this._saveHistoryEntry(execution);
+
+        this.onExecutionComplete?.(execution);
+        return;
+      } else {
+        claudeLog.warn(
+          `[ServerError] Retry exhausted (${retryCount}/${MAX_SERVER_ERROR_RETRIES}) for F${execution.featureId} ${execution.command}`,
+        );
+        this._pushLog(execution, {
+          line: `[Chain] Server error retries exhausted (${retryCount}/${MAX_SERVER_ERROR_RETRIES}). Manual re-run needed.`,
+          timestamp: new Date().toISOString(),
+          level: 'error',
+        });
+
+        this.logStreamer?.broadcastAll({
+          type: 'server-error-exhausted',
+          featureId: execution.featureId,
+          command: execution.command,
+          retryCount,
+          maxRetries: MAX_SERVER_ERROR_RETRIES,
+          timestamp: new Date().toISOString(),
+        });
+
+        const featureInfo =
+          execution.featureId && this.featureService
+            ? this.featureService.getFeature(execution.featureId)
+            : null;
+        this.emailService
+          ?.sendServerErrorExhaustedNotification(execution, featureInfo)
+          .catch(() => {});
+        // Fall through to normal completion
+      }
     }
 
     // Context exhaustion retry for all commands (fc, fl, run)
@@ -1429,6 +1613,7 @@ export class ClaudeService {
       (exitCode !== 0 &&
         execution.resultSubtype === 'success' &&
         !execution.accountLimitHit &&
+        !execution.serverErrorHit &&
         !execution.authError) ||
       (exitCode === 3 && !execution.resultSubtype);
 
@@ -1442,6 +1627,7 @@ export class ClaudeService {
       execution.chain.contextRetryCount < MAX_RETRIES &&
       !execution.killedByUser &&
       !execution.accountLimitHit &&
+      !execution.serverErrorHit &&
       !alreadyAchieved &&
       isContextExhausted;
 
@@ -1489,6 +1675,7 @@ export class ClaudeService {
           retryCount: execution.chain.retryCount, // preserve FL counter
           contextRetryCount,
           incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
+          serverErrorRetryCount: execution.chain.serverErrorRetryCount || 0, // preserve server error counter
           chainHistory: updatedHistory,
           priority: true,
           avoidProfile: execution.ccsProfile,
@@ -1507,11 +1694,6 @@ export class ClaudeService {
         });
       }, RETRY_DELAY_MS);
 
-      // Release run-lock so retry (or other queued /run) can start
-      if (execution.command === 'run') {
-        this._releaseRunLock(execution.featureId, 'context-retry');
-      }
-
       this._broadcastState(execution);
       this._dequeueNext();
 
@@ -1528,6 +1710,7 @@ export class ClaudeService {
       execution.command === 'fl' &&
       !execution.killedByUser &&
       !execution.accountLimitHit &&
+      !execution.serverErrorHit &&
       !isContextExhausted &&
       (exitCode !== 0 || this._detectFlRerunRequest(execution));
 
@@ -1570,6 +1753,7 @@ export class ClaudeService {
         retryCount,
         contextRetryCount: execution.chain.contextRetryCount, // preserve context counter
         incompleteRetryCount: execution.chain.incompleteRetryCount || 0, // preserve incomplete counter
+        serverErrorRetryCount: execution.chain.serverErrorRetryCount || 0, // preserve server error counter
         chainHistory: updatedHistory,
         priority: true,
         avoidProfile: execution.ccsProfile,
@@ -1674,28 +1858,21 @@ export class ClaudeService {
         execution.featureId && this.featureService
           ? this.featureService.getFeature(execution.featureId)
           : null;
-      // Only email if no auto-retry scheduled (exhausted scenarios handled by sendRateLimitExhaustedNotification)
-      if (!execution.rateLimitRetryAt && !execution.rateLimitSwitchedTo) {
-        this.emailService
-          ?.sendCompletionNotification(
-            execution,
-            execution.status,
-            exitCode,
-            finalHistory,
-            featureInfo,
-          )
-          .catch(() => {});
-      }
+      // Always email on 429 — body includes retry info (rateLimitRetryAt / rateLimitSwitchedTo)
+      this.emailService
+        ?.sendCompletionNotification(
+          execution,
+          execution.status,
+          exitCode,
+          finalHistory,
+          featureInfo,
+        )
+        .catch(() => {});
 
       // Refresh rate limit for the profile that hit 429
       if (this.rateLimitService) {
         const profile = this.getCcsProfile();
         this.rateLimitService.capture({ forceRefresh: true, profile }).catch(() => {});
-      }
-
-      // Release run-lock so retry (or other queued /run) can start
-      if (execution.command === 'run') {
-        this._releaseRunLock(execution.featureId, 'rate-limit');
       }
 
       // Don't dequeue (paused or immediate retry pending)
@@ -1778,7 +1955,11 @@ export class ClaudeService {
             level: 'warning',
           });
           if (execution.command === 'run') {
-            this._releaseRunLock(execution.featureId, 'incomplete-handoff');
+            execution.terminalActive = true;
+            execution.terminalActiveAt = Date.now();
+            claudeLog.info(
+              `[Queue] Terminal-active: F${execution.featureId} (run-lock + chain-slot held)`,
+            );
           }
           execution.process = null;
           execution.stdin = null;
@@ -1813,6 +1994,7 @@ export class ClaudeService {
                 retryCount: execution.chain.retryCount || 0,
                 contextRetryCount: execution.chain.contextRetryCount || 0,
                 incompleteRetryCount: incompleteCount,
+                serverErrorRetryCount: execution.chain.serverErrorRetryCount || 0,
                 priority: true,
                 avoidProfile: execution.ccsProfile,
               });
@@ -1841,11 +2023,6 @@ export class ClaudeService {
           execution.waitingForInput = false;
           execution.waitingInputPattern = null;
 
-          // Release run-lock so retry can acquire it (prevents deadlock)
-          if (execution.command === 'run') {
-            this._releaseRunLock(execution.featureId, 'incomplete-retry');
-          }
-
           // Skip waiter registration and email — retry will handle it
           this._dequeueNext();
           this.onExecutionComplete?.(execution);
@@ -1863,13 +2040,6 @@ export class ClaudeService {
           // Fall through to email notification
         }
       }
-    }
-
-    // Deferred run-lock release: now that incomplete termination check is done,
-    // release the lock for non-retry paths (normal completion, retries exhausted).
-    // The incomplete-retry path already released the lock and returned above.
-    if (execution.command === 'run') {
-      this._releaseRunLock(execution.featureId, execution.status);
     }
 
     const currentStatusForWaiter = this.fileWatcher?.statusCache.get(execution.featureId);
@@ -2147,7 +2317,18 @@ export class ClaudeService {
       return;
     }
 
-    // Safe to retry — start draining queue
+    // Safe to retry — notify recovery and start draining queue
+    const firstEntry = this._rateLimitRetryQueue[0];
+    if (firstEntry) {
+      const recoveryExec = firstEntry.execution;
+      const recoveryFeatureInfo =
+        recoveryExec.featureId && this.featureService
+          ? this.featureService.getFeature(recoveryExec.featureId)
+          : null;
+      this.emailService
+        ?.sendRateLimitRecoveredNotification(recoveryExec, recoveryFeatureInfo)
+        .catch(() => {});
+    }
     this._processNextInQueue();
   }
 
@@ -2205,6 +2386,7 @@ export class ClaudeService {
         retryCount: execution.chain?.retryCount || 0,
         contextRetryCount: execution.chain?.contextRetryCount || 0,
         incompleteRetryCount: execution.chain?.incompleteRetryCount || 0,
+        serverErrorRetryCount: execution.chain?.serverErrorRetryCount || 0,
         chainHistory: updatedHistory,
       });
 
@@ -2296,6 +2478,7 @@ export class ClaudeService {
         retryCount: execution.chain?.retryCount || 0,
         contextRetryCount: execution.chain?.contextRetryCount || 0,
         incompleteRetryCount: execution.chain?.incompleteRetryCount || 0,
+        serverErrorRetryCount: execution.chain?.serverErrorRetryCount || 0,
         chainHistory: updatedHistory,
         avoidProfile: execution.ccsProfile,
       });
@@ -2320,6 +2503,115 @@ export class ClaudeService {
     });
 
     // rate-limit-recovered: auto-recovery is normal operation, no email needed
+  }
+
+  // ===========================================================================
+  // Server Error (500/529) Retry — Exponential Backoff
+  // ===========================================================================
+
+  /**
+   * Schedule a server error retry with exponential backoff.
+   * @param {Object} execution - The failed execution
+   * @param {number} retryCount - Current retry attempt (0-indexed)
+   * @returns {{ message: string }|null}
+   */
+  _scheduleServerErrorRetry(execution, retryCount) {
+    const delayMs =
+      SERVER_ERROR_BACKOFF_MS[retryCount] ||
+      SERVER_ERROR_BACKOFF_MS[SERVER_ERROR_BACKOFF_MS.length - 1];
+    const retryAt = new Date(Date.now() + delayMs).toISOString();
+
+    this._serverErrorRetryQueue.push({ execution, retryCount, queuedAt: Date.now() });
+    this._serverErrorRetryAt = retryAt;
+
+    if (this._serverErrorRetryTimer) {
+      clearTimeout(this._serverErrorRetryTimer);
+    }
+
+    this._serverErrorRetryTimer = setTimeout(() => {
+      this._serverErrorRetryTimer = null;
+      this._processServerErrorQueue();
+    }, delayMs);
+
+    const delayMin = Math.round(delayMs / 60000);
+    const retryAtStr = new Date(retryAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' });
+
+    claudeLog.info(
+      `[ServerError] Retry ${retryCount + 1}/${MAX_SERVER_ERROR_RETRIES} scheduled at ${retryAtStr} (${delayMin}min) for F${execution.featureId} ${execution.command}`,
+    );
+
+    this.logStreamer?.broadcastAll({
+      type: 'server-error-waiting',
+      featureId: execution.featureId,
+      command: execution.command,
+      executionId: execution.id,
+      retryCount,
+      maxRetries: MAX_SERVER_ERROR_RETRIES,
+      retryAt,
+      delayMs,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      message: `Server error retry ${retryCount + 1}/${MAX_SERVER_ERROR_RETRIES} at ${retryAtStr} (${delayMin}min).`,
+    };
+  }
+
+  /**
+   * Process server error retry queue after timer fires.
+   */
+  _processServerErrorQueue() {
+    while (this._serverErrorRetryQueue.length > 0) {
+      const { execution, retryCount } = this._serverErrorRetryQueue.shift();
+
+      if (execution.killedByUser || execution.status === 'cancelled') {
+        claudeLog.info(`[ServerError] Skipping killed/cancelled execution ${execution.id}`);
+        continue;
+      }
+
+      this._startServerErrorRetry(execution, retryCount + 1);
+    }
+
+    this._serverErrorRetryAt = null;
+    this._dequeueNext();
+  }
+
+  /**
+   * Start a new execution as a server error retry.
+   * @param {Object} execution - Original failed execution
+   * @param {number} newRetryCount - New retry count (incremented)
+   */
+  _startServerErrorRetry(execution, newRetryCount) {
+    const updatedHistory = [
+      ...(execution.chain?.history || []),
+      { command: execution.command, result: 'server-error-retry' },
+    ];
+
+    const newExecId = this.executeCommand(execution.featureId, execution.command, {
+      chain: true,
+      chainParentId: execution.chainParentId || execution.id,
+      retryCount: execution.chain?.retryCount || 0,
+      contextRetryCount: execution.chain?.contextRetryCount || 0,
+      incompleteRetryCount: execution.chain?.incompleteRetryCount || 0,
+      serverErrorRetryCount: newRetryCount,
+      chainHistory: updatedHistory,
+      avoidProfile: execution.ccsProfile,
+    });
+
+    claudeLog.info(
+      `[ServerError] Retry started: ${newExecId} (replacing ${execution.id}, attempt ${newRetryCount}/${MAX_SERVER_ERROR_RETRIES})`,
+    );
+
+    this.logStreamer?.broadcastAll({
+      type: 'server-error-retry',
+      featureId: execution.featureId,
+      command: execution.command,
+      oldExecutionId: execution.id,
+      newExecutionId: newExecId,
+      retryCount: newRetryCount,
+      maxRetries: MAX_SERVER_ERROR_RETRIES,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
@@ -2414,12 +2706,16 @@ export class ClaudeService {
    */
   handleFeatureStatusChanged(featureId, oldStatus, newStatus) {
     this.chainExecutor.handleStatusChanged(featureId, oldStatus, newStatus);
-    // Release run-lock if feature exits [WIP]
-    if (newStatus !== '[WIP]') {
+    // Run-lock released ONLY on terminal statuses ([DONE]/[CANCELLED])
+    if (
+      (newStatus === '[DONE]' || newStatus === '[CANCELLED]') &&
+      !this._hasTerminalActive(featureId)
+    ) {
       this._releaseRunLock(featureId, newStatus);
     }
     // Dep resolution: invalidate cache for fresh dep check, then re-evaluate queue
     if (newStatus === '[DONE]' || newStatus === '[CANCELLED]') {
+      this._resolveTerminalActive(featureId, newStatus);
       this.featureService?.invalidateCache();
       this._dequeueNext();
     }
@@ -2428,21 +2724,27 @@ export class ClaudeService {
   /**
    * Check if a /run command is blocked by another running /run.
    * Only /run commands are exclusive — fc/fl/imp can run concurrently.
+   * Same-feature bypass: retries for the locked feature are allowed through.
    * @param {string} command
+   * @param {string} [featureId] - Feature ID to check same-feature bypass
    * @returns {boolean}
    */
-  _isRunBlocked(command) {
+  _isRunBlocked(command, featureId) {
     if (command !== 'run') return false;
-    if (this.runLockFeatureId) return true;
-    // Fallback: check for any running /run execution
+    if (this.runLockFeatureId) {
+      if (featureId && this.runLockFeatureId === featureId) return false;
+      return true;
+    }
+    // Fallback: check for any running /run execution (different feature)
     for (const exec of this.executions.values()) {
-      if (exec.command === 'run' && exec.status === 'running') return true;
+      if (exec.command === 'run' && exec.status === 'running' && exec.featureId !== featureId)
+        return true;
     }
     return false;
   }
 
   /**
-   * Release run-lock when feature status advances past [WIP].
+   * Release run-lock on terminal status ([DONE]/[CANCELLED]) only.
    * Called from fileWatcher status-change events.
    * @param {string} featureId
    * @param {string} newStatus - e.g. '[DONE]', '[BLOCKED]', '[REVIEWED]'
@@ -2464,6 +2766,49 @@ export class ClaudeService {
       this._dequeueNext();
     }
     return released;
+  }
+
+  /**
+   * Check if a feature has a terminal-active execution holding locks.
+   */
+  _hasTerminalActive(featureId) {
+    for (const exec of this.executions.values()) {
+      if (exec.featureId === featureId && exec.terminalActive) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Resolve terminal-active state when feature status changes to [DONE] or [CANCELLED].
+   * Chain slot is kept held for imp inheritance (via chainParentId), or released if no chain.
+   * Run-lock is released AFTER registerWaiter to avoid _dequeueNext race.
+   */
+  _resolveTerminalActive(featureId, newStatus) {
+    let terminalExec = null;
+    for (const exec of this.executions.values()) {
+      if (exec.featureId === featureId && exec.terminalActive) {
+        terminalExec = exec;
+        break;
+      }
+    }
+    if (!terminalExec) return;
+
+    terminalExec.terminalActive = false;
+    claudeLog.info(`[Queue] Terminal-active resolved: F${featureId} → ${newStatus}`);
+
+    if (newStatus === '[DONE]' && terminalExec.chain?.enabled) {
+      // Register waiter for chain continuation (imp enqueue).
+      // Chain slot stays held — imp inherits it via chainParentId
+      this.chainExecutor.registerWaiter(terminalExec);
+      // Release run-lock AFTER registerWaiter to prevent _dequeueNext
+      // from letting another /run slip in before imp is enqueued.
+      this._releaseRunLock(featureId, `terminal-${newStatus}`);
+      return;
+    }
+
+    // [CANCELLED] or no chain → release both locks
+    this._releaseChainSlot(terminalExec);
+    this._releaseRunLock(featureId, `terminal-${newStatus}`);
   }
 
   _belongsToActiveChain(exec) {
@@ -2518,7 +2863,7 @@ export class ClaudeService {
   }
 
   _canStartNow(execution) {
-    if (this._isRunBlocked(execution.command)) return false;
+    if (this._isRunBlocked(execution.command, execution.featureId)) return false;
     // Block if feature has unresolved dependencies (fail-closed: null = blocked)
     const pendingDeps = this._getPendingDeps(execution.featureId);
     if (pendingDeps === null || pendingDeps.length > 0) return false;
@@ -2548,6 +2893,10 @@ export class ClaudeService {
       claudeLog.info('[Queue] Dequeue blocked — rate limit retry pending');
       return;
     }
+    if (this._serverErrorPaused) {
+      claudeLog.info('[Queue] Dequeue blocked — server error retry pending');
+      return;
+    }
     // Fetch features once for batch dep-check (avoids N cache lookups per iteration)
     let cachedFeatures = null;
     try {
@@ -2572,7 +2921,7 @@ export class ClaudeService {
       const startableIndices = [];
       for (let i = 0; i < this.queue.length; i++) {
         const exec = this.executions.get(this.queue[i]);
-        if (this._isRunBlocked(exec.command)) continue;
+        if (this._isRunBlocked(exec.command, exec.featureId)) continue;
 
         // Skip if dep check fails (null = fail-closed) or has pending deps
         const pendingDeps = this._getPendingDeps(exec.featureId, cachedFeatures);
@@ -2604,6 +2953,9 @@ export class ClaudeService {
         timestamp: new Date().toISOString(),
         level: 'info',
       });
+      claudeLog.info(
+        `[Queue] Dequeued F${nextExec.featureId} ${nextExec.command} (exec: ${nextExec.id})`,
+      );
       this._startExecution(nextExec);
     }
     this._broadcastQueueUpdate();
@@ -2681,8 +3033,25 @@ export class ClaudeService {
         queuedAt: new Date(entry.queuedAt).toISOString(),
       })),
       rateLimitRetryAt: this._rateLimitRetryAt,
+      serverErrorQueue: this._serverErrorRetryQueue.map((entry) => ({
+        executionId: entry.execution.id,
+        featureId: entry.execution.featureId,
+        command: entry.execution.command,
+        retryCount: entry.retryCount,
+        queuedAt: new Date(entry.queuedAt).toISOString(),
+      })),
+      serverErrorRetryAt: this._serverErrorRetryAt,
       chainSlotCount: this.chainSlots.size,
       idleChainSlotCount: this._countIdleChainSlots(),
+      chainSlotHolders: Array.from(this.chainSlots).map((rootId) => {
+        const exec = this.executions.get(rootId);
+        return {
+          executionId: rootId,
+          featureId: exec?.featureId ?? '?',
+          command: exec?.command ?? '?',
+          status: exec?.status ?? 'unknown',
+        };
+      }),
     };
   }
 
@@ -2838,12 +3207,14 @@ export class ClaudeService {
       contextPercent: exec.contextPercent,
       tokenUsage: exec.tokenUsage,
       ccsProfile: exec.ccsProfile || null,
+      serverErrorHit: exec.serverErrorHit || false,
       chain: exec.chain
         ? {
             enabled: exec.chain.enabled,
             retryCount: exec.chain.retryCount,
             contextRetryCount: exec.chain.contextRetryCount,
             incompleteRetryCount: exec.chain.incompleteRetryCount,
+            serverErrorRetryCount: exec.chain.serverErrorRetryCount,
             history: exec.chain.history,
           }
         : null,
@@ -2926,30 +3297,41 @@ export class ClaudeService {
       }
     }
 
+    // Remove from server error retry queue if queued
+    const seIdx = this._serverErrorRetryQueue.findIndex(
+      (entry) => entry.execution.id === executionId,
+    );
+    if (seIdx !== -1) {
+      this._serverErrorRetryQueue.splice(seIdx, 1);
+      claudeLog.info(
+        `[ServerError] Removed execution ${executionId} from retry queue (${this._serverErrorRetryQueue.length} remaining)`,
+      );
+      if (this._serverErrorRetryQueue.length === 0) {
+        if (this._serverErrorRetryTimer) {
+          clearTimeout(this._serverErrorRetryTimer);
+          this._serverErrorRetryTimer = null;
+        }
+        this._serverErrorRetryAt = null;
+      }
+    }
+
     if (exec.status === 'queued') {
       this.queue = this.queue.filter((id) => id !== executionId);
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
       this._releaseChainSlot(exec);
-      // Release run-lock on explicit kill
-      if (exec.command === 'run') {
-        this._releaseRunLock(exec.featureId, 'killed');
-      }
       this.logStreamer?.broadcastAll({
         type: 'status',
         executionId,
         status: 'cancelled',
       });
       this._broadcastQueueUpdate();
+      this._dequeueNext();
       return true;
     }
 
     if (exec.status === 'running' && exec.process) {
       exec.killedByUser = true;
-      // Release run-lock on explicit kill
-      if (exec.command === 'run') {
-        this._releaseRunLock(exec.featureId, 'killed');
-      }
       this._killProcess(exec.process);
       return true;
     }
@@ -2960,10 +3342,6 @@ export class ClaudeService {
       exec.status = 'cancelled';
       exec.completedAt = new Date().toISOString();
       this._releaseChainSlot(exec);
-      // Release run-lock on explicit kill
-      if (exec.command === 'run') {
-        this._releaseRunLock(exec.featureId, 'killed');
-      }
       exec._killedForAskUser = false;
       exec.inputRequired = null;
       exec.waitingForInput = false;
@@ -3006,6 +3384,13 @@ export class ClaudeService {
     }
     this._rateLimitRetryQueue.length = 0;
     this._rateLimitRetryAt = null;
+    // Clean up server error retry state
+    if (this._serverErrorRetryTimer) {
+      clearTimeout(this._serverErrorRetryTimer);
+      this._serverErrorRetryTimer = null;
+    }
+    this._serverErrorRetryQueue.length = 0;
+    this._serverErrorRetryAt = null;
     this.chainSlots.clear();
 
     if (this._cleanupInterval) {

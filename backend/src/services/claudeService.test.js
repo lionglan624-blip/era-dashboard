@@ -8,6 +8,17 @@ import {
   isExpectedStatusAfterCommand,
 } from './claudeService.js';
 import { detectPhase, detectIteration, getTotalPhases, getDefaultPhaseName } from './phaseUtils.js';
+import { claudeLog } from '../utils/logger.js';
+import { appendFileSync } from 'fs';
+
+// Mock fs.appendFileSync to capture history writes without touching the filesystem
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    appendFileSync: vi.fn(),
+  };
+});
 
 // Mock child_process.spawn to prevent actual process spawning during tests
 vi.mock('child_process', async (importOriginal) => {
@@ -1948,7 +1959,7 @@ describe('ClaudeService', () => {
       expect(service.killExecution('nonexistent')).toBe(false);
     });
 
-    it('releases run-lock when killing a running /run execution', () => {
+    it('keeps run-lock when killing a running /run execution', () => {
       const { service } = createService();
       service._startExecution = vi.fn();
       service._killProcess = vi.fn();
@@ -1961,10 +1972,10 @@ describe('ClaudeService', () => {
 
       service.killExecution(id);
 
-      expect(service.runLockFeatureId).toBeNull();
+      expect(service.runLockFeatureId).toBe('200');
     });
 
-    it('releases run-lock when killing a dead /run execution (no process)', () => {
+    it('keeps run-lock when killing a dead /run execution (no process)', () => {
       const { service } = createService();
       service._startExecution = vi.fn();
 
@@ -1976,7 +1987,26 @@ describe('ClaudeService', () => {
 
       service.killExecution(id);
 
-      expect(service.runLockFeatureId).toBeNull();
+      expect(service.runLockFeatureId).toBe('201');
+    });
+
+    it('kill does not release run-lock', () => {
+      // Setup: create a running /run execution with lock
+      const { service } = createService();
+      service.runLockFeatureId = '100';
+      const exec = {
+        id: 'exec-kill-test',
+        featureId: '100',
+        command: 'run',
+        status: 'running',
+        process: { kill: vi.fn() },
+        chain: {},
+      };
+      service.executions.set('exec-kill-test', exec);
+
+      service.killExecution('exec-kill-test');
+
+      expect(service.runLockFeatureId).toBe('100');
     });
   });
 
@@ -1984,20 +2014,26 @@ describe('ClaudeService', () => {
     it('returns false for non-run commands', () => {
       const { service } = createService();
       service.runLockFeatureId = '100';
-      expect(service._isRunBlocked('fc')).toBe(false);
-      expect(service._isRunBlocked('fl')).toBe(false);
+      expect(service._isRunBlocked('fc', '100')).toBe(false);
+      expect(service._isRunBlocked('fl', '100')).toBe(false);
     });
 
-    it('returns true when runLockFeatureId is set', () => {
+    it('returns true when runLockFeatureId is set (different feature)', () => {
       const { service } = createService();
       service.runLockFeatureId = '100';
-      expect(service._isRunBlocked('run')).toBe(true);
+      expect(service._isRunBlocked('run', '200')).toBe(true);
+    });
+
+    it('returns false when runLockFeatureId matches (same-feature bypass)', () => {
+      const { service } = createService();
+      service.runLockFeatureId = '100';
+      expect(service._isRunBlocked('run', '100')).toBe(false);
     });
 
     it('returns false when runLockFeatureId is null and no running /run', () => {
       const { service } = createService();
       service.runLockFeatureId = null;
-      expect(service._isRunBlocked('run')).toBe(false);
+      expect(service._isRunBlocked('run', '100')).toBe(false);
     });
 
     it('returns true via fallback when no runLockFeatureId but running /run exists', () => {
@@ -2006,7 +2042,14 @@ describe('ClaudeService', () => {
       const exec = service._createExecution({ featureId: '100', command: 'run' });
       exec.status = 'running';
       service.executions.set(exec.id, exec);
-      expect(service._isRunBlocked('run')).toBe(true);
+      expect(service._isRunBlocked('run', '200')).toBe(true);
+    });
+
+    it('returns false via fallback when running /run is same feature', () => {
+      const { service } = createService();
+      service.runLockFeatureId = null;
+      service.executions.set('exec1', { command: 'run', status: 'running', featureId: '100' });
+      expect(service._isRunBlocked('run', '100')).toBe(false);
     });
   });
 
@@ -2065,13 +2108,20 @@ describe('ClaudeService', () => {
       expect(service.runLockFeatureId).toBe('100');
     });
 
-    it('releases run-lock when status changes to [BLOCKED]', () => {
+    it('keeps lock when status changes to [BLOCKED]', () => {
       const { service } = createService();
       service._dequeueNext = vi.fn();
       service.runLockFeatureId = '100';
 
       service.handleFeatureStatusChanged('100', '[WIP]', '[BLOCKED]');
 
+      expect(service.runLockFeatureId).toBe('100');
+    });
+
+    it('releases run-lock when status changes to [CANCELLED]', () => {
+      const { service } = createService();
+      service.runLockFeatureId = '100';
+      service.handleFeatureStatusChanged('100', '[WIP]', '[CANCELLED]');
       expect(service.runLockFeatureId).toBeNull();
     });
   });
@@ -2527,6 +2577,7 @@ describe('ClaudeService', () => {
         retryCount: 2,
         contextRetryCount: 0,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         history: [],
       });
     });
@@ -2683,6 +2734,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -2755,6 +2807,7 @@ describe('ClaudeService', () => {
         retryCount: 1,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -2908,6 +2961,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [{ command: 'fl', result: 'retry', reason: 'Context limit (max_tokens)' }],
         priority: true,
       });
@@ -2942,6 +2996,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           {
             command: 'fl',
@@ -3028,6 +3083,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        serverErrorRetryCount: 0,
         priority: true,
       });
 
@@ -3140,6 +3196,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        serverErrorRetryCount: 0,
         priority: true,
       });
 
@@ -3187,6 +3244,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 0,
         incompleteRetryCount: 1,
+        serverErrorRetryCount: 0,
         priority: true,
       });
     });
@@ -3385,6 +3443,7 @@ describe('ClaudeService', () => {
         retryCount: 2, // preserved, not incremented
         contextRetryCount: 0,
         incompleteRetryCount: 1, // incremented independently
+        serverErrorRetryCount: 0,
         priority: true,
       });
     });
@@ -3637,6 +3696,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           { command: 'fc', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -3684,6 +3744,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [{ command: 'run', result: 'retry', reason: 'Context limit (max_tokens)' }],
         priority: true,
       });
@@ -3728,6 +3789,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           {
             command: 'run',
@@ -3773,6 +3835,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           {
             command: 'run',
@@ -3818,6 +3881,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           { command: 'run', result: 'retry', reason: 'Max turns reached (exit code 3)' },
         ],
@@ -3867,6 +3931,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           {
             command: 'run',
@@ -4024,6 +4089,7 @@ describe('ClaudeService', () => {
         retryCount: 0,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         chainHistory: [
           { command: 'fl', result: 'retry', reason: 'Context limit (error_max_turns)' },
         ],
@@ -4608,6 +4674,80 @@ describe('ClaudeService', () => {
       // All 3 should start (max=3, running=0)
       expect(service._startExecution).toHaveBeenCalledTimes(3);
       expect(service.queue).toHaveLength(0);
+    });
+  });
+
+  describe('_saveHistoryEntry', () => {
+    beforeEach(() => {
+      vi.mocked(appendFileSync).mockClear();
+    });
+
+    it('writes enriched fields (ccsProfile, resultSubtype, killedByUser, tokenUsage) to JSONL', () => {
+      const { service } = createService();
+
+      const execution = service._createExecution({ featureId: '500', command: 'run' });
+      execution.status = 'completed';
+      execution.exitCode = 0;
+      execution.sessionId = 'session-xyz';
+      execution.startedAt = '2026-03-17T10:00:00.000Z';
+      execution.completedAt = '2026-03-17T10:05:00.000Z';
+      execution.contextPercent = 42;
+      execution.ccsProfile = 'profile-a';
+      execution.resultSubtype = 'success';
+      execution.killedByUser = false;
+      execution.tokenUsage = { input: 1000, output: 500, cacheRead: 200 };
+
+      service._saveHistoryEntry(execution);
+
+      expect(appendFileSync).toHaveBeenCalledOnce();
+      const [, written] = vi.mocked(appendFileSync).mock.calls[0];
+      const entry = JSON.parse(written.trim());
+
+      expect(entry.ccsProfile).toBe('profile-a');
+      expect(entry.resultSubtype).toBe('success');
+      expect(entry.killedByUser).toBe(false);
+      expect(entry.tokenUsage).toEqual({ input: 1000, output: 500, cacheRead: 200 });
+    });
+
+    it('writes null tokenUsage when execution.tokenUsage is absent', () => {
+      const { service } = createService();
+
+      const execution = service._createExecution({ featureId: '501', command: 'fc' });
+      execution.status = 'failed';
+      execution.exitCode = 1;
+      execution.startedAt = '2026-03-17T10:00:00.000Z';
+      execution.completedAt = '2026-03-17T10:01:00.000Z';
+      // tokenUsage, ccsProfile, resultSubtype, killedByUser left unset
+
+      service._saveHistoryEntry(execution);
+
+      expect(appendFileSync).toHaveBeenCalledOnce();
+      const [, written] = vi.mocked(appendFileSync).mock.calls[0];
+      const entry = JSON.parse(written.trim());
+
+      expect(entry.ccsProfile).toBeNull();
+      expect(entry.resultSubtype).toBeNull();
+      expect(entry.killedByUser).toBe(false);
+      expect(entry.tokenUsage).toBeNull();
+    });
+
+    it('writes killedByUser: true when execution was killed by user', () => {
+      const { service } = createService();
+
+      const execution = service._createExecution({ featureId: '502', command: 'fl' });
+      execution.status = 'failed';
+      execution.exitCode = 1;
+      execution.startedAt = '2026-03-17T10:00:00.000Z';
+      execution.completedAt = '2026-03-17T10:00:30.000Z';
+      execution.killedByUser = true;
+
+      service._saveHistoryEntry(execution);
+
+      expect(appendFileSync).toHaveBeenCalledOnce();
+      const [, written] = vi.mocked(appendFileSync).mock.calls[0];
+      const entry = JSON.parse(written.trim());
+
+      expect(entry.killedByUser).toBe(true);
     });
   });
 
@@ -5597,6 +5737,53 @@ describe('ClaudeService', () => {
       expect(exec.logs[0].line).toContain('Queued');
       expect(exec.logs[0].line).toContain('1'); // position 1
     });
+
+    it('logs [Queue] Queued to claudeLog.info when execution is queued', () => {
+      const { service } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn();
+      const infoSpy = vi.spyOn(claudeLog, 'info');
+
+      const runningExec = service._createExecution({ featureId: '999', command: 'fl' });
+      runningExec.status = 'running';
+      service.executions.set(runningExec.id, runningExec);
+
+      const execId = service.executeCommand('101', 'fl');
+
+      const queueLogCall = infoSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('[Queue] Queued'),
+      );
+      expect(queueLogCall).toBeTruthy();
+      expect(queueLogCall[0]).toContain('F101');
+      expect(queueLogCall[0]).toContain('fl');
+      expect(queueLogCall[0]).toContain(execId);
+
+      infoSpy.mockRestore();
+    });
+  });
+
+  describe('_dequeueNext - queue log', () => {
+    it('logs [Queue] Dequeued to claudeLog.info when dequeuing', () => {
+      const { service } = createService({ maxConcurrent: 99 });
+      service._startExecution = vi.fn();
+      const infoSpy = vi.spyOn(claudeLog, 'info');
+
+      const exec = service._createExecution({ featureId: '200', command: 'run' });
+      exec.status = 'queued';
+      service.executions.set(exec.id, exec);
+      service.queue.push(exec.id);
+
+      service._dequeueNext();
+
+      const dequeueLogCall = infoSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('[Queue] Dequeued'),
+      );
+      expect(dequeueLogCall).toBeTruthy();
+      expect(dequeueLogCall[0]).toContain('F200');
+      expect(dequeueLogCall[0]).toContain('run');
+      expect(dequeueLogCall[0]).toContain(exec.id);
+
+      infoSpy.mockRestore();
+    });
   });
 
   describe('_handleCompletion - chain state computation', () => {
@@ -5726,6 +5913,7 @@ describe('ClaudeService', () => {
         retryCount: 2,
         contextRetryCount: 1,
         incompleteRetryCount: 0,
+        serverErrorRetryCount: 0,
         history: [{ command: 'fc', result: 'ok' }],
       });
     });
@@ -6974,6 +7162,9 @@ describe('Scenario Tests', () => {
     it('safe profile available: calls _processNextInQueue to drain queue', async () => {
       const { service } = createScenarioService();
       service._processNextInQueue = vi.fn();
+      service.emailService.sendRateLimitRecoveredNotification = vi
+        .fn()
+        .mockResolvedValue(undefined);
 
       const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
       service._rateLimitRetryQueue.push({ execution: exec1, queuedAt: Date.now() });
@@ -6989,6 +7180,12 @@ describe('Scenario Tests', () => {
 
       // Under threshold → proceed with drain
       expect(service._processNextInQueue).toHaveBeenCalled();
+
+      // Recovery email sent
+      expect(service.emailService.sendRateLimitRecoveredNotification).toHaveBeenCalledWith(
+        exec1,
+        null,
+      );
     });
   });
 
@@ -7395,6 +7592,179 @@ describe('Scenario Tests', () => {
       expect(exec._killedForAskUser).toBe(false);
       expect(exec.inputRequired).toBeNull();
       expect(service._dequeueNext).toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // S28: terminal-active state
+  // =========================================================================
+  describe('terminal-active state', () => {
+    it('/run terminal handoff (user action): run-lock held when _detectUserActionRequired fires', () => {
+      const { service } = createScenarioService();
+      service.fileWatcher.statusCache.set('700', '[WIP]');
+
+      const exec = createRunningChainExecution(service, { featureId: '700', command: 'run' });
+      exec.resultSubtype = 'success';
+      exec.lastAssistantText = 'Please delete the file _out/tmp/old-result.txt and re-run.';
+
+      // Set up run-lock and chain-slot as if /run acquired them at start
+      service.runLockFeatureId = '700';
+      service.chainSlots.add(exec.id);
+
+      service._handleCompletion(exec, 0);
+
+      // run-lock must remain held (terminal-active holds it)
+      expect(service.runLockFeatureId).toBe('700');
+    });
+
+    it('/run terminal handoff (user action): chain-slot held when _detectUserActionRequired fires', () => {
+      const { service } = createScenarioService();
+      service.fileWatcher.statusCache.set('701', '[WIP]');
+
+      const exec = createRunningChainExecution(service, { featureId: '701', command: 'run' });
+      exec.resultSubtype = 'success';
+      exec.lastAssistantText = 'Please delete the file _out/tmp/old-result.txt and re-run.';
+
+      service.runLockFeatureId = '701';
+      service.chainSlots.add(exec.id);
+
+      service._handleCompletion(exec, 0);
+
+      // chain-slot must remain held (terminal-active holds it)
+      expect(service.chainSlots.has(exec.id)).toBe(true);
+    });
+
+    it('/run terminal handoff (pending question): run-lock held when endsWithQuestion fires', () => {
+      const { service } = createScenarioService();
+
+      const exec = createRunningChainExecution(service, { featureId: '702', command: 'run' });
+      exec.resultSubtype = 'success';
+      exec.lastAssistantText = 'The file has been updated. Should I proceed?';
+      exec.sessionId = 'session-702';
+
+      service.runLockFeatureId = '702';
+      service.chainSlots.add(exec.id);
+
+      service._handleCompletion(exec, 0);
+
+      // run-lock must remain held (terminal-active set before handoff)
+      expect(service.runLockFeatureId).toBe('702');
+    });
+
+    it('non-/run terminal handoff: locks released normally', () => {
+      const { service } = createScenarioService();
+      service.fileWatcher.statusCache.set('703', '[PROPOSED]');
+
+      const exec = createRunningChainExecution(service, { featureId: '703', command: 'fl' });
+      exec.resultSubtype = 'success';
+      exec.lastAssistantText = 'Please delete the file _out/tmp/old-result.txt and re-run.';
+
+      // No run-lock for fl (only /run holds it), but chain-slot may exist
+      service.chainSlots.add(exec.id);
+
+      service._handleCompletion(exec, 0);
+
+      // fl does NOT set terminalActive → handoff goes through normal path
+      // chain-slot released by _handoffToTerminal (since terminalActive is false)
+      expect(exec.terminalActive).toBeFalsy();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        exec,
+        expect.stringContaining('File deletion requested'),
+      );
+    });
+
+    it('[DONE] status change: run-lock released and imp enqueued (chain-slot inherited via chainParentId)', () => {
+      const { service } = createScenarioService();
+
+      // Set up a terminal-active execution
+      const exec = createRunningChainExecution(service, { featureId: '704', command: 'run' });
+      exec.terminalActive = true;
+      exec.terminalActiveAt = Date.now();
+      exec.status = 'handed-off';
+      exec.chain = { enabled: true, history: [] };
+
+      service.runLockFeatureId = '704';
+      service.chainSlots.add(exec.id);
+
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      service.handleFeatureStatusChanged('704', '[WIP]', '[DONE]');
+
+      // run-lock released
+      expect(service.runLockFeatureId).toBeNull();
+      // registerWaiter called for imp enqueue
+      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(exec);
+      // terminalActive cleared
+      expect(exec.terminalActive).toBe(false);
+    });
+
+    it('[CANCELLED] status change: both locks released, no imp', () => {
+      const { service } = createScenarioService();
+
+      const exec = createRunningChainExecution(service, { featureId: '705', command: 'run' });
+      exec.terminalActive = true;
+      exec.terminalActiveAt = Date.now();
+      exec.status = 'handed-off';
+      exec.chain = { enabled: true, history: [] };
+
+      service.runLockFeatureId = '705';
+      service.chainSlots.add(exec.id);
+
+      service.chainExecutor.registerWaiter = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      service.handleFeatureStatusChanged('705', '[WIP]', '[CANCELLED]');
+
+      // run-lock released
+      expect(service.runLockFeatureId).toBeNull();
+      // chain-slot released
+      expect(service.chainSlots.has(exec.id)).toBe(false);
+      // registerWaiter NOT called (no imp on cancel)
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+    });
+
+    it('stale cleanup (2h via terminalActiveAt): chain slot released, run-lock held', () => {
+      const { service } = createScenarioService();
+
+      const exec = createRunningChainExecution(service, { featureId: '706', command: 'run' });
+      exec.terminalActive = true;
+      // 3 hours ago — past STUCK_RUNNING_TIMEOUT_MS (2h)
+      exec.terminalActiveAt = Date.now() - 3 * 60 * 60 * 1000;
+      exec.status = 'handed-off';
+      exec.chain = { enabled: true, history: [] };
+
+      service.runLockFeatureId = '706';
+      service.chainSlots.add(exec.id);
+
+      service._cleanupOldExecutions();
+
+      // Chain slot released, but run-lock held (only [DONE]/[CANCELLED] releases)
+      expect(exec.terminalActive).toBe(false);
+      expect(service.runLockFeatureId).toBe('706');
+      expect(service.chainSlots.has(exec.id)).toBe(false);
+    });
+
+    it('manual run-lock release (killExecution): chain-slot also released', () => {
+      const { service } = createScenarioService();
+      // Restore real killExecution for this test
+      service.killExecution = ClaudeService.prototype.killExecution.bind(service);
+
+      const exec = createRunningChainExecution(service, { featureId: '707', command: 'run' });
+      exec.terminalActive = true;
+      exec.terminalActiveAt = Date.now();
+      exec.status = 'handed-off';
+      exec.chain = { enabled: true, history: [] };
+      exec.process = null;
+
+      service.runLockFeatureId = '707';
+      service.chainSlots.add(exec.id);
+
+      // killExecution calls _releaseChainSlot unconditionally (before status checks)
+      service.killExecution(exec.id);
+
+      // chain-slot released
+      expect(service.chainSlots.has(exec.id)).toBe(false);
     });
   });
 });
