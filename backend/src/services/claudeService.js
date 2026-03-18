@@ -2851,11 +2851,36 @@ export class ClaudeService {
     try {
       const features = cachedFeatures || this.featureService.getAllFeatures().features;
       const feature = features.find((f) => f.id === String(featureId));
-      if (!feature?.pendingDeps) return [];
-      return feature.pendingDeps
-        .split(',')
-        .map((d) => d.trim().replace(/\D/g, ''))
-        .filter(Boolean);
+      if (!feature?.pendingDeps && !feature?.dependsOn) return [];
+
+      // 1. Status-based pending deps (existing logic)
+      const pending = feature.pendingDeps
+        ? feature.pendingDeps
+            .split(',')
+            .map((d) => d.trim().replace(/\D/g, ''))
+            .filter(Boolean)
+        : [];
+
+      // 2. Imp-execution-based blocking: resolved deps with active imp still pending
+      if (feature.dependsOn) {
+        const allDepIds = feature.dependsOn
+          .split(',')
+          .map((d) => d.trim().replace(/\D/g, ''))
+          .filter(Boolean);
+        const resolvedDepIds = allDepIds.filter((id) => !pending.includes(id));
+
+        for (const [, exec] of this.executions) {
+          if (
+            exec.command === 'imp' &&
+            (exec.status === 'running' || exec.status === 'queued') &&
+            resolvedDepIds.includes(String(exec.featureId))
+          ) {
+            pending.push(String(exec.featureId));
+          }
+        }
+      }
+
+      return pending;
     } catch (err) {
       claudeLog.error(`[DepCheck] Failed for F${featureId}: ${err.message}`);
       return null;

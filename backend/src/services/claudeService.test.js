@@ -7845,3 +7845,76 @@ describe('Chain slot dep-blocked re-reservation', () => {
     expect(service._belongsToActiveChain(exec)).toBe(false);
   });
 });
+
+// =============================================================================
+// _getPendingDeps: imp-execution-based blocking
+// =============================================================================
+
+describe('_getPendingDeps imp-execution blocking', () => {
+  it('blocks dequeue when dep has running imp', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '' },
+          { id: '936', status: '[DONE]' },
+        ],
+      }),
+    };
+    service.executions.set('imp-936', { command: 'imp', status: 'running', featureId: '936' });
+
+    const result = service._getPendingDeps('940');
+
+    expect(result).toEqual(['936']);
+  });
+
+  it('blocks dequeue when dep has queued imp', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '' },
+          { id: '936', status: '[DONE]' },
+        ],
+      }),
+    };
+    service.executions.set('imp-936', { command: 'imp', status: 'queued', featureId: '936' });
+
+    const result = service._getPendingDeps('940');
+
+    expect(result).toEqual(['936']);
+  });
+
+  it('unblocks when imp completes', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '' },
+          { id: '936', status: '[DONE]' },
+        ],
+      }),
+    };
+    service.executions.set('imp-936', { command: 'imp', status: 'completed', featureId: '936' });
+
+    const result = service._getPendingDeps('940');
+
+    expect(result).toEqual([]);
+  });
+
+  it('unblocks when no imp exists for dep', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '' },
+          { id: '936', status: '[DONE]' },
+        ],
+      }),
+    };
+
+    const result = service._getPendingDeps('940');
+
+    expect(result).toEqual([]);
+  });
+});
