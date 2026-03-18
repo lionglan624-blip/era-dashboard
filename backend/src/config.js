@@ -152,6 +152,12 @@ export function getAutoSwitchThreshold(nowMs = Date.now()) {
 /** Maximum number of profile switches allowed per execution chain (prevents ping-pong loops) */
 export const MAX_PROFILE_SWITCHES = 2;
 
+/** Maximum server error (500/529) retries with exponential backoff */
+export const MAX_SERVER_ERROR_RETRIES = 5;
+
+/** Backoff delays for server error retries (milliseconds): 1m, 5m, 30m, 1h, 2h */
+export const SERVER_ERROR_BACKOFF_MS = [60_000, 300_000, 1_800_000, 3_600_000, 7_200_000];
+
 // =============================================================================
 // Auto-DR (Auto Dashboard Restart) Configuration
 // =============================================================================
@@ -187,7 +193,7 @@ export const SMOKE_TEST_OVERALL_TIMEOUT_MS = 45000;
 export const SMOKE_CLI_TIMEOUT_MS = 5000;
 
 /** Timeout for stream-json test (claude -p with stream-json output) */
-export const SMOKE_STREAM_TIMEOUT_MS = 15000;
+export const SMOKE_STREAM_TIMEOUT_MS = 20000;
 
 /** Timeout for pty-usage test (rateLimitService.capture) */
 export const SMOKE_PTY_TIMEOUT_MS = 25000;

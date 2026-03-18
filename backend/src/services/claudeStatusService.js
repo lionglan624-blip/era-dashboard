@@ -15,10 +15,15 @@ const STATUS_SEVERITY = {
 };
 
 export class ClaudeStatusService {
-  constructor({ fetchFn = fetch, componentIds = CLAUDE_STATUS_COMPONENT_IDS } = {}) {
+  constructor({
+    fetchFn = fetch,
+    componentIds = CLAUDE_STATUS_COMPONENT_IDS,
+    emailService = null,
+  } = {}) {
     this.logger = createLogger('claude-status');
     this._fetchFn = fetchFn;
     this._componentIds = componentIds;
+    this._emailService = emailService;
     this._cache = null;
     this._interval = null;
   }
@@ -63,6 +68,14 @@ export class ClaudeStatusService {
         .map((c) => ({ id: c.id, name: c.name, status: c.status }));
 
       const worst = this._worstStatus(components);
+
+      // Notify on status change (skip first poll when cache is null)
+      const prevWorst = this._cache?.worst;
+      if (prevWorst != null && worst !== prevWorst && this._emailService) {
+        this._emailService
+          .sendStatusChangeNotification(worst, components)
+          .catch((err) => this.logger.error('Status change email failed:', err.message));
+      }
 
       this._cache = {
         components,

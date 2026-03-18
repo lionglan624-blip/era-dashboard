@@ -356,10 +356,7 @@ export class DependencyUpdaterService {
         results.push(result);
         log.info(`[${tierName}] ${item.name}: ${JSON.stringify(result)}`);
       }
-      // Weekly tier email is replaced by the cross-tier weekly summary
-      if (tierName !== 'weekly') {
-        await this._sendSummaryEmail(tierName, results);
-      }
+      // All per-tier emails suppressed — weekly summary only
     } finally {
       this._running.set(tierName, false);
       this._lastResults.set(tierName, { timestamp: new Date().toISOString(), results });
@@ -377,7 +374,7 @@ export class DependencyUpdaterService {
 
     // Get version before
     const before = await this._exec(item.versionCmd);
-    result.versionBefore = before.success ? before.stdout : 'unknown';
+    result.versionBefore = before.success ? this._extractVersion(before.stdout) : 'unknown';
 
     // Run update
     const update = await this._exec(item.cmd);
@@ -387,7 +384,7 @@ export class DependencyUpdaterService {
 
     // Get version after
     const after = await this._exec(item.versionCmd);
-    result.versionAfter = after.success ? after.stdout : 'unknown';
+    result.versionAfter = after.success ? this._extractVersion(after.stdout) : 'unknown';
 
     if (result.versionBefore === result.versionAfter) {
       result.skipped = 'already latest';
@@ -569,44 +566,17 @@ export class DependencyUpdaterService {
   }
 
   // =========================================================================
-  // Email
+  // Version extraction
   // =========================================================================
 
-  async _sendSummaryEmail(tierName, results) {
-    if (!this._emailService) return;
-    // Only send if something changed
-    const hasChanges = results.some(
-      (r) => (!r.skipped && r.success) || !r.success || (r.outdated && r.outdated.length > 0),
-    );
-    if (!hasChanges) return;
-
-    const lines = results.map((r) => {
-      if (r.skipped) return `✅ ${r.name}: ${r.skipped}`;
-      if (!r.success) return `❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
-      if (r.committed) return `📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
-      if (r.versionBefore && r.versionAfter) {
-        const suffix = r.pendingReload ? ' (daemon reload pending)' : '';
-        return `🔄 ${r.name}: ${r.versionBefore} → ${r.versionAfter}${suffix}`;
-      }
-      if (r.outdated?.length > 0) {
-        const pkgs = r.outdated.map((p) => `${p.package} ${p.current}→${p.latest}`).join(', ');
-        return `📋 ${r.name}: outdated — ${pkgs}`;
-      }
-      return `✅ ${r.name}: ok`;
-    });
-
-    const subject = `[Dep-Update] ${tierName} — ${new Date().toISOString().slice(0, 10)}`;
-    const html = `<pre style="font-family:monospace;font-size:14px">${lines.join('\n')}</pre>`;
-    try {
-      await this._emailService.sendHtml(subject, html);
-      log.info(`[Email] Sent: ${subject}`);
-    } catch (err) {
-      log.error(`[Email] Failed: ${err.message}`);
-    }
+  _extractVersion(output) {
+    if (!output) return 'unknown';
+    const match = output.match(/v?\d+\.\d+\.\d+/);
+    return match ? match[0] : output.split('\n')[0].trim();
   }
 
   // =========================================================================
-  // Weekly cross-tier summary
+  // Weekly cross-tier summary (sole email mechanism)
   // =========================================================================
 
   async _sendWeeklySummary() {
@@ -628,7 +598,7 @@ export class DependencyUpdaterService {
         if (r.committed) return `  📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
         if (r.versionBefore && r.versionAfter) {
           const suffix = r.pendingReload ? ' (daemon reload pending)' : '';
-          return `  🔄 ${r.name}: ${r.versionBefore} → ${r.versionAfter}${suffix}`;
+          return `  🔄 ${r.name}: ${this._extractVersion(r.versionBefore)} → ${this._extractVersion(r.versionAfter)}${suffix}`;
         }
         if (r.outdated?.length > 0) {
           const pkgs = r.outdated.map((p) => `${p.package} ${p.current}→${p.latest}`).join(', ');

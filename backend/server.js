@@ -229,7 +229,7 @@ statusMailService.onReleaseEmail = (version, subject, rawSource) =>
 
 // Tmp file cleanup (debug logs, old daily logs, term artifacts)
 const cleanupService = new CleanupService(PROJECT_ROOT);
-const claudeStatusService = new ClaudeStatusService();
+const claudeStatusService = new ClaudeStatusService({ emailService });
 
 // Dependency updater (scheduled CCS/CodeRabbit/PM2/NuGet/Go/pip/npm updates)
 const depUpdaterService = new DependencyUpdaterService({

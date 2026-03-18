@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from '../utils/logger.js';
 import { nowJST } from '../utils/timeUtils.js';
-import { MAX_RETRIES, MAX_FL_RETRIES } from '../config.js';
+import { MAX_RETRIES, MAX_FL_RETRIES, MAX_SERVER_ERROR_RETRIES } from '../config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'email.config.json');
@@ -172,6 +172,25 @@ export class EmailService {
     await this._send(subject, textLines.join('\n'));
   }
 
+  async sendServerErrorExhaustedNotification(execution, featureInfo = undefined) {
+    const cmdUpper = execution.command.toUpperCase();
+    const subject = execution.featureId
+      ? `${cmdUpper} ${execution.featureId} server-error-exhausted`
+      : `${execution.command} server-error-exhausted`;
+
+    const textLines = [];
+    if (featureInfo) {
+      textLines.push(`F${execution.featureId} ${featureInfo.title} ${featureInfo.status}`);
+      textLines.push('');
+    }
+    textLines.push(
+      `${cmdUpper} server-error-exhausted — API returned 500/529 after ${MAX_SERVER_ERROR_RETRIES} retries`,
+    );
+    textLines.push(nowJST());
+
+    await this._send(subject, textLines.join('\n'));
+  }
+
   /**
    * Format chain history into a compact summary string
    * @param {Array<{command: string, result: string, reason?: string}>} chainHistory - Chain execution history
@@ -253,6 +272,20 @@ export class EmailService {
 
     // Default: lowercase and truncate to 30 chars
     return lower.substring(0, 30);
+  }
+
+  async sendStatusChangeNotification(worst, components) {
+    const subject =
+      worst === 'operational' ? 'Claude Status: recovered' : `Claude Status: ${worst}`;
+
+    const textLines = [];
+    for (const c of components) {
+      textLines.push(`${c.name}: ${c.status}`);
+    }
+    textLines.push('');
+    textLines.push(nowJST());
+
+    await this._send(subject, textLines.join('\n'));
   }
 
   async _send(subject, text) {

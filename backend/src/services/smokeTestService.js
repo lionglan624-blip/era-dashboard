@@ -281,11 +281,23 @@ export class SmokeTestService {
         stderr += d.toString();
       });
 
+      // Auto-answer trust prompt in pipe mode (no PTY to handle it)
+      child.stdin?.write('y\n');
+      child.stdin?.end();
+
       const timer = setTimeout(() => {
         try {
           child.kill();
         } catch {}
-        reject(new Error(`timeout after ${timeoutMs}ms`));
+        const stderrSnippet = stderr.trim().slice(0, 300);
+        const stdoutSnippet = stdout.trim().slice(0, 300);
+        reject(
+          new Error(
+            `timeout after ${timeoutMs}ms` +
+              (stderrSnippet ? ` (stderr: ${stderrSnippet})` : '') +
+              (stdoutSnippet ? ` (stdout: ${stdoutSnippet})` : ''),
+          ),
+        );
       }, timeoutMs);
 
       child.on('close', (code) => {

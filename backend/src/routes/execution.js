@@ -201,6 +201,15 @@ export function createExecutionRouter(claudeService) {
       });
     }
     claudeService._releaseRunLock(held, 'manual');
+    if (held) {
+      for (const exec of claudeService.executions.values()) {
+        if (exec.featureId === held && exec.terminalActive) {
+          exec.terminalActive = false;
+          claudeService._releaseChainSlot(exec);
+          break;
+        }
+      }
+    }
     res.json({ released: true, featureId: held });
   });
 

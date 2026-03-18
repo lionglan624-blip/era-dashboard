@@ -174,6 +174,9 @@ export class StreamParser {
       ) {
         execution.accountLimitHit = true;
       }
+      if (/overloaded_error|api_error|internal_server_error/i.test(trimmed)) {
+        execution.serverErrorHit = true;
+      }
       const entry = {
         line: trimmed,
         timestamp: new Date().toISOString(),
@@ -424,6 +427,9 @@ export class StreamParser {
         )
       ) {
         execution.accountLimitHit = true;
+      }
+      if (/overloaded_error|api_error|internal_server_error/i.test(event.error)) {
+        execution.serverErrorHit = true;
       }
       const entry = {
         line: `[System Error] ${event.error}`,

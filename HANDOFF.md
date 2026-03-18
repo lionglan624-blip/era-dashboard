@@ -70,10 +70,13 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | Input email delay | 2min | Delayed email for input-wait/askuserquestion; cancelled if user answers in browser |
 | AskUserQuestion | kill+resume | Process killed on tool_use detection; browser answer resumes via `--resume` |
 | Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). Stop hook suppressed for dashboard-managed processes (`CLAUDE_DASHBOARD_MANAGED=1`). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
+| Server error (500/529) | 5x (exp backoff) | Retry on `overloaded_error`/`api_error`/`internal_server_error` detected from debug log (`_scanDebugLogForServerError`). Exponential backoff: 1m→5m→30m→1h→2h (`SERVER_ERROR_BACKOFF_MS`). Counter: `serverErrorRetryCount` (independent). Profile switch skipped (not helpful). Blocked by `accountLimitHit`. On exhaustion: `server-error-exhausted` WS event + email |
 | Auto-switch (≥80%) | proactive | Proactive profile switch at ≥80% usage. See [INTERNALS.md](INTERNALS.md) Auto-Switch Details |
 | Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit`. On exhaustion: email subject `context-limit 3/3` |
 | FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit` and `isContextExhausted`. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
 | Incomplete termination retry | 3x (5s delay) | Retry fc/fl/run when exit 0 + `subtype=success` but feature status didn't advance to expected state (`EXPECTED_STATUS_AFTER_COMMAND` mapping: fc→`[PROPOSED]`, fl→`[REVIEWED]`, run→`[DONE]`). Detects context/max_turns exhaustion mid-work where CLI reports success but command didn't finish. Uses `fileWatcher.statusCache` for status check. Counter: `incompleteRetryCount` (independent from `retryCount` and `contextRetryCount`). Skips when status is `[BLOCKED]` (legitimate) or `[DRAFT]` after FL (fc_rerun decision). WS event: `chain-retry` with `retryType: 'incomplete'`. On exhaustion: prevents dead waiter registration, falls through to email notification with result `incomplete-retry-exhausted`. User action detected in `lastAssistantText` (file deletion request, y/n prompt) → terminal handoff instead of retry |
+| Run-lock (`/run` exclusion) | acquire/release | Only one `/run` executes at a time. Acquired at `_startExecution` (`runLockFeatureId`). Released **only** on `[DONE]`/`[CANCELLED]` status change (`handleFeatureStatusChanged` → `_releaseRunLock`). NOT released on retry/kill/completion — retries bypass via same-feature check (`_isRunBlocked`). Kill without status change keeps lock until manual `[CANCELLED]` or DR. `_resolveTerminalActive` releases after terminal-active resolution |
+| Terminal-active (run) | lock-hold | Terminal handoff for /run holds run-lock + chain-slot until [DONE]/[CANCELLED]/stale(2h). [DONE] → imp auto-enqueue. See claudeService.js `_resolveTerminalActive` |
 | Chain slot reservation | per-chain | Reserves execution slot for entire chain lifecycle (fc→fl→run→imp). `chainSlots` Set tracks root execution IDs. Non-chain executions limited to `maxConcurrent - idleChainSlots`. Released on chain completion, cancel, handoff, stale cleanup, rate limit exhaustion, or **dep-blocked at bulk queue time** (re-reserved at dequeue). `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4). Slash commands (`commit`, `sync-deps`) are slot-exempt (`SLOT_EXEMPT_COMMANDS`) — bypass queue limit and don't count toward `runningCount` |
 | Dep-aware dequeue | on status-change + features-updated | Features with unresolved dependencies (`pendingDeps`) stay in queue but are skipped by `_dequeueNext()` and `_canStartNow()`. When a dep reaches `[DONE]`/`[CANCELLED]`, featureService cache is invalidated and queue is re-evaluated. `_getPendingDeps()` is fail-closed (returns `null` on error → treated as blocked). Dep info exposed in `queue-updated` WS event (`depBlocked`, `pendingDeps` fields). FE "Queue All" button queues all tree features including dep-blocked ones |
 | Stale waiter → Auto-DR | 5min + 10min | Chain waiters older than `CHAIN_WAITER_TIMEOUT_MS` (5min) are cleaned by `_cleanupOldExecutions()` (runs every 10min). On cleanup, `onExecutionComplete()` is called to trigger deferred Auto-DR re-check |
@@ -98,11 +101,11 @@ Full config: `backend/src/config.js`
 | `/api/execution/:id` | GET | Execution status |
 | `/api/execution/:id/logs` | GET | Execution logs (with offset) |
 | `/api/execution/:id` | DELETE | Stop execution |
-| `/api/execution/history` | GET | Persistent execution history (JSONL, 7-day, survives DR/reload) |
+| `/api/execution/history` | GET | Persistent execution history (JSONL, 7-day, survives DR/reload). Fields: executionId, featureId, command, status, exitCode, sessionId, startedAt, completedAt, contextPercent, ccsProfile, resultSubtype, killedByUser, tokenUsage |
 | `/api/execution/history` | DELETE | Clear execution history (test support) |
 | `/api/execution` | GET | List all executions |
 | `/api/ratelimit/:profile` | POST | Manual rate limit cache injection |
-| `/api/execution/queue` | GET | Queue status |
+| `/api/execution/queue` | GET | Queue status (includes `chainSlotHolders` with execution details, `runLockFeatureId`) |
 | `/api/execution/queue/clear` | POST | Clear queued items |
 | `/api/execution/queue/bulk` | POST | Bulk queue features |
 | `/api/features` | GET | List features |
@@ -358,15 +361,20 @@ cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
 
 | シナリオ | まずこれを実行 | 追加で必要なら |
 |---------|---------------|--------------|
-| **実行が失敗した** | `--exec {ID}` | `--exec {ID} --verbose` で全イベント |
+| **実行が失敗した** | `--exec {ID}` (VERDICT自動判定) | `--exec {ID} --verbose` で全イベント |
+| **実行の時系列** | `--exec-timeline {ID}` | キーイベントを時系列表示 |
 | **Feature の全履歴** | `--feature {ID} --after DATE` | — (1コマンドで完結) |
 | **429/Rate Limit 調査** | `--exec {ID}` (429 自動検出) | `--debug-grep {ID} "rate_limit"` |
-| **Queue/Slot 競合** | `--search "queue\|dequeue" -i --after DATE` | `--feature {ID}` で特定 Feature 追跡 |
+| **Queue 状態確認** | `--queue` (ライブ) | `--queue --after DATE` でログ履歴併記 |
+| **Queue 状態タイムライン** | `--queue-state --after DATE` | `[Queue] STATE` ログの定期スナップショット一覧 |
+| **Queue/Slot 競合** | `--search "." --type queue --after DATE` | `--feature {ID}` で特定 Feature 追跡 |
 | **Chain retry 傾向** | `--events context-retry,handoff --after DATE` | `--events ... --by-feature` |
 | **Exec ID が何か不明** | `--resolve {ID}` | `--list-debug` で debug log 一覧 |
 | **PM2 クラッシュ** | `--pm2 --pm2-type crash` | `--pm2 "ACCESS_VIOLATION"` |
 | **debug log 内を検索** | `--debug-grep {ID} "pattern"` | `-i -C 3` でコンテキスト付き |
 | **全ログ横断検索** | `--search "pattern" -i -C 3` | 全4ログ源を横断。`--after DATE` で絞り込み |
+| **複数パターン検索** | `--search "F932" --or "F935"` | OR結合で複数Feature同時検索 |
+| **カテゴリ絞り込み** | `--search "." --type claude` | claude/server/watcher/websocket/queue/chain |
 
 ### Log Sources (4種類、全て自動検出)
 
@@ -381,9 +389,17 @@ cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
 
 - **`--resolve {ID}`**: Exec ID → Feature/Command 解決。API evict 後 (TTL 1h) も app log から検索可能
 - **`--list-debug --after DATE`**: debug log 一覧（サイズ、日時、Feature 自動解決付き）
-- **`--verbose`**: `--exec` と組み合わせると全ログイベントを表示
+- **`--verbose`**: `--exec` と組み合わせると全ログイベントを表示。`--search` では max_matches=20 制限を解除
 - **`--width 0`**: 出力トランケーションを無効化
 - **`-C N`**: `--search` / `--debug-grep` でコンテキスト行を表示
+- **`--raw-log`**: VT escape / `[assistant]` changelog 行の自動除外を無効化
+- **`--type TYPE`**: ログカテゴリフィルタ（claude/server/watcher/websocket/queue/chain）
+- **`--or PATTERN`**: `--search` の OR 結合。複数指定可
+- **VERDICT**: `--exec` は自動で RATE_LIMITED / CONTEXT_LIMIT / USER_KILLED / NORMAL / INCOMPLETE / ERROR / UNKNOWN を判定
+- **Queue logging**: `claudeLog.info('[Queue] Queued/Dequeued ...')` が app log に出力。`--type queue` でフィルタ可能
+- **Queue STATE**: `[Queue] STATE {...}` が10分毎 (`_cleanupOldExecutions`) に出力。running/queued/chainSlots/waitingInput/inputIds を記録。`--queue-state` で表形式表示
+- **Queue COMPLETION**: `[Queue] COMPLETION {...}` が waitingForInput/inputRequired/chain 状態の実行完了時に出力
+- **History JSONL 拡充**: ccsProfile, resultSubtype, killedByUser, tokenUsage を記録（後方互換）
 
 ---
 

@@ -451,6 +451,35 @@ export default function App() {
           persistent: true,
         });
       },
+      'server-error-waiting': (msg) => {
+        addNotification({
+          type: 'info',
+          title: `F${msg.featureId} Server Error (500/529)`,
+          message: `Retry ${msg.retryCount + 1}/${msg.maxRetries} at ${new Date(msg.retryAt).toLocaleTimeString()} (${Math.round(msg.delayMs / 60000)}min)`,
+          featureId: msg.featureId,
+          persistent: true,
+        });
+      },
+      'server-error-retry': (msg) => {
+        addNotification({
+          type: 'info',
+          title: `F${msg.featureId} Server Error Retry`,
+          message: `Retrying (${msg.retryCount}/${msg.maxRetries})`,
+          featureId: msg.featureId,
+          persistent: true,
+        });
+        subscribeAndFetchExecution(msg.newExecutionId, 'Server Error');
+        reconcileOldExecution(msg.oldExecutionId);
+      },
+      'server-error-exhausted': (msg) => {
+        addNotification({
+          type: 'warning',
+          title: `F${msg.featureId} Server Error Exhausted`,
+          message: `API 500/529 after ${msg.retryCount} retries. Manual re-run needed.`,
+          featureId: msg.featureId,
+          persistent: true,
+        });
+      },
       'chain-blocked': (msg) => {
         addNotification({
           type: 'warning',

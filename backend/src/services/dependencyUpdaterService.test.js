@@ -679,51 +679,32 @@ describe('DependencyUpdaterService', () => {
   });
 
   // =========================================================================
-  // Email
+  // _extractVersion
   // =========================================================================
 
-  describe('_sendSummaryEmail', () => {
-    it('sends email when changes exist', async () => {
-      vi.useRealTimers();
-      const emailService = makeMockEmailService();
-      const service = createService({ emailService });
-
-      await service._sendSummaryEmail('daily', [
-        { name: 'CCS', success: true, versionBefore: '1.0', versionAfter: '1.1' },
-      ]);
-
-      expect(emailService.sendHtml).toHaveBeenCalledWith(
-        expect.stringContaining('[Dep-Update] daily'),
-        expect.stringContaining('1.0'),
-      );
+  describe('_extractVersion', () => {
+    it('extracts semver from CCS verbose output', () => {
+      const service = createService();
+      const output =
+        "CCS (Claude Code Switch) v7.54.0\n\nInstallation:\n  Location: C:\\path\\ccs.js\n\nRun 'ccs --help' for usage information";
+      expect(service._extractVersion(output)).toBe('v7.54.0');
     });
 
-    it('does not send email when all skipped', async () => {
-      vi.useRealTimers();
-      const emailService = makeMockEmailService();
-      const service = createService({ emailService });
-
-      await service._sendSummaryEmail('daily', [
-        { name: 'CCS', success: true, skipped: 'already latest' },
-      ]);
-
-      expect(emailService.sendHtml).not.toHaveBeenCalled();
+    it('extracts bare semver (PM2)', () => {
+      const service = createService();
+      expect(service._extractVersion('5.4.1')).toBe('5.4.1');
     });
 
-    it('sends email for NuGet outdated packages', async () => {
-      vi.useRealTimers();
-      const emailService = makeMockEmailService();
-      const service = createService({ emailService });
+    it('returns unknown for empty input', () => {
+      const service = createService();
+      expect(service._extractVersion('')).toBe('unknown');
+      expect(service._extractVersion(null)).toBe('unknown');
+      expect(service._extractVersion(undefined)).toBe('unknown');
+    });
 
-      await service._sendSummaryEmail('monthly', [
-        {
-          name: 'NuGet',
-          success: true,
-          outdated: [{ package: 'Moq', current: '4.18', latest: '4.20' }],
-        },
-      ]);
-
-      expect(emailService.sendHtml).toHaveBeenCalled();
+    it('falls back to first line when no semver match', () => {
+      const service = createService();
+      expect(service._extractVersion('some tool output\nmore lines')).toBe('some tool output');
     });
   });
 
@@ -819,7 +800,7 @@ describe('DependencyUpdaterService', () => {
       expect(hasDepUpdate).toBe(false);
     });
 
-    it('still sends per-tier email for daily tier', async () => {
+    it('does not send per-tier email for daily tier (weekly summary only)', async () => {
       vi.useRealTimers();
       const emailService = makeMockEmailService();
       const service = createService({ emailService });
@@ -836,10 +817,7 @@ describe('DependencyUpdaterService', () => {
         { name: 'CCS', type: 'global', cmd: 'a', versionCmd: 'a --v', needsIdle: false },
       ]);
 
-      expect(emailService.sendHtml).toHaveBeenCalledWith(
-        expect.stringContaining('[Dep-Update] daily'),
-        expect.any(String),
-      );
+      expect(emailService.sendHtml).not.toHaveBeenCalled();
     });
   });
 
