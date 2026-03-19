@@ -365,10 +365,18 @@ describe('FeatureService', () => {
       const result = service.getAllFeatures();
 
       const f100 = result.features.find((f) => f.id === '100');
-      // F101=[WIP], F102=[WIP], 103=[WIP] → all pending
+      // pendingDeps is a comma-separated string of unresolved dependency IDs
+      // F101=[WIP], F102=[WIP], 103=[WIP] → all three are pending
       expect(f100.pendingDeps).toContain('F101');
       expect(f100.pendingDeps).toContain('F102');
       expect(f100.pendingDeps).toContain('103');
+      // Verify exactly 3 entries (no extras, no duplication)
+      expect(
+        f100.pendingDeps
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ).toHaveLength(3);
     });
 
     it('adds recently completed features with [DONE] status', () => {

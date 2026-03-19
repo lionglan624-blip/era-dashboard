@@ -2293,14 +2293,20 @@ describe('ClaudeService', () => {
   describe('_killProcess', () => {
     it('warns on null process', () => {
       const { service } = createService();
-      // Should not throw
+      const warnSpy = vi.spyOn(claudeLog, 'warn');
       service._killProcess(null);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('invalid process or missing PID'),
+      );
     });
 
     it('warns on process without pid', () => {
       const { service } = createService();
-      // Should not throw
+      const warnSpy = vi.spyOn(claudeLog, 'warn');
       service._killProcess({ pid: null });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('invalid process or missing PID'),
+      );
     });
   });
 

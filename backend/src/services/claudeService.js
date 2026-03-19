@@ -46,6 +46,7 @@ import {
   SERVER_ERROR_BACKOFF_MS,
   INPUT_EMAIL_DELAY_MS,
   getMaxConcurrentExecutions,
+  getAutoSwitchThreshold,
 } from '../config.js';
 
 // Import extracted modules
@@ -394,11 +395,31 @@ export class ClaudeService {
     const profiles = getCcsProfiles();
     if (profiles.length === 0) return this.getCcsProfile(); // fallback to global default
 
-    // Try up to profiles.length times to find a non-avoided profile
-    for (let i = 0; i < profiles.length; i++) {
-      const profile = profiles[this._profileRoundRobinIndex % profiles.length];
-      this._profileRoundRobinIndex = (this._profileRoundRobinIndex + 1) % profiles.length;
-      if (profile !== avoidProfile) return profile;
+    // Build a safe-profile set from rate-limit cache (excludes profiles at/above threshold)
+    const cached = this.rateLimitService?.getCached();
+    const threshold = getAutoSwitchThreshold();
+    const isSafe = (p) => {
+      if (!cached) return true; // No cache yet — treat all as safe
+      const data = cached[p];
+      if (!data) return true; // No data = below capture threshold
+      const maxPercent = Math.max(
+        data.weekly?.percent || 0,
+        data.session?.percent || 0,
+        data.sonnet?.percent || 0,
+      );
+      return maxPercent < threshold;
+    };
+
+    // Round-robin among safe profiles first, then fall back to all profiles
+    for (const candidateFilter of [
+      (p) => p !== avoidProfile && isSafe(p),
+      (p) => p !== avoidProfile,
+    ]) {
+      for (let i = 0; i < profiles.length; i++) {
+        const profile = profiles[this._profileRoundRobinIndex % profiles.length];
+        this._profileRoundRobinIndex = (this._profileRoundRobinIndex + 1) % profiles.length;
+        if (candidateFilter(profile)) return profile;
+      }
     }
     // All profiles exhausted (only 1 profile = avoided), fall back
     return profiles[this._profileRoundRobinIndex % profiles.length];

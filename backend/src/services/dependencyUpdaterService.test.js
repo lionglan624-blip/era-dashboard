@@ -777,9 +777,11 @@ describe('DependencyUpdaterService', () => {
 
     it('does not send when emailService is null', async () => {
       vi.useRealTimers();
+      const emailService = makeMockEmailService();
       const service = createService({ emailService: null });
-      // Should not throw
+      // _sendWeeklySummary must return early without calling sendHtml
       await service._sendWeeklySummary();
+      expect(emailService.sendHtml).not.toHaveBeenCalled();
     });
   });
 

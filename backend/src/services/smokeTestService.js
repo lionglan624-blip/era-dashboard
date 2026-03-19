@@ -191,7 +191,7 @@ export class SmokeTestService {
       const claudePath = process.env.CLAUDE_PATH || 'claude';
       const result = await this._spawnWithTimeout(
         claudePath,
-        ['-p', 'ok', '--output-format', 'stream-json', '--max-turns', '1'],
+        ['-p', 'ok', '--verbose', '--output-format', 'stream-json', '--max-turns', '1'],
         SMOKE_STREAM_TIMEOUT_MS,
         env,
       );
@@ -386,7 +386,7 @@ ${failDetails}
 
 ## テストの意味
 - cli-binary: claude --version の実行確認（バイナリ存在・パス）
-- stream-json: claude -p "ok" --output-format stream-json の出力形式確認（system/assistant/result イベント順序）
+- stream-json: claude -p "ok" --verbose --output-format stream-json の出力形式確認（system/assistant/result イベント順序）
 - pty-usage: PTY経由の /usage TUI キャプチャ確認（trust prompt、TUI変更検出）
 
 ## Dashboard コードベースへの影響

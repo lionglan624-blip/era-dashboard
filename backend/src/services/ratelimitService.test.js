@@ -1174,14 +1174,16 @@ describe('RateLimitService', () => {
     });
 
     it('does nothing when no callback provided', () => {
+      const getActiveProfile = vi.fn(() => 'profile-a');
       const serviceNoCallback = new RateLimitService('/fake/root', {
         getProfiles: () => ['profile-a'],
-        getActiveProfile: () => 'profile-a',
+        getActiveProfile,
       });
-      // Should not throw
       serviceNoCallback._checkAutoSwitch({
         'profile-a': { weekly: { percent: 95, resetsAt: 'Feb 9' } },
       });
+      // Guard `!this._onAutoSwitch` triggers early return — _getActiveProfile never reached
+      expect(getActiveProfile).not.toHaveBeenCalled();
     });
 
     it('does nothing when cached data is null', () => {
