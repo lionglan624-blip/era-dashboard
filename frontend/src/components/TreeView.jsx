@@ -44,6 +44,49 @@ const TreeDataContext = createContext(null);
  * @param {Array} features - All features
  * @param {Set} runningFeatures - Feature IDs with running sessions
  */
+/**
+ * Transitive reduction: remove redundant dependency edges.
+ * If A depends on [B, C] and B depends on [C], then A→C is redundant (covered by A→B→C).
+ * This ensures the tree shows chains (F951→F977→F943) instead of siblings.
+ */
+function transitiveReduce(dependsOnMap) {
+  const ancestorCache = new Map();
+
+  function getAncestors(id) {
+    if (ancestorCache.has(id)) return ancestorCache.get(id);
+    const ancestors = new Set();
+    ancestorCache.set(id, ancestors); // Set before recursion to handle cycles
+    for (const p of dependsOnMap.get(id) || []) {
+      ancestors.add(p);
+      for (const a of getAncestors(p)) {
+        ancestors.add(a);
+      }
+    }
+    return ancestors;
+  }
+
+  for (const id of dependsOnMap.keys()) {
+    getAncestors(id);
+  }
+
+  const reduced = new Map();
+  for (const [childId, parentIds] of dependsOnMap) {
+    if (parentIds.length <= 1) {
+      reduced.set(childId, [...parentIds]);
+      continue;
+    }
+    // Keep parent only if it is NOT an ancestor of any other parent
+    const keep = parentIds.filter(
+      (pid) =>
+        !parentIds.some(
+          (otherId) => otherId !== pid && (ancestorCache.get(otherId) || new Set()).has(pid),
+        ),
+    );
+    reduced.set(childId, keep);
+  }
+  return reduced;
+}
+
 function buildTree(features, runningFeatures) {
   // Filter to active features only (not DONE, not CANCELLED)
   // Exception: keep [DONE] features that still have a running session
@@ -58,18 +101,21 @@ function buildTree(features, runningFeatures) {
   });
 
   // Build dependency map: childId -> [parentIds]
-  const dependsOnMap = new Map();
+  const rawDepsMap = new Map();
   for (const f of active) {
     if (f.pendingDeps) {
       const parentIds = f.pendingDeps
         .split(',')
         .map((d) => d.trim().replace(/\D/g, ''))
         .filter(Boolean);
-      dependsOnMap.set(f.id, parentIds);
+      rawDepsMap.set(f.id, parentIds);
     } else {
-      dependsOnMap.set(f.id, []);
+      rawDepsMap.set(f.id, []);
     }
   }
+
+  // Remove transitively redundant edges for clean chain display
+  const dependsOnMap = transitiveReduce(rawDepsMap);
 
   // Build reverse map: parentId -> [childIds]
   const childrenMap = new Map();
