@@ -103,6 +103,7 @@ Full config: `backend/src/config.js`
 | `/api/execution/:id` | DELETE | Stop execution |
 | `/api/execution/history` | GET | Persistent execution history (JSONL, 7-day, survives DR/reload). Fields: executionId, featureId, command, status, exitCode, sessionId, startedAt, completedAt, contextPercent, ccsProfile, resultSubtype, killedByUser, tokenUsage |
 | `/api/execution/history` | DELETE | Clear execution history (test support) |
+| `/api/execution/status` | GET | Consolidated dashboard state: active executions (running+queued), active features (not [DONE]/[CANCELLED]/RC), queue summary, runLockFeatureId. Designed for single-curl Claude Code queries |
 | `/api/execution` | GET | List all executions |
 | `/api/ratelimit/:profile` | POST | Manual rate limit cache injection |
 | `/api/execution/queue` | GET | Queue status (includes `chainSlotHolders` with execution details, `runLockFeatureId`) |
@@ -351,7 +352,7 @@ All user input is whitelist-validated before passing to spawn:
 
 ## Diagnostics
 
-Dashboard の問題調査には **devkit の `dashboard_diag.py` を使う**。手動 `grep`/`tail`/`cat` は禁止 — dashboard_diag.py で 87% の grep を削減できる（バックテスト実証済み）。
+Use **devkit's `dashboard_diag.py`** for dashboard troubleshooting. Manual `grep`/`tail`/`cat` is forbidden — dashboard_diag.py reduces grep usage by 87% (backtest proven).
 
 ```bash
 cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
@@ -359,47 +360,47 @@ cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
 
 ### Scenario-Based Quick Reference
 
-| シナリオ | まずこれを実行 | 追加で必要なら |
-|---------|---------------|--------------|
-| **実行が失敗した** | `--exec {ID}` (VERDICT自動判定) | `--exec {ID} --verbose` で全イベント |
-| **実行の時系列** | `--exec-timeline {ID}` | キーイベントを時系列表示 |
-| **Feature の全履歴** | `--feature {ID} --after DATE` | — (1コマンドで完結) |
-| **429/Rate Limit 調査** | `--exec {ID}` (429 自動検出) | `--debug-grep {ID} "rate_limit"` |
-| **Queue 状態確認** | `--queue` (ライブ) | `--queue --after DATE` でログ履歴併記 |
-| **Queue 状態タイムライン** | `--queue-state --after DATE` | `[Queue] STATE` ログの定期スナップショット一覧 |
-| **Queue/Slot 競合** | `--search "." --type queue --after DATE` | `--feature {ID}` で特定 Feature 追跡 |
-| **Chain retry 傾向** | `--events context-retry,handoff --after DATE` | `--events ... --by-feature` |
-| **Exec ID が何か不明** | `--resolve {ID}` | `--list-debug` で debug log 一覧 |
-| **PM2 クラッシュ** | `--pm2 --pm2-type crash` | `--pm2 "ACCESS_VIOLATION"` |
-| **debug log 内を検索** | `--debug-grep {ID} "pattern"` | `-i -C 3` でコンテキスト付き |
-| **全ログ横断検索** | `--search "pattern" -i -C 3` | 全4ログ源を横断。`--after DATE` で絞り込み |
-| **複数パターン検索** | `--search "F932" --or "F935"` | OR結合で複数Feature同時検索 |
-| **カテゴリ絞り込み** | `--search "." --type claude` | claude/server/watcher/websocket/queue/chain |
+| Scenario | Run first | If more detail needed |
+|----------|-----------|----------------------|
+| **Execution failed** | `--exec {ID}` (auto VERDICT) | `--exec {ID} --verbose` for all events |
+| **Execution timeline** | `--exec-timeline {ID}` | Shows key events chronologically |
+| **Feature full history** | `--feature {ID} --after DATE` | — (single command) |
+| **429/Rate Limit investigation** | `--exec {ID}` (auto 429 detection) | `--debug-grep {ID} "rate_limit"` |
+| **Queue status** | `--queue` (live) | `--queue --after DATE` with log history |
+| **Queue state timeline** | `--queue-state --after DATE` | Periodic `[Queue] STATE` log snapshots |
+| **Queue/Slot contention** | `--search "." --type queue --after DATE` | `--feature {ID}` for specific feature tracking |
+| **Chain retry trends** | `--events context-retry,handoff --after DATE` | `--events ... --by-feature` |
+| **Unknown Exec ID** | `--resolve {ID}` | `--list-debug` for debug log list |
+| **PM2 crash** | `--pm2 --pm2-type crash` | `--pm2 "ACCESS_VIOLATION"` |
+| **Search debug log** | `--debug-grep {ID} "pattern"` | `-i -C 3` for context |
+| **Cross-log search** | `--search "pattern" -i -C 3` | Searches all 4 log sources. `--after DATE` to narrow |
+| **Multi-pattern search** | `--search "F932" --or "F935"` | OR-join for multi-feature search |
+| **Category filter** | `--search "." --type claude` | claude/server/watcher/websocket/queue/chain |
 
-### Log Sources (4種類、全て自動検出)
+### Log Sources (4 types, all auto-detected)
 
-| Log | Path | 内容 |
-|-----|------|------|
-| App log | `~/.pm2/logs/dashboard-backend-out.log` | spawn, broadcast, chain, status 変更 |
+| Log | Path | Content |
+|-----|------|---------|
+| App log | `~/.pm2/logs/dashboard-backend-out.log` | spawn, broadcast, chain, status changes |
 | Error log | `~/.pm2/logs/dashboard-backend-error.log` | stderr (uncaught exceptions) |
-| PM2 system log | `~/.pm2/pm2.log` | プロセス restart/crash/exit code |
-| Debug log | `C:\Era\devkit\_out\tmp\dashboard\debug-{execId}.log` | 429 検出、CLI 内部エラー |
+| PM2 system log | `~/.pm2/pm2.log` | Process restart/crash/exit code |
+| Debug log | `C:\Era\devkit\_out\tmp\dashboard\debug-{execId}.log` | 429 detection, CLI internal errors |
 
 ### Tips
 
-- **`--resolve {ID}`**: Exec ID → Feature/Command 解決。API evict 後 (TTL 1h) も app log から検索可能
-- **`--list-debug --after DATE`**: debug log 一覧（サイズ、日時、Feature 自動解決付き）
-- **`--verbose`**: `--exec` と組み合わせると全ログイベントを表示。`--search` では max_matches=20 制限を解除
-- **`--width 0`**: 出力トランケーションを無効化
-- **`-C N`**: `--search` / `--debug-grep` でコンテキスト行を表示
-- **`--raw-log`**: VT escape / `[assistant]` changelog 行の自動除外を無効化
-- **`--type TYPE`**: ログカテゴリフィルタ（claude/server/watcher/websocket/queue/chain）
-- **`--or PATTERN`**: `--search` の OR 結合。複数指定可
-- **VERDICT**: `--exec` は自動で RATE_LIMITED / CONTEXT_LIMIT / USER_KILLED / NORMAL / INCOMPLETE / ERROR / UNKNOWN を判定
-- **Queue logging**: `claudeLog.info('[Queue] Queued/Dequeued ...')` が app log に出力。`--type queue` でフィルタ可能
-- **Queue STATE**: `[Queue] STATE {...}` が10分毎 (`_cleanupOldExecutions`) に出力。running/queued/chainSlots/waitingInput/inputIds を記録。`--queue-state` で表形式表示
-- **Queue COMPLETION**: `[Queue] COMPLETION {...}` が waitingForInput/inputRequired/chain 状態の実行完了時に出力
-- **History JSONL 拡充**: ccsProfile, resultSubtype, killedByUser, tokenUsage を記録（後方互換）
+- **`--resolve {ID}`**: Exec ID → Feature/Command resolution. Still searchable from app log after API evict (TTL 1h)
+- **`--list-debug --after DATE`**: Debug log list (size, timestamp, auto-resolved feature)
+- **`--verbose`**: Combined with `--exec` shows all log events. With `--search` removes max_matches=20 limit
+- **`--width 0`**: Disable output truncation
+- **`-C N`**: Show context lines with `--search` / `--debug-grep`
+- **`--raw-log`**: Disable VT escape / `[assistant]` changelog line auto-exclusion
+- **`--type TYPE`**: Log category filter (claude/server/watcher/websocket/queue/chain)
+- **`--or PATTERN`**: OR-join for `--search`. Multiple allowed
+- **VERDICT**: `--exec` auto-classifies as RATE_LIMITED / CONTEXT_LIMIT / USER_KILLED / NORMAL / INCOMPLETE / ERROR / UNKNOWN
+- **Queue logging**: `claudeLog.info('[Queue] Queued/Dequeued ...')` outputs to app log. Filter with `--type queue`
+- **Queue STATE**: `[Queue] STATE {...}` outputs every 10min (`_cleanupOldExecutions`). Records running/queued/chainSlots/waitingInput/inputIds. View as table with `--queue-state`
+- **Queue COMPLETION**: `[Queue] COMPLETION {...}` outputs on execution completion in waitingForInput/inputRequired/chain state
+- **History JSONL fields**: ccsProfile, resultSubtype, killedByUser, tokenUsage recorded (backward compatible)
 
 ---
 

@@ -66,13 +66,33 @@ function createMockClaudeService() {
       chain: { parentId: null, retryCount: 0, contextRetryCount: 0, history: [] },
       queuePosition: -1,
     })),
+    getQueueStatus: vi.fn(() => ({
+      maxConcurrent: 4,
+      runningCount: 0,
+      queuedCount: 0,
+      chainSlotCount: 0,
+      rateLimitRetryAt: null,
+      serverErrorRetryAt: null,
+      queued: [],
+      running: [],
+    })),
+    runLockFeatureId: null,
   };
 }
 
-function createApp(claudeService) {
+function createMockFeatureService() {
+  return {
+    getAllFeatures: vi.fn(() => ({
+      features: [],
+      index: { phases: [], recentlyCompleted: [] },
+    })),
+  };
+}
+
+function createApp(claudeService, featureService) {
   const app = express();
   app.use(express.json());
-  app.use('/api/execution', createExecutionRouter(claudeService));
+  app.use('/api/execution', createExecutionRouter(claudeService, featureService));
   return app;
 }
 
@@ -601,6 +621,176 @@ describe('Execution Routes', () => {
         '/api/execution/12345678-1234-1234-1234-123456789abc/diag',
       );
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('GET /status', () => {
+    it('returns 200 with expected shape', async () => {
+      const mock = createMockClaudeService();
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.executions)).toBe(true);
+      expect(Array.isArray(res.body.features)).toBe(true);
+      expect(res.body.queue).toBeDefined();
+      expect(res.body.queue.maxConcurrent).toBe(4);
+      expect(res.body.queue.runningCount).toBe(0);
+      expect(res.body.queue.queuedCount).toBe(0);
+      expect(res.body.queue.chainSlotCount).toBe(0);
+      expect(res.body.queue.rateLimitRetryAt).toBeNull();
+      expect(res.body.queue.serverErrorRetryAt).toBeNull();
+      expect(res.body.runLockFeatureId).toBeNull();
+    });
+
+    it('excludes completed and failed executions', async () => {
+      const mock = createMockClaudeService();
+      mock.listExecutions.mockReturnValue([
+        {
+          id: 'exec-running',
+          featureId: '100',
+          command: 'run',
+          status: 'running',
+          phase: 3,
+          phaseName: 'Implementation',
+          startedAt: '2026-03-20T10:00:00.000Z',
+          contextPercent: 42,
+          ccsProfile: 'apple',
+        },
+        {
+          id: 'exec-completed',
+          featureId: '200',
+          command: 'fl',
+          status: 'completed',
+          phase: null,
+          phaseName: null,
+          startedAt: '2026-03-20T09:00:00.000Z',
+          contextPercent: 80,
+          ccsProfile: 'apple',
+        },
+        {
+          id: 'exec-failed',
+          featureId: '300',
+          command: 'fc',
+          status: 'failed',
+          phase: null,
+          phaseName: null,
+          startedAt: '2026-03-20T08:00:00.000Z',
+          contextPercent: 20,
+          ccsProfile: 'apple',
+        },
+      ]);
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(res.body.executions).toHaveLength(1);
+      expect(res.body.executions[0].id).toBe('exec-running');
+    });
+
+    it('excludes [DONE] and [CANCELLED] features', async () => {
+      const mock = createMockClaudeService();
+      const featureMock = createMockFeatureService();
+      featureMock.getAllFeatures.mockReturnValue({
+        features: [
+          {
+            id: '978',
+            status: '[PROPOSED]',
+            name: 'Active feature',
+            phase: 'Phase 26',
+            pendingDeps: '',
+          },
+          {
+            id: '979',
+            status: '[DONE]',
+            name: 'Done feature',
+            phase: 'Phase 26',
+            pendingDeps: '',
+          },
+          {
+            id: '980',
+            status: '[CANCELLED]',
+            name: 'Cancelled feature',
+            phase: 'Phase 26',
+            pendingDeps: '',
+          },
+          {
+            id: '981',
+            status: '[DONE]',
+            name: 'Recently completed',
+            phase: 'Recently Completed',
+            pendingDeps: '',
+          },
+        ],
+        index: { phases: [], recentlyCompleted: [] },
+      });
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(res.body.features).toHaveLength(1);
+      expect(res.body.features[0].id).toBe('978');
+      expect(res.body.features[0].status).toBe('[PROPOSED]');
+    });
+
+    it('merges depBlocked from queue status into queued executions', async () => {
+      const mock = createMockClaudeService();
+      mock.listExecutions.mockReturnValue([
+        {
+          id: 'exec-queued',
+          featureId: '978',
+          command: 'run',
+          status: 'queued',
+          phase: null,
+          phaseName: null,
+          startedAt: '2026-03-20T10:00:00.000Z',
+          contextPercent: 0,
+          ccsProfile: 'apple',
+        },
+      ]);
+      mock.getQueueStatus.mockReturnValue({
+        maxConcurrent: 4,
+        runningCount: 0,
+        queuedCount: 1,
+        chainSlotCount: 0,
+        rateLimitRetryAt: null,
+        serverErrorRetryAt: null,
+        queued: [
+          {
+            id: 'exec-queued',
+            featureId: '978',
+            command: 'run',
+            depBlocked: true,
+            pendingDeps: ['F977'],
+          },
+        ],
+        running: [],
+      });
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(res.body.executions).toHaveLength(1);
+      expect(res.body.executions[0].depBlocked).toBe(true);
+      expect(res.body.executions[0].pendingDeps).toEqual(['F977']);
+    });
+
+    it('exposes runLockFeatureId when run lock is held', async () => {
+      const mock = createMockClaudeService();
+      mock.runLockFeatureId = '978';
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(res.body.runLockFeatureId).toBe('978');
+    });
+
+    it('works without featureService (returns empty features array)', async () => {
+      const mock = createMockClaudeService();
+      // No featureService passed
+      const app = createApp(mock, null);
+      const res = await request(app, 'GET', '/api/execution/status');
+      expect(res.status).toBe(200);
+      expect(res.body.features).toEqual([]);
     });
   });
 });

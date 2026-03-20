@@ -117,11 +117,12 @@ export class FileWatcher {
    */
   async start() {
     const watchPath = path.join(this.projectRoot, 'pm', 'features');
+    const indexPath = path.join(this.projectRoot, 'pm', 'index-features.md');
 
     // Initialize status cache before starting watch
     await this.initializeCache();
 
-    this.watcher = chokidar.watch(watchPath, {
+    this.watcher = chokidar.watch([watchPath, indexPath], {
       ignored: /(^|[/\\])\../, // ignore dotfiles
       persistent: true,
       ignoreInitial: true,

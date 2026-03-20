@@ -943,6 +943,29 @@ export class ClaudeService {
 
     this._broadcastQueueUpdate();
     this._broadcastState(execution);
+
+    // Sync active imp IDs so featureService can promote RC features with active /imp
+    this._syncActiveImpIds();
+  }
+
+  /**
+   * Sync active imp execution IDs to featureService.
+   * Called after execution starts or completes so featureService can promote
+   * recently-completed features with active /imp back to their phase section.
+   */
+  _syncActiveImpIds() {
+    if (!this.featureService) return;
+    const ids = [];
+    for (const exec of this.executions.values()) {
+      if (
+        exec.command === 'imp' &&
+        (exec.status === 'running' || exec.status === 'queued') &&
+        exec.featureId
+      ) {
+        ids.push(exec.featureId);
+      }
+    }
+    this.featureService.setActiveImpFeatureIds(ids);
   }
 
   /**
@@ -2121,6 +2144,9 @@ export class ClaudeService {
         )
         .catch(() => {});
     }
+
+    // Sync active imp IDs — execution status changed, update featureService promotion state
+    this._syncActiveImpIds();
 
     this._dequeueNext();
 

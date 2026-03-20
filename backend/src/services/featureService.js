@@ -12,6 +12,12 @@ export class FeatureService {
     this.featureParser = new FeatureParser();
     this.cache = null;
     this.cacheTime = 0;
+    this.activeImpFeatureIds = new Set();
+  }
+
+  setActiveImpFeatureIds(ids) {
+    this.activeImpFeatureIds = new Set(ids);
+    this.invalidateCache();
   }
 
   getIndex() {
@@ -53,17 +59,35 @@ export class FeatureService {
       }
     }
 
+    // Find the last numbered phase (highest phase.number) for promoted RC features
+    const lastPhase = index.phases
+      .filter((p) => p.number != null)
+      .sort((a, b) => b.number - a.number)[0];
+
     // Add recently completed
     for (const f of index.recentlyCompleted) {
-      features.push({
-        ...f,
-        phase: 'Recently Completed',
-        phaseName: '',
-        layer: '',
-        type: '',
-        progress: null,
-        dependencies: [],
-      });
+      if (this.activeImpFeatureIds.has(f.id) && lastPhase) {
+        // Feature has active /imp — promote back to the last phase section
+        features.push({
+          ...f,
+          phase: `Phase ${lastPhase.number}`,
+          phaseName: lastPhase.name,
+          layer: '',
+          type: '',
+          progress: null,
+          dependencies: [],
+        });
+      } else {
+        features.push({
+          ...f,
+          phase: 'Recently Completed',
+          phaseName: '',
+          layer: '',
+          type: '',
+          progress: null,
+          dependencies: [],
+        });
+      }
     }
 
     // Resolve dependsOn: remove completed dependencies

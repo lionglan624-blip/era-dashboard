@@ -407,6 +407,70 @@ describe('FeatureService', () => {
       expect(result.features[0].dependencies).toEqual([]);
     });
 
+    it('promotes RC feature with active imp to last phase section', () => {
+      const mockIndexData = {
+        phases: [
+          {
+            number: 1,
+            name: 'Phase 1',
+            layers: [{ name: 'Layer 1', features: [] }],
+          },
+          {
+            number: 5,
+            name: 'Final Phase',
+            layers: [{ name: 'Layer 5', features: [] }],
+          },
+        ],
+        recentlyCompleted: [
+          { id: '300', status: '[DONE]', name: 'Active Imp Feature', dependsOn: '', link: '' },
+          { id: '301', status: '[DONE]', name: 'Normal RC Feature', dependsOn: '', link: '' },
+        ],
+      };
+
+      mockIndexParser.parse.mockReturnValue(mockIndexData);
+
+      // Feature 300 has active /imp
+      service.setActiveImpFeatureIds(['300']);
+
+      const result = service.getAllFeatures();
+
+      expect(result.features).toHaveLength(2);
+
+      const f300 = result.features.find((f) => f.id === '300');
+      // Promoted to the last (highest-numbered) phase
+      expect(f300.phase).toBe('Phase 5');
+      expect(f300.phaseName).toBe('Final Phase');
+
+      const f301 = result.features.find((f) => f.id === '301');
+      // No active imp — stays in Recently Completed
+      expect(f301.phase).toBe('Recently Completed');
+      expect(f301.phaseName).toBe('');
+    });
+
+    it('keeps RC feature in Recently Completed when no active imp', () => {
+      const mockIndexData = {
+        phases: [
+          {
+            number: 3,
+            name: 'Phase 3',
+            layers: [{ name: 'Layer 3', features: [] }],
+          },
+        ],
+        recentlyCompleted: [
+          { id: '400', status: '[DONE]', name: 'No Imp Feature', dependsOn: '', link: '' },
+        ],
+      };
+
+      mockIndexParser.parse.mockReturnValue(mockIndexData);
+
+      // No active imp IDs set (default empty Set)
+      const result = service.getAllFeatures();
+
+      const f400 = result.features.find((f) => f.id === '400');
+      expect(f400.phase).toBe('Recently Completed');
+      expect(f400.phaseName).toBe('');
+    });
+
     it('caches result and updates cacheTime', () => {
       const beforeTime = Date.now();
       const mockIndexData = {

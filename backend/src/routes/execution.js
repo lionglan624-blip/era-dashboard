@@ -13,7 +13,7 @@ function sanitizeInput(input, maxLength = 10000) {
   return sanitized.substring(0, maxLength);
 }
 
-export function createExecutionRouter(claudeService) {
+export function createExecutionRouter(claudeService, featureService) {
   const router = Router();
 
   // Validate :id param as UUID format
@@ -287,6 +287,80 @@ export function createExecutionRouter(claudeService) {
       serverLog.error('Error clearing execution history:', err);
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // GET /api/status - Consolidated dashboard state for Claude Code curl queries
+  router.get('/status', (req, res) => {
+    // 1. Active executions (running + queued only)
+    const allExecs = claudeService.listExecutions();
+    const queueStatus = claudeService.getQueueStatus();
+
+    // Build depBlocked map from queue status
+    const queuedMap = new Map();
+    for (const q of queueStatus.queued) {
+      queuedMap.set(q.id, { depBlocked: q.depBlocked, pendingDeps: q.pendingDeps });
+    }
+
+    const executions = allExecs
+      .filter((e) => e.status === 'running' || e.status === 'queued')
+      .map((e) => {
+        const qInfo = queuedMap.get(e.id);
+        return {
+          id: e.id,
+          featureId: e.featureId,
+          command: e.command,
+          status: e.status,
+          phase: e.phase,
+          phaseName: e.phaseName,
+          startedAt: e.startedAt,
+          contextPercent: e.contextPercent,
+          ccsProfile: e.ccsProfile,
+          depBlocked: qInfo?.depBlocked || false,
+          pendingDeps: qInfo?.pendingDeps || [],
+        };
+      });
+
+    // 2. Active features (not done/cancelled, not Recently Completed)
+    const features = [];
+    if (featureService) {
+      try {
+        const { features: allFeatures } = featureService.getAllFeatures();
+        for (const f of allFeatures) {
+          if (
+            f.status !== '[DONE]' &&
+            f.status !== '[CANCELLED]' &&
+            f.phase !== 'Recently Completed'
+          ) {
+            features.push({
+              id: f.id,
+              status: f.status,
+              name: f.name,
+              phase: f.phase,
+              pendingDeps: f.pendingDeps,
+            });
+          }
+        }
+      } catch {
+        // featureService unavailable — return empty features array
+      }
+    }
+
+    // 3. Queue summary
+    const queue = {
+      maxConcurrent: queueStatus.maxConcurrent,
+      runningCount: queueStatus.runningCount,
+      queuedCount: queueStatus.queuedCount,
+      chainSlotCount: queueStatus.chainSlotCount,
+      rateLimitRetryAt: queueStatus.rateLimitRetryAt,
+      serverErrorRetryAt: queueStatus.serverErrorRetryAt,
+    };
+
+    res.json({
+      executions,
+      features,
+      queue,
+      runLockFeatureId: claudeService.runLockFeatureId || null,
+    });
   });
 
   // GET /api/execution - List all executions

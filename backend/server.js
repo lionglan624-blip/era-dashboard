@@ -360,7 +360,7 @@ app.use((req, res, next) => {
 
 // API routes
 app.use('/api/features', createFeaturesRouter(featureService));
-app.use('/api/execution', createExecutionRouter(claudeService));
+app.use('/api/execution', createExecutionRouter(claudeService, featureService));
 app.use('/api/deps', createDepsRouter(depUpdaterService));
 
 // Health check
