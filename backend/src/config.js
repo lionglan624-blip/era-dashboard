@@ -143,7 +143,7 @@ export const RATE_LIMIT_RETRY_BUFFER_MS = 60000; // 1 minute
 /** Threshold below which rate limit is considered safe for retry (percent) */
 export const RATE_LIMIT_SAFE_THRESHOLD = 95;
 
-/** Threshold (percent) at which auto-switch to a safe profile triggers */
+/** Threshold (percent) for safe profile filter (allocation and retry evaluation) */
 export const AUTO_SWITCH_THRESHOLD = 80;
 export function getAutoSwitchThreshold(nowMs = Date.now()) {
   return isPromoActive(nowMs) ? 95 : AUTO_SWITCH_THRESHOLD;

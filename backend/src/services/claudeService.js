@@ -2295,57 +2295,49 @@ export class ClaudeService {
 
     if (queueSize === 0) return;
 
-    // Re-capture to get fresh data
+    // Re-capture all profiles (queue entries may be on different profiles)
     try {
-      const profile = this.getCcsProfile();
-      await this.rateLimitService?.capture({ forceRefresh: true, profile });
+      await this.rateLimitService?.capture({ forceRefresh: true });
     } catch (err) {
       claudeLog.error(`[RateLimit] Re-capture failed: ${err.message}`);
     }
 
-    // Check if any profile is safe
-    const currentProfile = this.getCcsProfile();
-    const safeProfile = this.rateLimitService?.getSafeProfile(null); // Don't exclude any
-
-    if (safeProfile && safeProfile !== currentProfile) {
-      this._switchProfile(safeProfile);
-      claudeLog.info(`[RateLimit] Switched to ${safeProfile} for retry`);
+    // Per-entry evaluation: partition into safe vs exhausted by execution.ccsProfile
+    const cached = this.rateLimitService?.getCached();
+    const safeEntries = [];
+    const exhaustedEntries = [];
+    for (const entry of this._rateLimitRetryQueue) {
+      const p = entry.execution.ccsProfile;
+      const data = cached?.[p];
+      const maxPct = data
+        ? Math.max(data.weekly?.percent || 0, data.session?.percent || 0, data.sonnet?.percent || 0)
+        : 100;
+      if (maxPct < RATE_LIMIT_SAFE_THRESHOLD) {
+        safeEntries.push(entry);
+      } else {
+        exhaustedEntries.push(entry);
+      }
     }
 
-    // Verify the active profile is below threshold
-    const cached = this.rateLimitService?.getCached();
-    const activeProfile = this.getCcsProfile();
-    const activeData = cached?.[activeProfile];
-    const maxPercent = activeData
-      ? Math.max(activeData.weekly?.percent || 0, activeData.session?.percent || 0)
-      : 100; // Assume worst case if no data
-
-    if (maxPercent >= RATE_LIMIT_SAFE_THRESHOLD) {
-      // Still limited, give up on ALL entries
-      claudeLog.warn(
-        `[RateLimit] Still at ${maxPercent}% after scheduled retry. Giving up on ${queueSize} entries.`,
-      );
-
-      for (const entry of this._rateLimitRetryQueue) {
-        this._releaseChainSlot(entry.execution);
-        this._pushLog(entry.execution, {
-          line: `[Chain] Rate limit retry failed — still at ${maxPercent}%. Manual re-run needed.`,
-          timestamp: new Date().toISOString(),
-          level: 'error',
-        });
-      }
-
-      // Broadcast exhausted for the first entry (representative)
-      const firstExec = this._rateLimitRetryQueue[0].execution;
+    // Discard exhausted entries — release chain slots to prevent deadlock
+    for (const entry of exhaustedEntries) {
+      this._releaseChainSlot(entry.execution);
+      this._pushLog(entry.execution, {
+        line: `[Chain] Rate limit retry failed — profile ${entry.execution.ccsProfile} still exhausted. Manual re-run needed.`,
+        timestamp: new Date().toISOString(),
+        level: 'error',
+      });
+    }
+    if (exhaustedEntries.length > 0) {
+      const firstExec = exhaustedEntries[0].execution;
       this.logStreamer?.broadcastAll({
         type: 'rate-limit-exhausted',
         featureId: firstExec.featureId,
         command: firstExec.command,
-        percent: maxPercent,
-        queueSize,
+        profile: firstExec.ccsProfile,
+        queueSize: exhaustedEntries.length,
         timestamp: new Date().toISOString(),
       });
-
       const featureInfo =
         firstExec.featureId && this.featureService
           ? this.featureService.getFeature(firstExec.featureId)
@@ -2353,21 +2345,15 @@ export class ClaudeService {
       this.emailService
         ?.sendRateLimitExhaustedNotification(
           firstExec,
-          `Still at ${maxPercent}% after scheduled retry (${queueSize} queued)`,
+          `Profile ${firstExec.ccsProfile} still exhausted after scheduled retry (${exhaustedEntries.length} discarded)`,
           featureInfo,
         )
         .catch(() => {});
-
-      this._rateLimitRetryQueue.length = 0;
-      this._rateLimitRetryAt = null;
-      this._dequeueNext();
-      return;
     }
 
-    // Safe to retry — notify recovery and start draining queue
-    const firstEntry = this._rateLimitRetryQueue[0];
-    if (firstEntry) {
-      const recoveryExec = firstEntry.execution;
+    // Recovery email for safe entries
+    if (safeEntries.length > 0) {
+      const recoveryExec = safeEntries[0].execution;
       const recoveryFeatureInfo =
         recoveryExec.featureId && this.featureService
           ? this.featureService.getFeature(recoveryExec.featureId)
@@ -2376,7 +2362,16 @@ export class ClaudeService {
         ?.sendRateLimitRecoveredNotification(recoveryExec, recoveryFeatureInfo)
         .catch(() => {});
     }
-    this._processNextInQueue();
+
+    // Replace queue with safe entries, then process
+    this._rateLimitRetryQueue = safeEntries;
+    if (safeEntries.length > 0) {
+      this._processNextInQueue();
+    } else {
+      this._rateLimitRetryAt = null;
+      this._dequeueNext();
+    }
+    return;
   }
 
   /**

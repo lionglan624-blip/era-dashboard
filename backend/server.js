@@ -132,7 +132,6 @@ const claudeService = new ClaudeService(PROJECT_ROOT, logStreamer);
 const fileWatcher = new FileWatcher(PROJECT_ROOT, featureService, logStreamer);
 const rateLimitService = new RateLimitService(PROJECT_ROOT, {
   getProfiles: getCcsProfiles,
-  getActiveProfile: () => claudeService.getCcsProfile(),
   isProfileActive: (profile) => {
     const executions = claudeService.executions;
     for (const exec of executions.values()) {
@@ -147,34 +146,6 @@ const rateLimitService = new RateLimitService(PROJECT_ROOT, {
       if (exec && exec.ccsProfile === profile) return true;
     }
     return false;
-  },
-  onAutoSwitch: (safeProfile) => {
-    // Validate profile name against known profiles to prevent command injection
-    const profiles = getCcsProfiles();
-    if (!profiles.includes(safeProfile)) {
-      serverLog.error(`[Auto-Switch] Unknown profile: ${safeProfile}`);
-      return;
-    }
-    try {
-      execSync(`ccs auth default "${safeProfile}"`, {
-        timeout: 5000,
-        encoding: 'utf8',
-        windowsHide: true,
-        shell: true,
-      });
-      serverLog.info(`[Auto-Switch] Switched to ${safeProfile}`);
-    } catch (err) {
-      serverLog.error(`[Auto-Switch] Failed to switch to ${safeProfile}: ${err.message}`);
-    }
-    logStreamer.broadcastAll({
-      type: 'auto-switch',
-      safeProfile,
-      line: `[Auto-Switch] Rate limit ≥90% on active profile, switched to ${safeProfile}`,
-      level: 'info',
-      timestamp: new Date().toISOString(),
-    });
-    // Shorten refresh intervals after profile switch (new profile may need sooner refresh)
-    rateLimitService.recomputeRefreshTimes();
   },
 });
 

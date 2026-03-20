@@ -38,7 +38,7 @@ Tracks CCS **profile-level** usage (weekly/session/sonnet — API quota limits, 
 
 **Recovery** (queue-based: all executions, chain and non-chain):
 Multiple concurrent 429 failures are queued in `_rateLimitRetryQueue` and drained sequentially:
-1. First entry: try auto-switch to safe profile → immediate retry after 5s. If no safe profile → timed retry at earliest `resetsAt` + 1min buffer
+1. First entry: try per-execution profile switch (Strategy 1) → immediate retry after 5s. If no safe profile → timed retry at earliest `resetsAt` + 1min buffer
 2. Subsequent entries: queued behind first entry (no duplicate timers/switches)
 3. After each retry completes (non-429), next queue entry starts after 5s delay
 4. If retry itself hits 429: re-queued at **front** of queue (unshift via `_rateLimitQueueContinue`), strategy restarted if no active timer
@@ -67,15 +67,13 @@ exhausted, loops indefinitely (~5s intervals, observed 37 iterations in F886 FL 
 
 **CLI 429 not in streams**: Claude CLI writes `rate_limit_error` to `--debug-file` only, not to stdout/stderr stream-json. CLI emits `result { subtype: 'success', is_error: true }` for 429, same pattern as context exhaustion. Dashboard uses **two-pass debug log scan**: (1) immediate `readFileSync` at process `close` event, (2) deferred 500ms re-scan if immediate scan fails (Windows file lock / flush timing). Deferred detection cancels any in-flight context retry timer and routes to rate limit retry instead. If CLI changes to emit 429 in streams, the stderr/non-JSON detection will catch it first and the debug scan becomes redundant (harmless).
 
-## Auto-Switch Details
+## Auto-Switch Details (Removed)
 
-When active profile reaches ≥80% on any rate limit type (weekly/session/sonnet):
+Global auto-switch (`_checkAutoSwitch` + `onAutoSwitch`) was removed after round-robin profile allocation made the global default profile meaningless. Replacement:
 
-- `_checkAutoSwitch` fires `onAutoSwitch(safeProfile)` → runs `ccs auth default "<safeProfile>"`
-- **Trigger**: Every `capture()` completion
-- **Purpose**: Prevent 429 before it happens
-- **Config**: `AUTO_SWITCH_THRESHOLD` in `config.js`
-- **WS event**: `auto-switch`
+- **Allocation filter**: `_allocateProfile()` in claudeService.js skips profiles ≥80% (`getSafeProfile`)
+- **429 recovery**: Per-execution Strategy 1 switches to a safe profile on rate limit hit
+- **Retry queue**: `_processRateLimitQueue` evaluates per-entry profile usage, discarding exhausted entries
 
 ---
 
@@ -189,12 +187,7 @@ Captures Claude Code's exact usage percentages via `/usage` slash command throug
 
 **Helpers**: `getEarliestResetTime()` — earliest reset across all profiles (for timed retry). `getSafeProfile(excludeProfile)` — profile below 90% (for switch retry). Capture time: ~7-10s per profile.
 
-**Auto-switch (`ratelimitService.js` + `server.js`)**: Proactive profile switching to prevent 429.
-- `_checkAutoSwitch()` runs after every `capture()` completion
-- When active profile reaches ≥`AUTO_SWITCH_THRESHOLD` (80%, in `config.js`) on any rate limit type and another profile is below threshold → fires `onAutoSwitch(safeProfile)`
-- server.js callback validates `safeProfile` against `getCcsProfiles()` (command injection prevention) → `ccs auth default "<safeProfile>"`
-- Next spawned claude.exe picks up new profile via `getCcsProfile()` → `CLAUDE_CONFIG_DIR`
-- WS event: `auto-switch` with `safeProfile` field
+**Auto-switch (removed)**: Global `_checkAutoSwitch` + `onAutoSwitch` removed — see [Auto-Switch Details (Removed)](#auto-switch-details-removed). Profile filtering now handled by `_allocateProfile()` and per-execution 429 Strategy 1.
 
 ## Rate Limit Retry (`claudeService.js`)
 
@@ -207,7 +200,7 @@ When an execution hits 429, `_scheduleRateLimitRetry()` attempts recovery:
 **Strategy 2 (timed — wait for reset)**:
 - `rateLimitService.getEarliestResetTime()` → schedule timer at `resetTime + RATE_LIMIT_RETRY_BUFFER_MS` (1min)
 - Queue blocks `_dequeueNext()` via `_rateLimitPaused` getter (`queue.length > 0`)
-- On timer: `_processRateLimitQueue()` re-captures rate limits, checks safe (< `RATE_LIMIT_SAFE_THRESHOLD` 95%), drains queue sequentially or gives up on all entries
+- On timer: `_processRateLimitQueue()` re-captures all profiles, evaluates per-entry by `execution.ccsProfile` (< `RATE_LIMIT_SAFE_THRESHOLD` 95%), discards exhausted entries and drains safe entries sequentially
 
 **Queue-based retry**: Multiple concurrent 429s are queued in `_rateLimitRetryQueue`. First entry triggers Strategy 1/2. Subsequent entries queue behind. After each retry completes, `_processNextInQueue()` starts next entry with 5s delay. Killed/cancelled entries are skipped.
 
@@ -237,7 +230,7 @@ The word "session" appears in two unrelated contexts:
 **Rate limit retry** (all executions — queue-based):
 - `_scheduleRateLimitRetry()`: queues execution; first entry triggers (1) profile switch or (2) timed retry
 - `_rateLimitPaused` getter (`queue.length > 0`) blocks dequeue
-- `_processRateLimitQueue()` re-captures before retry; gives up on all entries if still ≥95%
+- `_processRateLimitQueue()` re-captures all profiles; evaluates per-entry by `execution.ccsProfile`, discards exhausted entries
 - Sequential drain: `_processNextInQueue()` pops entries with 5s delay between retries
 
 ---

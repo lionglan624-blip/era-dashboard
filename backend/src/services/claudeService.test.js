@@ -7128,7 +7128,9 @@ describe('Scenario Tests', () => {
       service._processNextInQueue = vi.fn();
 
       const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      exec1.ccsProfile = 'default';
       const exec2 = createRunningChainExecution(service, { command: 'fl', featureId: '200' });
+      exec2.ccsProfile = 'default';
       service._rateLimitRetryQueue.push(
         { execution: exec1, queuedAt: Date.now() },
         { execution: exec2, queuedAt: Date.now() },
@@ -7173,14 +7175,13 @@ describe('Scenario Tests', () => {
         .mockResolvedValue(undefined);
 
       const exec1 = createRunningChainExecution(service, { command: 'fc', featureId: '100' });
+      exec1.ccsProfile = 'profile-b';
       service._rateLimitRetryQueue.push({ execution: exec1, queuedAt: Date.now() });
 
-      // getSafeProfile returns a safe profile → percent will be below threshold
-      service.rateLimitService.getSafeProfile.mockReturnValue('profile-b');
+      // getCached returns data showing profile-b is safe (below threshold)
       service.rateLimitService.getCached = vi.fn().mockReturnValue({
         'profile-b': { weekly: { percent: 50 }, session: { percent: 40 } },
       });
-      service.getCcsProfile.mockReturnValue('profile-b');
 
       await service._processRateLimitQueue();
 

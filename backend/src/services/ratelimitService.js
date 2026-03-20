@@ -28,15 +28,10 @@ export class RateLimitService {
    * @param {function} [options.ptySpawn] - Optional pty.spawn function for testing
    * @param {function(string): boolean} [options.isProfileActive] - Function returning true when the given profile has running/queued executions
    */
-  constructor(
-    projectRoot,
-    { getProfiles, ptySpawn, getActiveProfile, onAutoSwitch, isProfileActive } = {},
-  ) {
+  constructor(projectRoot, { getProfiles, ptySpawn, isProfileActive } = {}) {
     this.projectRoot = projectRoot;
     this.getProfiles = getProfiles || (() => []);
     this._ptySpawn = ptySpawn || null;
-    this._getActiveProfile = getActiveProfile || (() => null);
-    this._onAutoSwitch = onAutoSwitch || null;
     this._isProfileActive = isProfileActive || (() => false);
     this._cache = new Map(); // Map<profileName, { data, timestamp, expiresAt, refreshAt }>
     this._capturing = false; // Prevent concurrent captures
@@ -157,7 +152,6 @@ export class RateLimitService {
       }
 
       const cached = this.getCached();
-      this._checkAutoSwitch(cached);
       this._scheduleExpiryCapture();
       return cached;
     } finally {
@@ -871,51 +865,6 @@ export class RateLimitService {
     claudeLog.info(
       `[RateLimit] Expiry capture scheduled in ${Math.round(delay / 1000)}s (${new Date(earliest).toISOString()})`,
     );
-  }
-
-  /**
-   * Check if active profile should auto-switch due to rate limit.
-   * Triggers onAutoSwitch callback when:
-   * - Active profile has weekly or session >= AUTO_SWITCH_THRESHOLD
-   * - At least one other profile is below AUTO_SWITCH_THRESHOLD on both weekly and session
-   * @param {Object|null} cached - Cached rate limit data by profile
-   */
-  _checkAutoSwitch(cached) {
-    if (!this._onAutoSwitch || !cached) return;
-
-    const activeProfile = this._getActiveProfile();
-    if (!activeProfile) return;
-
-    const activeData = cached[activeProfile];
-    if (!activeData) return;
-
-    const activeMax = Math.max(
-      activeData.weekly?.percent || 0,
-      activeData.session?.percent || 0,
-      activeData.sonnet?.percent || 0,
-    );
-    if (activeMax < getAutoSwitchThreshold()) return;
-
-    // Find any profile below getAutoSwitchThreshold()
-    const profiles = this.getProfiles();
-    const safeProfile = profiles.find((p) => {
-      if (p === activeProfile) return false;
-      const data = cached[p];
-      if (!data) return true; // No data = below 75% capture threshold = safe
-      const pMax = Math.max(
-        data.weekly?.percent || 0,
-        data.session?.percent || 0,
-        data.sonnet?.percent || 0,
-      );
-      return pMax < getAutoSwitchThreshold();
-    });
-
-    if (safeProfile) {
-      claudeLog.info(
-        `[RateLimit] Auto-switch: ${activeProfile} at ${activeMax}%, safe profile: ${safeProfile}`,
-      );
-      this._onAutoSwitch(safeProfile);
-    }
   }
 }
 
