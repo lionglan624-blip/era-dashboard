@@ -103,8 +103,11 @@ function buildTree(features, runningFeatures) {
   // Build dependency map: childId -> [parentIds]
   const rawDepsMap = new Map();
   for (const f of active) {
-    if (f.pendingDeps) {
-      const parentIds = f.pendingDeps
+    // Use dependsOn (raw deps) for tree hierarchy, not pendingDeps (unresolved only).
+    // This keeps [DONE]+running parents as tree parents instead of making children roots.
+    const depsSource = f.dependsOn || '';
+    if (depsSource) {
+      const parentIds = depsSource
         .split(',')
         .map((d) => d.trim().replace(/\D/g, ''))
         .filter(Boolean);
@@ -130,9 +133,14 @@ function buildTree(features, runningFeatures) {
     }
   }
 
-  // Find roots: no pending dependencies, sorted by ID ascending
+  // Find roots: features with no deps, or whose dep parents are all outside the active set
+  // (e.g., [DONE] parent without a running session). Use rawDepsMap (pre-reduction).
+  const activeIds = new Set(active.map((f) => f.id));
   const roots = active
-    .filter((f) => !f.pendingDeps || f.pendingDeps.trim() === '')
+    .filter((f) => {
+      const rawParents = rawDepsMap.get(f.id) || [];
+      return rawParents.length === 0 || rawParents.every((pid) => !activeIds.has(pid));
+    })
     .sort((a, b) => Number(a.id) - Number(b.id));
 
   // Build tree recursively

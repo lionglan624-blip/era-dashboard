@@ -10,6 +10,7 @@ function createFeature(overrides = {}) {
     name: 'Test Feature',
     status: '[PROPOSED]',
     pendingDeps: '',
+    dependsOn: '',
     type: 'kojo',
     progress: null,
     ...overrides,
@@ -121,7 +122,7 @@ describe('TreeView', () => {
     it('renders children indented (depth > 0 shows └─ prefix)', () => {
       const features = [
         createFeature({ id: '100', name: 'Parent' }),
-        createFeature({ id: '101', name: 'Child', pendingDeps: 'F100' }),
+        createFeature({ id: '101', name: 'Child', pendingDeps: 'F100', dependsOn: 'F100' }),
       ];
       const props = createTreeProps(features);
       const { container } = render(<TreeView {...props} />);
@@ -144,6 +145,29 @@ describe('TreeView', () => {
       expect(screen.queryByText('Done')).not.toBeInTheDocument();
     });
 
+    it('keeps [DONE]+running parent as tree parent for child with dependsOn', () => {
+      const features = [
+        createFeature({ id: '200', name: 'Done Parent', status: '[DONE]' }),
+        createFeature({
+          id: '201',
+          name: 'Active Child',
+          status: '[DRAFT]',
+          dependsOn: 'F200',
+          pendingDeps: '',
+        }),
+      ];
+      const runningFeatures = new Set(['200']); // imp running
+      const props = createTreeProps(features, { runningFeatures });
+      const { container } = render(<TreeView {...props} />);
+
+      // Parent should be visible (DONE but running)
+      expect(screen.getByText('Done Parent')).toBeInTheDocument();
+      // Child should be nested under parent (branch prefix)
+      const childNode = screen.getByText('Active Child').closest('.tree-node');
+      const branchSpan = childNode.querySelector('.tree-branch');
+      expect(branchSpan).toHaveTextContent('└─');
+    });
+
     it('filters out [CANCELLED] features', () => {
       const features = [
         createFeature({ id: '100', name: 'Active', status: '[PROPOSED]' }),
@@ -159,8 +183,8 @@ describe('TreeView', () => {
     it('shows orphan features with ⟳ prefix (features with circular deps)', () => {
       // Create circular dependency: 100→101, 101→100
       const features = [
-        createFeature({ id: '100', pendingDeps: 'F101' }),
-        createFeature({ id: '101', pendingDeps: 'F100' }),
+        createFeature({ id: '100', pendingDeps: 'F101', dependsOn: 'F101' }),
+        createFeature({ id: '101', pendingDeps: 'F100', dependsOn: 'F100' }),
       ];
       const props = createTreeProps(features);
       const { container } = render(<TreeView {...props} />);
@@ -479,7 +503,7 @@ describe('TreeView', () => {
       // Child feature (depth > 0) should not show placeholder
       const features = [
         createFeature({ id: '100' }),
-        createFeature({ id: '101', pendingDeps: 'F100' }),
+        createFeature({ id: '101', pendingDeps: 'F100', dependsOn: 'F100' }),
       ];
       const props = createTreeProps(features);
       const { container } = render(<TreeView {...props} />);
