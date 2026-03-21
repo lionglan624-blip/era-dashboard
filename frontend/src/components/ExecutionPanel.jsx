@@ -64,6 +64,16 @@ export default function ExecutionPanel({
 
   const panelStyle = { top: `${headerHeight || 100}px` };
 
+  // Auto-focus first visible tab when activeId doesn't match any visible execution
+  const activeMatchesVisible =
+    activeId && visibleExecs.some((e) => (e.executionId || e.id) === activeId);
+  useEffect(() => {
+    if (visibleExecs.length > 0 && !activeMatchesVisible) {
+      const firstId = visibleExecs[0].executionId || visibleExecs[0].id;
+      onSelectExecution(firstId);
+    }
+  }, [visibleExecs.length, activeMatchesVisible, onSelectExecution]);
+
   const handleOpenHistory = () => {
     setShowHistory(true);
     onOpenHistory?.();
@@ -119,7 +129,7 @@ export default function ExecutionPanel({
     );
   }
 
-  const activeExec = executions.get(activeId) || visibleExecs[0];
+  const activeExec = (activeMatchesVisible && executions.get(activeId)) || visibleExecs[0];
   if (!activeExec) return null;
 
   const execId = activeExec.executionId || activeExec.id;
