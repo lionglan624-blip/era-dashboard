@@ -243,6 +243,8 @@ export class EmailService {
         return 'rate-limit-recovered';
       case 'rate-limit-exhausted':
         return 'rate-limit-exhausted';
+      case 'stale-timeout':
+        return 'incomplete (waiter timeout)';
       default:
         return result;
     }

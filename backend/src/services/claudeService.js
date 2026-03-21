@@ -614,7 +614,16 @@ export class ClaudeService {
       if (stalledExec) this._releaseChainSlot(stalledExec);
       if (stalledExec) {
         const chainHistory = stalledExec.chain?.history || [];
-        const finalHistory = [...chainHistory, { command: stalledExec.command, result: 'ok' }];
+        const currentStatus = this.fileWatcher?.statusCache.get(stalledExec.featureId);
+        const expectedSt = EXPECTED_STATUS_AFTER_COMMAND[stalledExec.command];
+        const actualResult =
+          currentStatus === expectedSt || isStatusBeyond(currentStatus, expectedSt)
+            ? 'ok'
+            : 'stale-timeout';
+        const finalHistory = [
+          ...chainHistory,
+          { command: stalledExec.command, result: actualResult },
+        ];
         const featureInfo =
           stalledExec.featureId && this.featureService
             ? this.featureService.getFeature(stalledExec.featureId)
@@ -1977,7 +1986,12 @@ export class ClaudeService {
     // Applies to any command with an expected status mapping (fc, fl, run).
     let incompleteRetryExhausted = false;
     const expectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
-    if (chainContinues && !isLastChainStep && expectedStatus && !execution._hadInputWait) {
+    if (
+      chainContinues &&
+      !isLastChainStep &&
+      expectedStatus &&
+      (!execution._hadInputWait || execution._resumedAnswer)
+    ) {
       const currentStatus = this.fileWatcher?.statusCache.get(execution.featureId);
       if (
         currentStatus &&
@@ -2112,7 +2126,7 @@ export class ClaudeService {
         isDraftAfterFl) &&
       !execution.waitingForInput &&
       !execution.inputRequired &&
-      !execution._hadInputWait
+      (!execution._hadInputWait || execution._resumedAnswer)
     ) {
       // Chain complete (last step), chain stopped, or non-chain execution - send email
       // Skip if waiting for user input or had input-wait — input-wait email already sent

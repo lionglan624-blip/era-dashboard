@@ -5112,6 +5112,8 @@ describe('ClaudeService', () => {
     it('removes stale chain waiters past timeout and sends email', () => {
       const { service } = createService();
       service.emailService = { sendCompletionNotification: vi.fn().mockResolvedValue() };
+      // Set status to [PROPOSED] (expected after fc) so result is 'ok'
+      service.fileWatcher = { statusCache: new Map([['200', '[PROPOSED]']]) };
 
       const execution = service._createExecution({
         featureId: '200',
@@ -5136,6 +5138,72 @@ describe('ClaudeService', () => {
         'completed',
         0,
         [{ command: 'fc', result: 'ok' }],
+        null,
+      );
+    });
+
+    it('stale waiter cleanup sends stale-timeout result when status not DONE', () => {
+      const { service } = createService();
+      service.emailService = { sendCompletionNotification: vi.fn().mockResolvedValue() };
+      // Status is still [WIP] (run didn't reach [DONE])
+      service.fileWatcher = { statusCache: new Map([['200', '[WIP]']]) };
+
+      const execution = service._createExecution({
+        featureId: '200',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'completed';
+      execution.exitCode = 0;
+      execution.chain = { enabled: true, retryCount: 0, history: [] };
+      service.executions.set(execution.id, execution);
+
+      service.chainExecutor.chainWaiters.set('200', {
+        executionId: execution.id,
+        registeredAt: Date.now() - 600000,
+      });
+
+      service._cleanupOldExecutions();
+
+      expect(service.chainExecutor.chainWaiters.has('200')).toBe(false);
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        execution,
+        'completed',
+        0,
+        [{ command: 'run', result: 'stale-timeout' }],
+        null,
+      );
+    });
+
+    it('stale waiter cleanup sends ok result when status is DONE', () => {
+      const { service } = createService();
+      service.emailService = { sendCompletionNotification: vi.fn().mockResolvedValue() };
+      // Status is [DONE] — run completed successfully
+      service.fileWatcher = { statusCache: new Map([['200', '[DONE]']]) };
+
+      const execution = service._createExecution({
+        featureId: '200',
+        command: 'run',
+        chain: true,
+      });
+      execution.status = 'completed';
+      execution.exitCode = 0;
+      execution.chain = { enabled: true, retryCount: 0, history: [] };
+      service.executions.set(execution.id, execution);
+
+      service.chainExecutor.chainWaiters.set('200', {
+        executionId: execution.id,
+        registeredAt: Date.now() - 600000,
+      });
+
+      service._cleanupOldExecutions();
+
+      expect(service.chainExecutor.chainWaiters.has('200')).toBe(false);
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        execution,
+        'completed',
+        0,
+        [{ command: 'run', result: 'ok' }],
         null,
       );
     });
@@ -6161,8 +6229,10 @@ describe('Scenario Tests', () => {
       expect(exec._resumedAnswer).toBe(true);
 
       // Step 5: Resumed process completes — registers chain waiter
+      // Status advanced to [PROPOSED] (fc succeeded), so no incomplete retry fires
       exec.status = 'running';
       exec.resultSubtype = 'success';
+      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
       service._handleCompletion(exec, 0);
       expect(registerSpy).toHaveBeenCalledTimes(1);
     });
@@ -6200,6 +6270,45 @@ describe('Scenario Tests', () => {
 
       // Email should NOT be sent because _hadInputWait is true
       expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+    });
+
+    it('auto-answer resume enables incomplete retry when status not advanced', () => {
+      vi.useFakeTimers();
+      try {
+        const { service } = createScenarioService();
+        service.fileWatcher.statusCache.set('100', '[WIP]');
+        const exec = createRunningChainExecution(service, { command: 'run' });
+        exec._hadInputWait = true;
+        exec._resumedAnswer = true;
+        exec.resultSubtype = 'success';
+
+        service._handleCompletion(exec, 0);
+        vi.advanceTimersByTime(5000);
+
+        // Incomplete retry should fire despite _hadInputWait because _resumedAnswer=true
+        expect(service.executeCommand).toHaveBeenCalledWith(
+          '100',
+          'run',
+          expect.objectContaining({ incompleteRetryCount: 1 }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('auto-answer resume enables completion email', () => {
+      const { service } = createScenarioService();
+      // Last chain step (imp) so chain doesn't continue — email should be sent
+      const exec = createRunningChainExecution(service, { command: 'imp' });
+      exec._hadInputWait = true;
+      exec._resumedAnswer = true;
+      exec.resultSubtype = 'success';
+      exec.debugLogPath = null;
+
+      service._handleCompletion(exec, 0);
+
+      // Email should be sent because _resumedAnswer bypasses _hadInputWait guard
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalled();
     });
   });
 
