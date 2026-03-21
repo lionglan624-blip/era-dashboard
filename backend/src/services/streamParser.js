@@ -1,4 +1,5 @@
 import { claudeLog } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 import { DEFAULT_CONTEXT_WINDOW, PENDING_HANDOFF_TIMEOUT_MS } from '../config.js';
 import { INPUT_WAIT_PATTERNS } from './inputPatterns.js';
 import { detectPhase, detectIteration, getTotalPhases } from './phaseUtils.js';
@@ -54,7 +55,7 @@ export class StreamParser {
 
   _pushToRingBuffer(executionId, text, source) {
     const buf = this._getRingBuffer(executionId);
-    buf.push({ text: text.substring(0, 500), source, timestamp: new Date().toISOString() });
+    buf.push({ text: text.substring(0, 500), source, timestamp: nowJSTISO() });
     if (buf.length > this.RING_BUFFER_SIZE) {
       buf.shift();
     }
@@ -86,7 +87,7 @@ export class StreamParser {
         this._pushToRingBuffer(executionId, displayLine, event.type || 'unknown');
         const entry = {
           line: displayLine,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
           level: 'info',
           event: event.type,
         };
@@ -179,7 +180,7 @@ export class StreamParser {
       }
       const entry = {
         line: trimmed,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'info',
       };
       this.pushLog(execution, entry);
@@ -260,7 +261,7 @@ export class StreamParser {
 
             const entry = {
               line: `[Subagent] Started (depth=${execution.taskDepth}): ${label}`,
-              timestamp: new Date().toISOString(),
+              timestamp: nowJSTISO(),
               level: 'info',
             };
             this.pushLog(execution, entry);
@@ -325,7 +326,7 @@ export class StreamParser {
 
             const entry = {
               line: `[Subagent] Completed${durStr}`,
-              timestamp: new Date().toISOString(),
+              timestamp: nowJSTISO(),
               level: 'info',
             };
             this.pushLog(execution, entry);
@@ -433,7 +434,7 @@ export class StreamParser {
       }
       const entry = {
         line: `[System Error] ${event.error}`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'error',
       };
       this.pushLog(execution, entry);

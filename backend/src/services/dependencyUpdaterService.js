@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from '../utils/logger.js';
+import { nowJSTISO, toJSTISO } from '../utils/timeUtils.js';
 import {
   UPDATE_COMMAND_TIMEOUT_MS,
   UPDATE_TEST_TIMEOUT_MS,
@@ -219,7 +220,7 @@ export class DependencyUpdaterService {
   _scheduleDailyNext() {
     const ms = this._msUntilNext0600JST();
     const nextDate = new Date(Date.now() + ms);
-    log.info(`[Daily] Next: ${nextDate.toISOString()} (in ${Math.round(ms / 3600000)}h)`);
+    log.info(`[Daily] Next: ${toJSTISO(nextDate)} (in ${Math.round(ms / 3600000)}h)`);
     this._dailyTimeout = setTimeout(() => {
       this._dailyTimeout = null;
       log.info('[Daily] Triggered');
@@ -232,7 +233,7 @@ export class DependencyUpdaterService {
   _scheduleWeeklyNext() {
     const ms = this._msUntilNextMonday0630JST();
     const nextDate = new Date(Date.now() + ms);
-    log.info(`[Weekly] Next: ${nextDate.toISOString()} (in ${Math.round(ms / 3600000)}h)`);
+    log.info(`[Weekly] Next: ${toJSTISO(nextDate)} (in ${Math.round(ms / 3600000)}h)`);
     this._weeklyTimeout = setTimeout(() => {
       this._weeklyTimeout = null;
       log.info('[Weekly] Triggered');
@@ -246,7 +247,7 @@ export class DependencyUpdaterService {
   _scheduleMonthlyNext() {
     const ms = this._msUntilNextFirst0600JST();
     const nextDate = new Date(Date.now() + ms);
-    log.info(`[Monthly] Next: ${nextDate.toISOString()} (in ${Math.round(ms / 3600000)}h)`);
+    log.info(`[Monthly] Next: ${toJSTISO(nextDate)} (in ${Math.round(ms / 3600000)}h)`);
     this._monthlyTimeout = setTimeout(() => {
       this._monthlyTimeout = null;
       log.info('[Monthly] Triggered');
@@ -359,7 +360,7 @@ export class DependencyUpdaterService {
       // All per-tier emails suppressed — weekly summary only
     } finally {
       this._running.set(tierName, false);
-      this._lastResults.set(tierName, { timestamp: new Date().toISOString(), results });
+      this._lastResults.set(tierName, { timestamp: nowJSTISO(), results });
       this._saveResults();
     }
     return results;
@@ -477,7 +478,7 @@ export class DependencyUpdaterService {
     if (item.triggerRestart) {
       log.info(`[${item.name}] Triggering restart (process.exit for PM2 autorestart)`);
       // Save results synchronously before exit
-      this._lastResults.set('monthly', { timestamp: new Date().toISOString(), results: [result] });
+      this._lastResults.set('monthly', { timestamp: nowJSTISO(), results: [result] });
       this._saveResultsSync();
       // Small delay to allow email send to complete
       await new Promise((r) => setTimeout(r, 1000));
@@ -609,7 +610,7 @@ export class DependencyUpdaterService {
       sections.push(`<b>${tier}</b> (${entry.timestamp.slice(0, 10)})\n${lines.join('\n')}`);
     }
 
-    const subject = `[Dep-Summary] Weekly — ${new Date().toISOString().slice(0, 10)}`;
+    const subject = `[Dep-Summary] Weekly — ${nowJSTISO().slice(0, 10)}`;
     const html = `<pre style="font-family:monospace;font-size:14px">${sections.join('\n\n')}</pre>`;
     try {
       await this._emailService.sendHtml(subject, html);

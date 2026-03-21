@@ -1,5 +1,5 @@
 import { createLogger } from '../utils/logger.js';
-import { nowJST } from '../utils/timeUtils.js';
+import { nowJST, nowJSTISO } from '../utils/timeUtils.js';
 
 export class UpdateWatcherService {
   constructor({ emailService, logStreamer, claudeService, smokeTestService } = {}) {
@@ -211,7 +211,7 @@ ${changelog}
         version,
         impact: 'UNKNOWN',
         summary: 'Changelog extraction failed',
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }
     // No changelog = higher risk of undocumented changes — run smoke test

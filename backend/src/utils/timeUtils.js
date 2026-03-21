@@ -18,3 +18,26 @@ export function nowJST() {
   const s = String(jst.getUTCSeconds()).padStart(2, '0');
   return `${y}/${m}/${d} ${h}:${min}:${s} JST`;
 }
+
+/**
+ * Convert a Date (or current time) to ISO 8601 string with JST offset (+09:00).
+ * Output: "2026-03-21T18:44:00.123+09:00"
+ * Safe for new Date() parsing — epoch is preserved.
+ * @param {Date} [date] - Date to convert (defaults to new Date())
+ * @returns {string} ISO 8601 with +09:00 suffix
+ */
+export function toJSTISO(date) {
+  const d = date || new Date();
+  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return jst.toISOString().replace('Z', '+09:00');
+}
+
+/** Current time as JST ISO 8601 string. */
+export function nowJSTISO() {
+  return toJSTISO(new Date(Date.now()));
+}
+
+/** Convert epoch ms to JST ISO 8601 string. */
+export function msToJSTISO(ms) {
+  return toJSTISO(new Date(ms));
+}

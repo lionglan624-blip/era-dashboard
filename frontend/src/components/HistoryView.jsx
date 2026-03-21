@@ -22,8 +22,16 @@ function formatDuration(startedAt, completedAt) {
 function formatTimestamp(iso) {
   if (!iso) return '';
   const d = new Date(iso);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const p = new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Tokyo',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const g = (t) => p.find((x) => x.type === t)?.value;
+  return `${g('month')}/${g('day')} ${g('hour')}:${g('minute')}`;
 }
 
 export default function HistoryView({

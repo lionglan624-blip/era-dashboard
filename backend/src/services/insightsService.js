@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { claudeLog } from '../utils/logger.js';
+import { nowJSTISO, toJSTISO } from '../utils/timeUtils.js';
 import { CCS_INSTANCES_DIR } from '../config.js';
 
 const INSIGHTS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -123,7 +124,7 @@ export class InsightsService {
     }
     try {
       const html = fs.readFileSync(reportPath, 'utf8');
-      const date = new Date().toISOString().slice(0, 10);
+      const date = nowJSTISO().slice(0, 10);
       const subject = `[Insights] ${profile} ${date}`;
       await this._emailService.sendHtml(subject, html);
       claudeLog.info(`[Insights] Report emailed: ${subject}`);
@@ -277,7 +278,7 @@ export class InsightsService {
     const ms = this._msUntilNextMonday7JST();
     const nextDate = new Date(Date.now() + ms);
     claudeLog.info(
-      `[Insights] Next scheduled capture: ${nextDate.toISOString()} (in ${Math.round(ms / 3600000)}h)`,
+      `[Insights] Next scheduled capture: ${toJSTISO(nextDate)} (in ${Math.round(ms / 3600000)}h)`,
     );
     this._schedulerTimeout = setTimeout(() => {
       claudeLog.info('[Insights] Scheduled capture triggered (Monday 07:00 JST)');

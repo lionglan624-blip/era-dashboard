@@ -9,6 +9,7 @@ import {
 } from './claudeService.js';
 import { detectPhase, detectIteration, getTotalPhases, getDefaultPhaseName } from './phaseUtils.js';
 import { claudeLog } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 import { appendFileSync } from 'fs';
 
 // Mock fs.appendFileSync to capture history writes without touching the filesystem
@@ -5543,7 +5544,7 @@ describe('ClaudeService', () => {
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
 
-      const before = new Date().toISOString();
+      const before = nowJSTISO();
       const execution = service._createExecution({ featureId: '100', command: 'fl' });
       execution.status = 'running';
       execution.startedAt = new Date().toISOString();

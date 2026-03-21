@@ -9,6 +9,7 @@ import chokidar from 'chokidar';
 import path from 'path';
 import { readdir, readFile } from 'fs/promises';
 import { watcherLog } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 import { STATUS_DEBOUNCE_MS, FEATURE_UPDATE_DEBOUNCE_MS } from '../config.js';
 
 /**
@@ -201,7 +202,7 @@ export class FileWatcher {
           featureId,
           oldStatus,
           newStatus,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
         // Notify chain controller for auto-progression
         this.onStatusChanged?.(featureId, oldStatus, newStatus);
@@ -222,7 +223,7 @@ export class FileWatcher {
       this.onFeaturesUpdated?.();
       this.logStreamer?.broadcastAll({
         type: 'features-updated',
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }, FEATURE_UPDATE_DEBOUNCE_MS);
   }

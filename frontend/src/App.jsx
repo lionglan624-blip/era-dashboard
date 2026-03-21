@@ -437,7 +437,7 @@ export default function App() {
         addNotification({
           type: 'info',
           title: `F${msg.featureId} Rate Limit`,
-          message: `Waiting until ${new Date(msg.retryAt).toLocaleTimeString()} (${Math.round(msg.delayMs / 60000)}min)`,
+          message: `Waiting until ${new Date(msg.retryAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' })} (${Math.round(msg.delayMs / 60000)}min)`,
           featureId: msg.featureId,
           persistent: true,
         });
@@ -455,7 +455,7 @@ export default function App() {
         addNotification({
           type: 'info',
           title: `F${msg.featureId} Server Error (500/529)`,
-          message: `Retry ${msg.retryCount + 1}/${msg.maxRetries} at ${new Date(msg.retryAt).toLocaleTimeString()} (${Math.round(msg.delayMs / 60000)}min)`,
+          message: `Retry ${msg.retryCount + 1}/${msg.maxRetries} at ${new Date(msg.retryAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' })} (${Math.round(msg.delayMs / 60000)}min)`,
           featureId: msg.featureId,
           persistent: true,
         });

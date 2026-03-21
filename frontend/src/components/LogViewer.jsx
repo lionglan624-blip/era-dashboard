@@ -9,7 +9,9 @@ const LogLine = memo(function LogLine({ entry }) {
         entry.level === 'error' ? 'log-error' : entry.level === 'input' ? 'log-input' : ''
       }`}
     >
-      <span className="log-time">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+      <span className="log-time">
+        {new Date(entry.timestamp).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' })}
+      </span>
       <span className="log-text">{entry.line}</span>
     </div>
   );

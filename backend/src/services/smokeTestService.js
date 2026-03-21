@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createLogger } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 import {
   SMOKE_TEST_OVERALL_TIMEOUT_MS,
   SMOKE_CLI_TIMEOUT_MS,
@@ -93,7 +94,7 @@ export class SmokeTestService {
         duration,
         trigger: trigger || 'manual',
         version: version || null,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       };
 
       // Persist result to file
@@ -151,7 +152,7 @@ export class SmokeTestService {
         duration: 0,
         trigger: trigger || 'manual',
         version: version || null,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         error: err.message,
       };
     }
@@ -337,7 +338,7 @@ export class SmokeTestService {
         `<h2>Smoke Test Failed</h2>`,
         `<p>Version: ${version || 'unknown'}, Trigger: ${result.trigger || 'manual'}, Duration: ${Math.round(result.duration / 1000)}s</p>`,
         `<table border="1" cellpadding="4"><tr><th>Test</th><th>Status</th><th>Error</th><th>Action</th></tr>${rows}</table>`,
-        `<p style="color:#999;font-size:12px">${new Date().toISOString()}</p>`,
+        `<p style="color:#999;font-size:12px">${nowJSTISO()}</p>`,
       ].join('\n');
 
       this.emailService
@@ -352,7 +353,7 @@ export class SmokeTestService {
         version,
         failCount,
         failed: failed.map((f) => ({ name: f.name, error: f.error })),
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }
 
@@ -411,7 +412,7 @@ ${failDetails}
       `<p>Version: ${escape(result.version || 'unknown')}, Trigger: ${escape(result.trigger || 'manual')}</p>`,
       `<h3>Analysis</h3>`,
       `<pre style="white-space:pre-wrap">${escape(analysis)}</pre>`,
-      `<p style="color:#999;font-size:12px">${new Date().toISOString()}</p>`,
+      `<p style="color:#999;font-size:12px">${nowJSTISO()}</p>`,
     ].join('\n');
   }
 

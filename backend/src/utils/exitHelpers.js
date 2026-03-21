@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { serverLog } from './logger.js';
+import { nowJSTISO } from './timeUtils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +51,7 @@ export function setPm2UpdatePending(expectedVersion) {
     PM2_UPDATE_PENDING_PATH,
     JSON.stringify({
       expectedVersion,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     }),
   );
 }

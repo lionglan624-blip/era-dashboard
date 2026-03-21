@@ -19,6 +19,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 import readline from 'readline';
 import { serverLog } from '../utils/logger.js';
+import { nowJSTISO, toJSTISO, msToJSTISO } from '../utils/timeUtils.js';
 
 // CCS configuration (same constants as claudeService.js)
 const CCS_DIR =
@@ -336,8 +337,8 @@ export class UsageService {
     const estimatedPercent = (totalTokens / WEEKLY_LIMITS.allModels) * 100;
 
     return {
-      weekStart: weekStart.toISOString(),
-      weekEnd: weekEnd.toISOString(),
+      weekStart: toJSTISO(weekStart),
+      weekEnd: toJSTISO(weekEnd),
       tokensByModel,
       totalTokens,
       estimatedPercent: Math.min(estimatedPercent, 100),
@@ -365,7 +366,7 @@ export class UsageService {
     const estimatedPercent = (totalTokens / SESSION_LIMIT) * 100;
 
     return {
-      windowStart: windowStart.toISOString(),
+      windowStart: toJSTISO(windowStart),
       totalTokens,
       estimatedPercent: Math.min(estimatedPercent, 100),
     };
@@ -405,7 +406,7 @@ export class UsageService {
       const result = {
         session: {
           percent: session.estimatedPercent,
-          resetsAt: new Date(Date.now() + SESSION_WINDOW_HOURS * 60 * 60 * 1000).toISOString(),
+          resetsAt: msToJSTISO(Date.now() + SESSION_WINDOW_HOURS * 60 * 60 * 1000),
           totalTokens: session.totalTokens,
         },
         weekAll: {
@@ -419,7 +420,7 @@ export class UsageService {
           resetsAt: weekEnd,
           totalTokens: sonnetTokens,
         },
-        lastUpdated: new Date().toISOString(),
+        lastUpdated: nowJSTISO(),
         isEstimate: true,
       };
 

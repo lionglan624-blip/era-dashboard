@@ -10,6 +10,7 @@
  */
 
 import { claudeLog } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 
 /**
  * @typedef {Object} ChainWaiter
@@ -145,7 +146,7 @@ export class ChainExecutor {
 
         this.deps.pushLog(execution, {
           line: `[Chain] Status already ${currentStatus}, immediately starting ${nextCommand}...`,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
           level: 'info',
         });
 
@@ -180,7 +181,7 @@ export class ChainExecutor {
 
     this.deps.pushLog(execution, {
       line: `[Chain] Waiting for feature status change to trigger next step...`,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
       level: 'info',
     });
   }
@@ -290,7 +291,7 @@ export class ChainExecutor {
     this.deps.broadcastAll?.({
       type: 'chain-progress',
       ...data,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
   }
 }

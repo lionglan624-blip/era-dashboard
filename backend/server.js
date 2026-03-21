@@ -25,6 +25,7 @@ import { createFeaturesRouter } from './src/routes/features.js';
 import { createExecutionRouter } from './src/routes/execution.js';
 import { createDepsRouter } from './src/routes/deps.js';
 import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
+import { nowJSTISO } from './src/utils/timeUtils.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
 import { exitWithPm2Update } from './src/utils/exitHelpers.js';
 import {
@@ -54,7 +55,7 @@ function writeExitMarker(reason, extra = {}) {
     const data = {
       reason,
       pid: process.pid,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
       memory: {
         heapUsedMB: Math.round(mem.heapUsed / 1048576),
         heapTotalMB: Math.round(mem.heapTotal / 1048576),
@@ -232,7 +233,7 @@ function triggerAutoDR() {
     logStreamer.broadcastAll({
       type: 'auto-dr',
       message: 'Backend restarting (file change detected)',
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
     // Persist DR success to shell states so green button survives restart
     claudeService._setShellState('dr', true);
@@ -248,7 +249,7 @@ function triggerAutoDR() {
       logStreamer.broadcastAll({
         type: 'auto-dr-pending',
         message: 'Dashboard restart deferred (executions active)',
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }
     serverLog.info(

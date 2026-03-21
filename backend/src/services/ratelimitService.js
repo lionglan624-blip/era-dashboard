@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { claudeLog } from '../utils/logger.js';
+import { toJSTISO } from '../utils/timeUtils.js';
 import { VtScreenBuffer } from './vtScreenBuffer.js';
 import {
   RATE_LIMIT_CACHE_MS,
@@ -52,7 +53,7 @@ export class RateLimitService {
         if (entry.expiresAt > now) {
           this._cache.set(profile, entry);
           claudeLog.info(
-            `[RateLimit] Loaded cache for ${profile}: ${entry.data?.weekly?.percent ?? '-'}% weekly, ${entry.data?.session?.percent ?? '-'}% session, expires ${new Date(entry.expiresAt).toISOString()}`,
+            `[RateLimit] Loaded cache for ${profile}: ${entry.data?.weekly?.percent ?? '-'}% weekly, ${entry.data?.session?.percent ?? '-'}% session, expires ${toJSTISO(new Date(entry.expiresAt))}`,
           );
         }
       }
@@ -759,7 +760,7 @@ export class RateLimitService {
     this._saveCache();
     this._scheduleExpiryCapture();
     claudeLog.info(
-      `[RateLimit] Manual cache set for ${profile}: ${JSON.stringify(data)}, expiresAt: ${new Date(expiresAt).toISOString()}`,
+      `[RateLimit] Manual cache set for ${profile}: ${JSON.stringify(data)}, expiresAt: ${toJSTISO(new Date(expiresAt))}`,
     );
   }
 
@@ -821,7 +822,7 @@ export class RateLimitService {
         entry.refreshAt = newRefreshAt;
         changed = true;
         claudeLog.info(
-          `[RateLimit] Shortened refreshAt for ${profile} to ${new Date(newRefreshAt).toISOString()}`,
+          `[RateLimit] Shortened refreshAt for ${profile} to ${toJSTISO(new Date(newRefreshAt))}`,
         );
       }
     }
@@ -863,7 +864,7 @@ export class RateLimitService {
     }, delay);
 
     claudeLog.info(
-      `[RateLimit] Expiry capture scheduled in ${Math.round(delay / 1000)}s (${new Date(earliest).toISOString()})`,
+      `[RateLimit] Expiry capture scheduled in ${Math.round(delay / 1000)}s (${toJSTISO(new Date(earliest))})`,
     );
   }
 }

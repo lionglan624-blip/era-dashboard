@@ -1,4 +1,5 @@
 import { createLogger } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 import {
   CLAUDE_STATUS_POLL_INTERVAL_MS,
   CLAUDE_STATUS_URL,
@@ -79,7 +80,7 @@ export class ClaudeStatusService {
 
       this._cache = {
         components,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nowJSTISO(),
         worst,
       };
 

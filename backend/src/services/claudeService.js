@@ -17,6 +17,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import net from 'net';
 import { claudeLog } from '../utils/logger.js';
+import { nowJSTISO, toJSTISO, msToJSTISO } from '../utils/timeUtils.js';
 import { exitWithPm2Update } from '../utils/exitHelpers.js';
 import {
   STALL_TIMEOUT_MS,
@@ -69,7 +70,7 @@ const DEBUG = process.env.DASHBOARD_DEBUG === '1';
 const debugLog = DEBUG ? claudeLog.info.bind(claudeLog) : () => {};
 
 // Commands that bypass queue slot limit (lightweight, non-feature operations)
-const SLOT_EXEMPT_COMMANDS = new Set(['commit', 'sync-deps']);
+const SLOT_EXEMPT_COMMANDS = new Set(['commit', 'sync-deps', 'update-analysis']);
 
 // Maps feature status to the first command to run in the workflow
 const STATUS_TO_FIRST_COMMAND = {
@@ -323,7 +324,7 @@ export class ClaudeService {
 
   /** Set a shell command state and persist to disk */
   _setShellState(command, success) {
-    this.shellStates.set(command, { success, timestamp: new Date().toISOString() });
+    this.shellStates.set(command, { success, timestamp: nowJSTISO() });
     this._persistShellStates();
   }
 
@@ -360,7 +361,7 @@ export class ClaudeService {
       sessionId,
       featureId,
       command,
-      savedAt: new Date().toISOString(),
+      savedAt: nowJSTISO(),
     };
     // Prune entries older than 7 days
     const cutoff = Date.now() - 7 * 24 * 3600000;
@@ -571,7 +572,7 @@ export class ClaudeService {
           exec.activityCheckInterval = null;
         }
         exec.status = 'failed';
-        exec.completedAt = new Date().toISOString();
+        exec.completedAt = nowJSTISO();
         exec.process = null;
         this._releaseChainSlot(exec);
       }
@@ -819,7 +820,7 @@ export class ClaudeService {
           : runBlocked
             ? `Queued (position ${queuePos}). Waiting for running /run to complete...`
             : `Queued (position ${queuePos}). Waiting for slot...`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'info',
       });
       claudeLog.info(
@@ -838,7 +839,7 @@ export class ClaudeService {
       execution._debugPrompt || (featureId ? `/${command} ${featureId}` : `/${command}`);
 
     execution.status = 'running';
-    execution.startedAt = new Date().toISOString();
+    execution.startedAt = nowJSTISO();
     execution.lastOutputTime = Date.now();
     execution.ccsProfile = this._allocateProfile(execution.avoidProfile);
 
@@ -1066,7 +1067,7 @@ export class ClaudeService {
       }
       const entry = {
         line: `[stderr] ${line}`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: line.includes('ERROR') ? 'error' : 'debug',
       };
       this._pushLog(execution, entry);
@@ -1083,7 +1084,7 @@ export class ClaudeService {
       executionId: execution.id,
       pattern: description,
       text: text,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
     // Email notification: user input required (browser-first — replaces old handoff email)
     const featureInfo =
@@ -1150,7 +1151,7 @@ export class ClaudeService {
 
     const entry = {
       line: `[Handoff] ${reason} - Opening terminal for user input...`,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
       level: 'info',
     };
     this._pushLog(execution, entry);
@@ -1165,7 +1166,7 @@ export class ClaudeService {
       executionId: execution.id,
       reason: reason,
       sessionId: execution.sessionId,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
 
     const chainHistory = execution.chain?.history || [];
@@ -1343,7 +1344,7 @@ export class ClaudeService {
           type: 'stalled',
           executionId: execution.id,
           elapsed,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
       }
     }
@@ -1369,7 +1370,7 @@ export class ClaudeService {
       taskDepth: execution.taskDepth || 0,
       contextPercent: execution.contextPercent, // Context window usage percentage
       tokenUsage: execution.tokenUsage, // Full token usage details
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
 
     // Write context % to file for Context Pressure Gate (redundant: statusline.ps1 also writes per-turn)
@@ -1394,7 +1395,7 @@ export class ClaudeService {
       context: execution.inputContext,
       questions: execution.inputRequired?.questions || [],
       toolUseId: execution.inputRequired?.toolUseId,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
     // Email notification: AskUserQuestion requires user input (browser-first — replaces old handoff email)
     const featureInfo =
@@ -1556,7 +1557,7 @@ export class ClaudeService {
               line: scheduled
                 ? `[Chain] Account rate limit (429) detected (deferred). ${scheduled.message}`
                 : `[Chain] Account rate limit (429) detected (deferred). No retry possible.`,
-              timestamp: new Date().toISOString(),
+              timestamp: nowJSTISO(),
               level: 'warning',
             });
             this._broadcastState(execution);
@@ -1566,7 +1567,7 @@ export class ClaudeService {
               command: execution.command,
               executionId: execution.id,
               deferred: true,
-              timestamp: new Date().toISOString(),
+              timestamp: nowJSTISO(),
             });
           }
         }, 500);
@@ -1590,7 +1591,7 @@ export class ClaudeService {
       const retryCount = execution.chain?.serverErrorRetryCount || 0;
       if (retryCount < MAX_SERVER_ERROR_RETRIES) {
         execution.status = 'failed';
-        execution.completedAt = new Date().toISOString();
+        execution.completedAt = nowJSTISO();
         execution.exitCode = exitCode;
         execution.process = null;
         execution.stdin = null;
@@ -1624,7 +1625,7 @@ export class ClaudeService {
         );
         this._pushLog(execution, {
           line: `[Chain] Server error retries exhausted (${retryCount}/${MAX_SERVER_ERROR_RETRIES}). Manual re-run needed.`,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
           level: 'error',
         });
 
@@ -1634,7 +1635,7 @@ export class ClaudeService {
           command: execution.command,
           retryCount,
           maxRetries: MAX_SERVER_ERROR_RETRIES,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
 
         const featureInfo =
@@ -1695,7 +1696,7 @@ export class ClaudeService {
       );
 
       execution.status = 'failed';
-      execution.completedAt = new Date().toISOString();
+      execution.completedAt = nowJSTISO();
       execution.exitCode = exitCode;
       execution.process = null;
       execution.stdin = null;
@@ -1734,7 +1735,7 @@ export class ClaudeService {
           maxRetries: MAX_RETRIES,
           oldExecutionId: execution.id,
           newExecutionId: newExecId,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
       }, RETRY_DELAY_MS);
 
@@ -1772,7 +1773,7 @@ export class ClaudeService {
 
       // Mark current as completed-with-retry (for history)
       execution.status = 'failed';
-      execution.completedAt = new Date().toISOString();
+      execution.completedAt = nowJSTISO();
       execution.exitCode = exitCode;
       execution.process = null;
       execution.stdin = null;
@@ -1812,7 +1813,7 @@ export class ClaudeService {
         maxRetries: MAX_FL_RETRIES,
         oldExecutionId: execution.id,
         newExecutionId: newExecId,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
 
       this._broadcastState(execution);
@@ -1837,7 +1838,7 @@ export class ClaudeService {
 
       this._pushLog(execution, {
         line: `[Chain] FL retries exhausted (${execution.chain.retryCount}/${MAX_FL_RETRIES}). ${reason}`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'warning',
       });
 
@@ -1846,7 +1847,7 @@ export class ClaudeService {
         featureId: execution.featureId,
         retryCount: execution.chain.retryCount,
         maxRetries: MAX_FL_RETRIES,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }
 
@@ -1857,7 +1858,7 @@ export class ClaudeService {
         featureId: execution.featureId,
         command: execution.command,
         executionId: execution.id,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
     }
 
@@ -1865,7 +1866,7 @@ export class ClaudeService {
     // (non-chain also benefit from profile switch / timed retry to avoid wasting context retries)
     if (execution.accountLimitHit && !execution.killedByUser) {
       execution.status = 'failed';
-      execution.completedAt = new Date().toISOString();
+      execution.completedAt = nowJSTISO();
       execution.exitCode = exitCode;
       execution.process = null;
       execution.stdin = null;
@@ -1927,7 +1928,7 @@ export class ClaudeService {
     // FL retry exhaustion: mark as failed so tree/email show it clearly
     const isFlRetryExhausted = flWantsRetry && !flNeedsRetry;
     execution.status = isFlRetryExhausted ? 'failed' : exitCode === 0 ? 'completed' : 'failed';
-    execution.completedAt = new Date().toISOString();
+    execution.completedAt = nowJSTISO();
     execution.exitCode = exitCode;
     execution.process = null;
     execution.stdin = null;
@@ -1995,7 +1996,7 @@ export class ClaudeService {
           );
           this._pushLog(execution, {
             line: `[Chain] ${cmdUpper} incomplete — ${userActionReason}. Terminal resume recommended.`,
-            timestamp: new Date().toISOString(),
+            timestamp: nowJSTISO(),
             level: 'warning',
           });
           if (execution.command === 'run') {
@@ -2020,7 +2021,7 @@ export class ClaudeService {
           );
           this._pushLog(execution, {
             line: `[Chain] ${cmdUpper} completed without status change (${currentStatus}). Auto-retrying ${cmdUpper} (${incompleteCount}/${MAX_INCOMPLETE_RETRIES})...`,
-            timestamp: new Date().toISOString(),
+            timestamp: nowJSTISO(),
             level: 'warning',
           });
 
@@ -2053,7 +2054,7 @@ export class ClaudeService {
                 oldExecutionId: execution.id,
                 newExecutionId: newExecId,
                 reason: `${cmdUpper} completed without status change (still ${currentStatus})`,
-                timestamp: new Date().toISOString(),
+                timestamp: nowJSTISO(),
               });
             } catch (err) {
               claudeLog.error(
@@ -2077,7 +2078,7 @@ export class ClaudeService {
           );
           this._pushLog(execution, {
             line: `[Chain] ${cmdUpper} incomplete termination: retries exhausted — manual re-run needed`,
-            timestamp: new Date().toISOString(),
+            timestamp: nowJSTISO(),
             level: 'error',
           });
           incompleteRetryExhausted = true;
@@ -2257,7 +2258,7 @@ export class ClaudeService {
     const delayMs = Math.max(retryAt - Date.now(), RETRY_DELAY_MS); // At least RETRY_DELAY_MS
 
     execution.rateLimitRetryAt = retryAt;
-    this._rateLimitRetryAt = new Date(retryAt).toISOString();
+    this._rateLimitRetryAt = toJSTISO(new Date(retryAt));
 
     this._rateLimitRetryTimer = setTimeout(() => {
       this._rateLimitRetryTimer = null;
@@ -2277,9 +2278,9 @@ export class ClaudeService {
       type: 'rate-limit-waiting',
       featureId: execution.featureId,
       command: execution.command,
-      retryAt: new Date(retryAt).toISOString(),
+      retryAt: toJSTISO(new Date(retryAt)),
       delayMs,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
 
     return { message: `Retry scheduled at ${retryAtStr} (${Math.round(delayMs / 60000)}min).` };
@@ -2324,7 +2325,7 @@ export class ClaudeService {
       this._releaseChainSlot(entry.execution);
       this._pushLog(entry.execution, {
         line: `[Chain] Rate limit retry failed — profile ${entry.execution.ccsProfile} still exhausted. Manual re-run needed.`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'error',
       });
     }
@@ -2336,7 +2337,7 @@ export class ClaudeService {
         command: firstExec.command,
         profile: firstExec.ccsProfile,
         queueSize: exhaustedEntries.length,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
       const featureInfo =
         firstExec.featureId && this.featureService
@@ -2434,7 +2435,7 @@ export class ClaudeService {
 
       // Override defaults for active resume
       newExec.status = 'running';
-      newExec.startedAt = new Date().toISOString();
+      newExec.startedAt = nowJSTISO();
       newExec.lastOutputTime = Date.now();
       newExec.sessionId = execution.sessionId;
       newExec._profileSwitchCount = execution._profileSwitchCount || 0;
@@ -2444,7 +2445,7 @@ export class ClaudeService {
       newExec.logs = [
         {
           line: `Resuming session ${execution.sessionId} after rate limit...`,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
           level: 'info',
         },
       ];
@@ -2541,7 +2542,7 @@ export class ClaudeService {
       oldExecutionId: execution.id,
       newExecutionId: newExecId,
       resumed,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
 
     // rate-limit-recovered: auto-recovery is normal operation, no email needed
@@ -2561,7 +2562,7 @@ export class ClaudeService {
     const delayMs =
       SERVER_ERROR_BACKOFF_MS[retryCount] ||
       SERVER_ERROR_BACKOFF_MS[SERVER_ERROR_BACKOFF_MS.length - 1];
-    const retryAt = new Date(Date.now() + delayMs).toISOString();
+    const retryAt = msToJSTISO(Date.now() + delayMs);
 
     this._serverErrorRetryQueue.push({ execution, retryCount, queuedAt: Date.now() });
     this._serverErrorRetryAt = retryAt;
@@ -2591,7 +2592,7 @@ export class ClaudeService {
       maxRetries: MAX_SERVER_ERROR_RETRIES,
       retryAt,
       delayMs,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
 
     return {
@@ -2652,7 +2653,7 @@ export class ClaudeService {
       newExecutionId: newExecId,
       retryCount: newRetryCount,
       maxRetries: MAX_SERVER_ERROR_RETRIES,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
   }
 
@@ -2728,7 +2729,7 @@ export class ClaudeService {
       type: 'shell-complete',
       command: 'cs',
       success: true,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
     this._setShellState('cs', true);
     return { command: 'cs', profile: targetProfile, status: 'ok' };
@@ -3017,7 +3018,7 @@ export class ClaudeService {
       }
       this._pushLog(nextExec, {
         line: 'Dequeued. Starting execution...',
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'info',
       });
       claudeLog.info(
@@ -3032,7 +3033,7 @@ export class ClaudeService {
     this.logStreamer?.broadcastAll({
       type: 'queue-updated',
       ...this.getQueueStatus(),
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
     });
   }
 
@@ -3087,7 +3088,7 @@ export class ClaudeService {
         ([featureId, waiter]) => ({
           featureId,
           executionId: waiter.executionId,
-          registeredAt: new Date(waiter.registeredAt).toISOString(),
+          registeredAt: toJSTISO(new Date(waiter.registeredAt)),
         }),
       ),
       waitingForInputCount,
@@ -3097,7 +3098,7 @@ export class ClaudeService {
         executionId: entry.execution.id,
         featureId: entry.execution.featureId,
         command: entry.execution.command,
-        queuedAt: new Date(entry.queuedAt).toISOString(),
+        queuedAt: toJSTISO(new Date(entry.queuedAt)),
       })),
       rateLimitRetryAt: this._rateLimitRetryAt,
       serverErrorQueue: this._serverErrorRetryQueue.map((entry) => ({
@@ -3105,7 +3106,7 @@ export class ClaudeService {
         featureId: entry.execution.featureId,
         command: entry.execution.command,
         retryCount: entry.retryCount,
-        queuedAt: new Date(entry.queuedAt).toISOString(),
+        queuedAt: toJSTISO(new Date(entry.queuedAt)),
       })),
       serverErrorRetryAt: this._serverErrorRetryAt,
       chainSlotCount: this.chainSlots.size,
@@ -3129,7 +3130,7 @@ export class ClaudeService {
       const exec = this.executions.get(id);
       if (exec) {
         exec.status = 'cancelled';
-        exec.completedAt = new Date().toISOString();
+        exec.completedAt = nowJSTISO();
         this._releaseChainSlot(exec);
         cleared.push(id);
         this.logStreamer?.broadcastAll({
@@ -3150,7 +3151,7 @@ export class ClaudeService {
     const exec = this.executions.get(executionId);
     if (exec) {
       exec.status = 'cancelled';
-      exec.completedAt = new Date().toISOString();
+      exec.completedAt = nowJSTISO();
       this._releaseChainSlot(exec);
       this.logStreamer?.broadcastAll({
         type: 'status',
@@ -3231,7 +3232,7 @@ export class ClaudeService {
             type: 'chain-blocked',
             featureId: featureIdStr,
             pendingDeps: pendingDeps.map((d) => `F${d}`).join(', '),
-            timestamp: new Date().toISOString(),
+            timestamp: nowJSTISO(),
           });
         }
       } catch (err) {
@@ -3385,7 +3386,7 @@ export class ClaudeService {
     if (exec.status === 'queued') {
       this.queue = this.queue.filter((id) => id !== executionId);
       exec.status = 'cancelled';
-      exec.completedAt = new Date().toISOString();
+      exec.completedAt = nowJSTISO();
       this._releaseChainSlot(exec);
       this.logStreamer?.broadcastAll({
         type: 'status',
@@ -3407,7 +3408,7 @@ export class ClaudeService {
     if (exec.status === 'running' && !exec.process) {
       exec.killedByUser = true;
       exec.status = 'cancelled';
-      exec.completedAt = new Date().toISOString();
+      exec.completedAt = nowJSTISO();
       this._releaseChainSlot(exec);
       exec._killedForAskUser = false;
       exec.inputRequired = null;
@@ -3656,7 +3657,7 @@ export class ClaudeService {
 
     const entry = {
       line: `[Answer] User answered in browser: "${answer.substring(0, 100)}" — resuming session...`,
-      timestamp: new Date().toISOString(),
+      timestamp: nowJSTISO(),
       level: 'info',
     };
     this._pushLog(execution, entry);
@@ -3758,7 +3759,7 @@ export class ClaudeService {
     });
     // Override defaults for active resume
     execution.status = 'running';
-    execution.startedAt = new Date().toISOString();
+    execution.startedAt = nowJSTISO();
     execution.lastOutputTime = Date.now();
     execution.sessionId = sessionId;
     execution.ccsProfile = this.getCcsProfile();
@@ -3767,7 +3768,7 @@ export class ClaudeService {
     execution.logs = [
       {
         line: `Resuming session ${sessionId}...`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'info',
       },
     ];
@@ -3978,7 +3979,7 @@ export class ClaudeService {
         type: 'shell-complete',
         command,
         success: true,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
       });
       this._setShellState(command, true);
       // Let PM2 handle restart via autorestart + restart_delay (5s).
@@ -4005,13 +4006,13 @@ export class ClaudeService {
           type: 'upd-complete',
           oldVersion,
           newVersion,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
         this.logStreamer?.broadcastAll({
           type: 'shell-complete',
           command,
           success: code === 0,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
         this._setShellState(command, code === 0);
       });
@@ -4026,7 +4027,7 @@ export class ClaudeService {
           type: 'shell-complete',
           command,
           success: code === 0,
-          timestamp: new Date().toISOString(),
+          timestamp: nowJSTISO(),
         });
         this._setShellState(command, code === 0);
       });
@@ -4108,7 +4109,7 @@ export class ClaudeService {
       this.queue.push(executionId);
       this._pushLog(execution, {
         line: `Queued (position ${this.queue.length}). Waiting for slot...`,
-        timestamp: new Date().toISOString(),
+        timestamp: nowJSTISO(),
         level: 'info',
       });
       this._broadcastQueueUpdate();
@@ -4138,17 +4139,7 @@ export class ClaudeService {
       command: 'update-analysis',
     });
 
-    if (this._canStartNow(execution)) {
-      this._startExecution(execution);
-    } else {
-      this.queue.push(executionId);
-      this._pushLog(execution, {
-        line: `Queued (position ${this.queue.length}). Waiting for slot...`,
-        timestamp: new Date().toISOString(),
-        level: 'info',
-      });
-      this._broadcastQueueUpdate();
-    }
+    this._startExecution(execution);
 
     return executionId;
   }

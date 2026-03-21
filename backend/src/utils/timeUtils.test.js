@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { nowJST } from './timeUtils.js';
+import { nowJST, toJSTISO, nowJSTISO, msToJSTISO } from './timeUtils.js';
 
 describe('nowJST', () => {
   let dateNowSpy;
@@ -299,5 +299,81 @@ describe('nowJST', () => {
     // If offset were 10 hours, it would show 10:00:00
     const jstDate = new Date(utcTimestamp + 9 * 60 * 60 * 1000);
     expect(jstDate.getUTCHours()).toBe(9);
+  });
+});
+
+describe('toJSTISO', () => {
+  it('returns +09:00 suffix', () => {
+    const result = toJSTISO(new Date(0));
+    expect(result).toMatch(/\+09:00$/);
+  });
+
+  it('epoch 0 → 1970-01-01T09:00:00.000+09:00', () => {
+    expect(toJSTISO(new Date(0))).toBe('1970-01-01T09:00:00.000+09:00');
+  });
+
+  it('preserves epoch when re-parsed by new Date()', () => {
+    const d = new Date('2026-03-21T09:00:00Z');
+    const jst = toJSTISO(d);
+    expect(new Date(jst).getTime()).toBe(d.getTime());
+  });
+
+  it('defaults to current time when no argument', () => {
+    const before = Date.now();
+    const result = toJSTISO();
+    const after = Date.now();
+    const parsed = new Date(result).getTime();
+    expect(parsed).toBeGreaterThanOrEqual(before);
+    expect(parsed).toBeLessThanOrEqual(after);
+  });
+
+  it('handles midnight boundary (23:xx UTC → 08:xx+1 JST)', () => {
+    // 2024-02-06T23:30:00Z → 2024-02-07T08:30:00.000+09:00
+    const d = new Date('2024-02-06T23:30:00Z');
+    expect(toJSTISO(d)).toBe('2024-02-07T08:30:00.000+09:00');
+  });
+
+  it('handles year boundary', () => {
+    // 2023-12-31T23:59:59Z → 2024-01-01T08:59:59.000+09:00
+    const d = new Date('2023-12-31T23:59:59Z');
+    expect(toJSTISO(d)).toBe('2024-01-01T08:59:59.000+09:00');
+  });
+});
+
+describe('nowJSTISO', () => {
+  let dateNowSpy;
+
+  beforeEach(() => {
+    dateNowSpy = vi.spyOn(Date, 'now');
+  });
+
+  afterEach(() => {
+    dateNowSpy.mockRestore();
+  });
+
+  it('returns +09:00 suffix', () => {
+    dateNowSpy.mockReturnValue(0);
+    expect(nowJSTISO()).toMatch(/\+09:00$/);
+  });
+
+  it('matches toJSTISO(new Date())', () => {
+    dateNowSpy.mockReturnValue(1707264000000);
+    expect(nowJSTISO()).toBe(toJSTISO(new Date(1707264000000)));
+  });
+});
+
+describe('msToJSTISO', () => {
+  it('converts epoch ms correctly', () => {
+    expect(msToJSTISO(0)).toBe('1970-01-01T09:00:00.000+09:00');
+  });
+
+  it('matches toJSTISO(new Date(ms))', () => {
+    const ms = 1707264000000;
+    expect(msToJSTISO(ms)).toBe(toJSTISO(new Date(ms)));
+  });
+
+  it('handles future timestamps', () => {
+    // 2026-03-21T09:00:00Z = 1774083600000
+    expect(msToJSTISO(1774083600000)).toBe('2026-03-21T18:00:00.000+09:00');
   });
 });

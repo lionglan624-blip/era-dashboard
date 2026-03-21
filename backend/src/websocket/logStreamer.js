@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { wsLog } from '../utils/logger.js';
+import { nowJSTISO } from '../utils/timeUtils.js';
 
 export class LogStreamer {
   constructor() {
@@ -58,7 +59,7 @@ export class LogStreamer {
           JSON.stringify({
             type: 'connected',
             clientId,
-            timestamp: new Date().toISOString(),
+            timestamp: nowJSTISO(),
           }),
         );
       } catch (err) {
