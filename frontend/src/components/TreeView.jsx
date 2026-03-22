@@ -6,6 +6,7 @@ import React, {
   memo,
   useState,
   useEffect,
+  useRef,
 } from 'react';
 import StatusBadge from './StatusBadge.jsx';
 
@@ -246,6 +247,9 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const queuePosition = queueWaiterEntry?.position ?? null;
   const isDepBlocked = queueWaiterEntry?.depBlocked || false;
 
+  // Debounce ref: reject clicks within 500ms to prevent double-click race conditions
+  const lastClickRef = useRef(0);
+
   // Local tick for running nodes only: re-render every second to update "Xs ago" display.
   // Only running TreeNodes pay this cost; non-running nodes skip the interval entirely.
   const [, setLocalTick] = useState(0);
@@ -258,9 +262,8 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
   const activityAgo = isRunning ? formatElapsedTime(lastActivityTime) : null;
 
   const canRunFC = status === '[DRAFT]' && !isRunning;
-  const canRunFL = status === '[PROPOSED]' && !isRunning;
-  const canRun =
-    (status === '[REVIEWED]' || status === '[WIP]' || status === '[BLOCKED]') && !isRunning;
+  const canRunFL = (status === '[PROPOSED]' || status === '[BLOCKED]') && !isRunning;
+  const canRun = (status === '[REVIEWED]' || status === '[WIP]') && !isRunning;
   const executableCommand = canRunFC ? 'fc' : canRunFL ? 'fl' : canRun ? 'run' : null;
   const isBlocked = !!pendingDeps;
   // Show Resume button when session is stopped (completed/failed) with sessionId
@@ -285,6 +288,9 @@ const TreeNode = memo(function TreeNode({ node, depth }) {
                 : '';
 
   const handleClick = () => {
+    const now = Date.now();
+    if (now - lastClickRef.current < 500) return;
+    lastClickRef.current = now;
     if (isQueued) {
       callbacks.onCancelQueueItem(id);
       return;

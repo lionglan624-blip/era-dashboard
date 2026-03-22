@@ -54,6 +54,7 @@ export default function ExecutionPanel({
     .filter(
       (e) =>
         e.status !== 'queued' &&
+        e.status !== 'cancelled' &&
         (e.logs?.length > 0 || e.status === 'running' || e.status === 'handed-off'),
     )
     .sort((a, b) => {

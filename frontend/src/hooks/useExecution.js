@@ -304,7 +304,8 @@ function reducer(state, action) {
         if (
           exec.status === 'completed' ||
           exec.status === 'failed' ||
-          exec.status === 'handed-off'
+          exec.status === 'handed-off' ||
+          exec.status === 'cancelled'
         ) {
           next.delete(execId);
           changed = true;

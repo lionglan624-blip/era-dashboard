@@ -411,6 +411,47 @@ describe('TreeView', () => {
       expect(onSelect).toHaveBeenCalledWith('100');
       expect(onRunCommand).not.toHaveBeenCalled();
     });
+
+    it('[BLOCKED] tile click sends fl command (not run)', async () => {
+      // Regression: [BLOCKED] was incorrectly mapped to /run; correct command is /fl
+      const user = userEvent.setup();
+      const features = [createFeature({ id: '100', status: '[BLOCKED]' })];
+      const onRunCommand = vi.fn();
+      const props = createTreeProps(features, { onRunCommand });
+      render(<TreeView {...props} />);
+
+      const tile = screen.getByText('Test Feature').closest('.tree-item');
+      await user.click(tile);
+
+      expect(onRunCommand).toHaveBeenCalledWith('100', 'fl');
+      expect(onRunCommand).not.toHaveBeenCalledWith('100', 'run');
+    });
+
+    it('debounce prevents double-click from calling onRunCommand twice', async () => {
+      // Regression: rapid double-click within 500ms debounce window should fire only once
+      const user = userEvent.setup();
+      const features = [createFeature({ id: '100', status: '[PROPOSED]' })];
+      const onRunCommand = vi.fn();
+      const props = createTreeProps(features, { onRunCommand });
+      render(<TreeView {...props} />);
+
+      const tile = screen.getByText('Test Feature').closest('.tree-item');
+
+      // Simulate two rapid clicks within the 500ms debounce window by mocking Date.now
+      let callCount = 0;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+        // Return the same timestamp for both clicks so the 500ms guard rejects the second
+        callCount++;
+        return 1000;
+      });
+
+      await user.click(tile);
+      await user.click(tile);
+
+      nowSpy.mockRestore();
+
+      expect(onRunCommand).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('Progress Display', () => {
