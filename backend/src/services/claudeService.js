@@ -78,6 +78,7 @@ const STATUS_TO_FIRST_COMMAND = {
   '[PROPOSED]': 'fl',
   '[REVIEWED]': 'run',
   '[WIP]': 'run',
+  '[BLOCKED]': 'fl',
 };
 
 // Status-based dequeue priority: lower = higher priority
@@ -87,6 +88,7 @@ const STATUS_PRIORITY = {
   '[REVIEWED]': 1,
   '[PROPOSED]': 2,
   '[DRAFT]': 3,
+  '[BLOCKED]': 4,
 };
 
 // Re-export for backward compatibility
@@ -1671,10 +1673,11 @@ export class ClaudeService {
         !execution.authError) ||
       (exitCode === 3 && !execution.resultSubtype);
 
-    // Skip context retry if command already achieved its expected status
+    // Skip context retry if command already achieved its expected status or feature is blocked
     const contextExpectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
     const contextCurrentStatus = this.fileWatcher?.statusCache.get(execution.featureId);
     const alreadyAchieved = contextExpectedStatus && contextCurrentStatus === contextExpectedStatus;
+    const isBlockedStatus = contextCurrentStatus === '[BLOCKED]';
 
     const needsContextRetry =
       execution.chain?.enabled &&
@@ -1683,11 +1686,18 @@ export class ClaudeService {
       !execution.accountLimitHit &&
       !execution.serverErrorHit &&
       !alreadyAchieved &&
+      !isBlockedStatus &&
       isContextExhausted;
 
     if (isContextExhausted && alreadyAchieved) {
       claudeLog.info(
         `[Chain] Context exhausted for F${execution.featureId} ${execution.command}, but status already ${contextCurrentStatus} — skipping retry`,
+      );
+    }
+
+    if (isContextExhausted && isBlockedStatus) {
+      claudeLog.info(
+        `[Chain] Context exhausted for F${execution.featureId} ${execution.command}, but feature is [BLOCKED] — skipping retry`,
       );
     }
 
@@ -1759,6 +1769,9 @@ export class ClaudeService {
     }
 
     // Chain: FL auto-retry on any failure (non-zero exit) or re-run request
+    // Skip if feature is [BLOCKED] — retrying FL won't resolve dependency gates
+    const flCurrentStatus = this.fileWatcher?.statusCache.get(execution.featureId);
+    const flIsBlocked = flCurrentStatus === '[BLOCKED]';
     const flWantsRetry =
       execution.chain?.enabled &&
       execution.command === 'fl' &&
@@ -1766,6 +1779,7 @@ export class ClaudeService {
       !execution.accountLimitHit &&
       !execution.serverErrorHit &&
       !isContextExhausted &&
+      !flIsBlocked &&
       (exitCode !== 0 || this._detectFlRerunRequest(execution));
 
     const flNeedsRetry = flWantsRetry && execution.chain.retryCount < MAX_FL_RETRIES;

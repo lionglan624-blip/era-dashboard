@@ -13,7 +13,7 @@ import StatusBadge from './StatusBadge.jsx';
 const MAX_TREE_DEPTH = 10;
 
 // Feature statuses eligible for bulk queue
-const QUEUEABLE_STATUSES = new Set(['[DRAFT]', '[PROPOSED]', '[REVIEWED]', '[WIP]']);
+const QUEUEABLE_STATUSES = new Set(['[DRAFT]', '[PROPOSED]', '[REVIEWED]', '[WIP]', '[BLOCKED]']);
 
 // localStorage key for persisting collapsed phase sections
 const COLLAPSED_PHASES_KEY = 'dashboard-collapsed-phases';

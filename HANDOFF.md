@@ -72,8 +72,8 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). Stop hook suppressed for dashboard-managed processes (`CLAUDE_DASHBOARD_MANAGED=1`). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
 | Server error (500/529) | 5x (exp backoff) | Retry on `overloaded_error`/`api_error`/`internal_server_error` detected from debug log (`_scanDebugLogForServerError`). Exponential backoff: 1m→5m→30m→1h→2h (`SERVER_ERROR_BACKOFF_MS`). Counter: `serverErrorRetryCount` (independent). Profile switch skipped (not helpful). Blocked by `accountLimitHit`. On exhaustion: `server-error-exhausted` WS event + email |
 | Safe profile filter | allocation | `_allocateProfile` filters profiles ≥80% usage; per-execution 429 Strategy 1 switches profile on rate limit hit. Global auto-switch removed (round-robin makes global default meaningless) |
-| Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit`. On exhaustion: email subject `context-limit 3/3` |
-| FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit` and `isContextExhausted`. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
+| Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit` or `[BLOCKED]` status. On exhaustion: email subject `context-limit 3/3` |
+| FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit`, `isContextExhausted`, or `[BLOCKED]` status. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
 | Incomplete termination retry | 3x (5s delay) | Retry fc/fl/run when exit 0 + `subtype=success` but feature status didn't advance to expected state (`EXPECTED_STATUS_AFTER_COMMAND` mapping: fc→`[PROPOSED]`, fl→`[REVIEWED]`, run→`[DONE]`). Detects context/max_turns exhaustion mid-work where CLI reports success but command didn't finish. Uses `fileWatcher.statusCache` for status check. Counter: `incompleteRetryCount` (independent from `retryCount` and `contextRetryCount`). Skips when status is `[BLOCKED]` (legitimate) or `[DRAFT]` after FL (fc_rerun decision). WS event: `chain-retry` with `retryType: 'incomplete'`. On exhaustion: prevents dead waiter registration, falls through to email notification with result `incomplete-retry-exhausted`. User action detected in `lastAssistantText` (file deletion request, y/n prompt) → terminal handoff instead of retry |
 | Run-lock (`/run` exclusion) | acquire/release | Only one `/run` executes at a time. Acquired at `_startExecution` (`runLockFeatureId`). Released **only** on `[DONE]`/`[CANCELLED]` status change (`handleFeatureStatusChanged` → `_releaseRunLock`). NOT released on retry/kill/completion — retries bypass via same-feature check (`_isRunBlocked`). Kill without status change keeps lock until manual `[CANCELLED]` or DR. `_resolveTerminalActive` releases after terminal-active resolution |
 | Terminal-active (run) | lock-hold | Terminal handoff for /run holds run-lock + chain-slot until [DONE]/[CANCELLED]/stale(2h). [DONE] → imp auto-enqueue. See claudeService.js `_resolveTerminalActive` |
@@ -351,10 +351,10 @@ All user input is whitelist-validated before passing to spawn:
 
 ## Diagnostics
 
-Use **devkit's `dashboard_diag.py`** for dashboard troubleshooting. Manual `grep`/`tail`/`cat` is forbidden — dashboard_diag.py reduces grep usage by 87% (backtest proven).
+Use **`ddiag`** (devkit alias for `dashboard_diag.py`) for dashboard troubleshooting. Manual `grep`/`tail`/`cat` is forbidden — ddiag reduces grep usage by 87% (backtest proven).
 
 ```bash
-cd /c/Era/devkit && python src/tools/python/dashboard_diag.py
+ddiag
 ```
 
 ### Scenario-Based Quick Reference
