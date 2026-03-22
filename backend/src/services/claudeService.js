@@ -81,6 +81,14 @@ const STATUS_TO_FIRST_COMMAND = {
   '[BLOCKED]': 'fl',
 };
 
+// Valid statuses for each command (used by executeCommand validation)
+const VALID_STATUSES_FOR_COMMAND = {
+  fc: new Set(['[DRAFT]']),
+  fl: new Set(['[PROPOSED]', '[BLOCKED]']),
+  run: new Set(['[REVIEWED]', '[WIP]', '[BLOCKED]']),
+  imp: null, // always allowed
+};
+
 // Status-based dequeue priority: lower = higher priority
 // Used by both bulkQueue (insertion sort) and _dequeueNext (dequeue sort)
 const STATUS_PRIORITY = {
@@ -778,6 +786,20 @@ export class ClaudeService {
             `[Queue] Duplicate ${validatedCommand} for F${validatedFeatureId} rejected (existing: ${exec.id})`,
           );
           return exec.id;
+        }
+      }
+    }
+
+    // Validate feature status is appropriate for the requested command
+    // Skip for chain continuations (chainParentId set) — chain executor manages status transitions
+    if (!chainParentId) {
+      const validStatuses = VALID_STATUSES_FOR_COMMAND[validatedCommand];
+      if (validStatuses) {
+        const currentStatus = this.fileWatcher?.statusCache?.get(String(validatedFeatureId));
+        if (currentStatus && !validStatuses.has(currentStatus)) {
+          const msg = `F${validatedFeatureId} status is ${currentStatus}, cannot run ${validatedCommand} (valid: ${[...validStatuses].join(', ')})`;
+          claudeLog.warn(`[Queue] Status validation failed: ${msg}`);
+          throw new Error(msg);
         }
       }
     }
