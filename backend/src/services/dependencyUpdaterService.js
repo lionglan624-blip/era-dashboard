@@ -77,6 +77,38 @@ export class DependencyUpdaterService {
       testCwd: 'C:\\Era\\devkit',
       needsIdle: false,
     },
+    {
+      name: 'Docker-CE',
+      type: 'docker',
+      preCmd: 'wsl -- sudo service docker start',
+      versionCmd: 'wsl -- docker version --format "{{.Server.Version}}"',
+      updateCmd: 'wsl -- sudo apt-get update',
+      upgradeCmd:
+        'wsl -- sudo apt-get upgrade -y docker-ce docker-ce-cli containerd.io docker-compose-plugin',
+      needsIdle: false,
+    },
+    {
+      name: 'SonarQube',
+      type: 'docker-image',
+      preCmd: 'wsl -- sudo service docker start',
+      versionCmd: 'wsl -- docker inspect sonarqube --format "{{.Config.Image}}"',
+      pullCmd: 'wsl -- docker pull sonarqube:community',
+      // Recreate container with same config after image update
+      recreateCmd: [
+        'wsl -- docker stop sonarqube',
+        'wsl -- docker rm sonarqube',
+        [
+          'wsl -- docker create',
+          '--name sonarqube --restart unless-stopped -p 9000:9000',
+          '-v sonarqube_data:/opt/sonarqube/data',
+          '-v sonarqube_logs:/opt/sonarqube/logs',
+          '-v sonarqube_extensions:/opt/sonarqube/extensions',
+          'sonarqube:community',
+        ].join(' '),
+      ],
+      postCmd: 'wsl -- sudo service docker stop',
+      needsIdle: false,
+    },
     // npm-dashboard MUST be last (triggerRestart causes process.exit)
     {
       name: 'npm-dashboard',
@@ -348,6 +380,12 @@ export class DependencyUpdaterService {
             case 'pip':
               result = await this._runPipPipeline(item);
               break;
+            case 'docker':
+              result = await this._runDockerUpdate(item);
+              break;
+            case 'docker-image':
+              result = await this._runDockerImageUpdate(item);
+              break;
             default:
               result = { name: item.name, success: false, error: `Unknown type: ${item.type}` };
           }
@@ -546,6 +584,92 @@ export class DependencyUpdaterService {
   }
 
   // =========================================================================
+  // Docker: apt-get upgrade docker-ce
+  // =========================================================================
+
+  async _runDockerUpdate(item) {
+    const result = { name: item.name, success: true };
+
+    // Ensure docker daemon is running
+    if (item.preCmd) {
+      await this._exec(item.preCmd);
+    }
+
+    // Get version before
+    const before = await this._exec(item.versionCmd);
+    result.versionBefore = before.success ? this._extractVersion(before.stdout) : 'unknown';
+
+    // apt-get update + upgrade
+    const update = await this._exec(item.updateCmd);
+    if (!update.success) {
+      return { ...result, success: false, error: update.error };
+    }
+    const upgrade = await this._exec(item.upgradeCmd, { timeout: UPDATE_COMMAND_TIMEOUT_MS });
+    if (!upgrade.success) {
+      return { ...result, success: false, error: upgrade.error };
+    }
+
+    // Get version after
+    const after = await this._exec(item.versionCmd);
+    result.versionAfter = after.success ? this._extractVersion(after.stdout) : 'unknown';
+
+    if (result.versionBefore === result.versionAfter) {
+      result.skipped = 'already latest';
+    }
+
+    return result;
+  }
+
+  // =========================================================================
+  // Docker image: pull + recreate container
+  // =========================================================================
+
+  async _runDockerImageUpdate(item) {
+    const result = { name: item.name, success: true };
+
+    // Ensure docker daemon is running
+    if (item.preCmd) {
+      await this._exec(item.preCmd);
+    }
+
+    // Get current image digest
+    const before = await this._exec(item.versionCmd);
+    result.versionBefore = before.success ? before.stdout.trim() : 'unknown';
+
+    // Pull latest
+    const pull = await this._exec(item.pullCmd, { timeout: UPDATE_COMMAND_TIMEOUT_MS });
+    if (!pull.success) {
+      return { ...result, success: false, error: pull.error };
+    }
+
+    // Check if image was updated (pull output contains "Status: Image is up to date" or "Status: Downloaded newer image")
+    if (pull.stdout.includes('Image is up to date')) {
+      result.skipped = 'already latest';
+    } else {
+      // Recreate container with new image
+      if (item.recreateCmd) {
+        for (const cmd of item.recreateCmd) {
+          const rc = await this._exec(cmd);
+          if (!rc.success) {
+            return { ...result, success: false, error: `recreate failed: ${rc.error}` };
+          }
+        }
+        result.recreated = true;
+      }
+      // Get new image info
+      const after = await this._exec(item.versionCmd);
+      result.versionAfter = after.success ? after.stdout.trim() : 'unknown';
+    }
+
+    // Stop docker daemon if configured
+    if (item.postCmd) {
+      await this._exec(item.postCmd);
+    }
+
+    return result;
+  }
+
+  // =========================================================================
   // Git helpers
   // =========================================================================
 
@@ -596,6 +720,8 @@ export class DependencyUpdaterService {
       const lines = entry.results.map((r) => {
         if (r.skipped) return `  ✅ ${r.name}: ${r.skipped}`;
         if (!r.success) return `  ❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
+        if (r.recreated)
+          return `  🐳 ${r.name}: ${r.versionBefore} → ${r.versionAfter} (recreated)`;
         if (r.committed) return `  📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
         if (r.versionBefore && r.versionAfter) {
           const suffix = r.pendingReload ? ' (daemon reload pending)' : '';
