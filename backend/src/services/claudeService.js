@@ -42,7 +42,6 @@ import {
   RATE_LIMIT_RETRY_BUFFER_MS,
   RATE_LIMIT_SAFE_THRESHOLD,
   MAX_PROFILE_SWITCHES,
-  MAX_INCOMPLETE_RETRIES,
   MAX_SERVER_ERROR_RETRIES,
   SERVER_ERROR_BACKOFF_MS,
   INPUT_EMAIL_DELAY_MS,
@@ -2020,7 +2019,9 @@ export class ClaudeService {
     // Detect incomplete termination: exit 0 + success subtype, but status didn't advance.
     // This happens when context/max_turns is exhausted mid-work (CLI reports success but command didn't finish).
     // Applies to any command with an expected status mapping (fc, fl, run).
-    let incompleteRetryExhausted = false;
+    // incompleteRetryExhausted is always false — incomplete termination now hands off
+    // to terminal resume instead of retrying. Kept as const for downstream conditionals.
+    const incompleteRetryExhausted = false;
     const expectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
     if (
       chainContinues &&
@@ -2062,78 +2063,32 @@ export class ClaudeService {
           return;
         }
         // Command completed but didn't change status — incomplete termination
-        // Auto-retry as a new chain execution instead of registering a dead waiter
+        // Hand off to terminal for resume instead of spawning a fresh session.
+        // With 1M context, fresh retries are wasteful: they restart Progressive Disclosure
+        // from Phase 1 and hit the same blockers. Terminal resume continues the existing session.
         const cmdUpper = execution.command.toUpperCase();
-        const incompleteCount = (execution.chain.incompleteRetryCount || 0) + 1;
-        if (incompleteCount <= MAX_INCOMPLETE_RETRIES) {
+        claudeLog.info(
+          `[Chain] ${cmdUpper} incomplete termination detected for F${execution.featureId}: status still ${currentStatus} (expected ${expectedStatus}). Handing off to terminal for resume.`,
+        );
+        this._pushLog(execution, {
+          line: `[Chain] ${cmdUpper} completed without status change (${currentStatus}). Terminal resume for continuation.`,
+          timestamp: nowJSTISO(),
+          level: 'warning',
+        });
+        if (execution.command === 'run') {
+          execution.terminalActive = true;
+          execution.terminalActiveAt = Date.now();
           claudeLog.info(
-            `[Chain] ${cmdUpper} incomplete termination detected for F${execution.featureId}: status still ${currentStatus} (expected ${expectedStatus}). Auto-retrying ${cmdUpper} (${incompleteCount}/${MAX_INCOMPLETE_RETRIES})`,
+            `[Queue] Terminal-active: F${execution.featureId} (run-lock + chain-slot held)`,
           );
-          this._pushLog(execution, {
-            line: `[Chain] ${cmdUpper} completed without status change (${currentStatus}). Auto-retrying ${cmdUpper} (${incompleteCount}/${MAX_INCOMPLETE_RETRIES})...`,
-            timestamp: nowJSTISO(),
-            level: 'warning',
-          });
-
-          const updatedHistory = [
-            ...(execution.chain?.history || []),
-            { command: execution.command, result: 'incomplete' },
-          ];
-
-          setTimeout(() => {
-            try {
-              const newExecId = this.executeCommand(execution.featureId, execution.command, {
-                chain: true,
-                chainParentId: execution.chainParentId || execution.id,
-                chainHistory: updatedHistory,
-                retryCount: execution.chain.retryCount || 0,
-                contextRetryCount: execution.chain.contextRetryCount || 0,
-                incompleteRetryCount: incompleteCount,
-                serverErrorRetryCount: execution.chain.serverErrorRetryCount || 0,
-                priority: true,
-                avoidProfile: execution.ccsProfile,
-              });
-
-              this.logStreamer?.broadcastAll({
-                type: 'chain-retry',
-                featureId: execution.featureId,
-                command: execution.command,
-                retryType: 'incomplete',
-                retryCount: incompleteCount,
-                maxRetries: MAX_INCOMPLETE_RETRIES,
-                oldExecutionId: execution.id,
-                newExecutionId: newExecId,
-                reason: `${cmdUpper} completed without status change (still ${currentStatus})`,
-                timestamp: nowJSTISO(),
-              });
-            } catch (err) {
-              claudeLog.error(
-                `[Chain] Failed to start incomplete retry for F${execution.featureId}:`,
-                err,
-              );
-            }
-          }, RETRY_DELAY_MS);
-
-          // Clear stale input-wait state so FE doesn't show input buttons for old execution
-          execution.waitingForInput = false;
-          execution.waitingInputPattern = null;
-
-          // Skip waiter registration and email — retry will handle it
-          this._dequeueNext();
-          this.onExecutionComplete?.(execution);
-          return;
-        } else {
-          claudeLog.warn(
-            `[Chain] ${cmdUpper} incomplete termination: retries exhausted (${incompleteCount}/${MAX_INCOMPLETE_RETRIES}) for F${execution.featureId}`,
-          );
-          this._pushLog(execution, {
-            line: `[Chain] ${cmdUpper} incomplete termination: retries exhausted — manual re-run needed`,
-            timestamp: nowJSTISO(),
-            level: 'error',
-          });
-          incompleteRetryExhausted = true;
-          // Fall through to email notification
         }
+        execution.process = null;
+        execution.stdin = null;
+        this._handoffToTerminal(
+          execution,
+          `${cmdUpper} incomplete — status still ${currentStatus}`,
+        );
+        return;
       }
     }
 
@@ -2980,6 +2935,28 @@ export class ClaudeService {
     }
   }
 
+  /**
+   * Build a map of featureId -> count of features that depend on it.
+   * Uses dependsOn field from all features (direct dependants only).
+   * @param {Array|null} cachedFeatures
+   * @returns {Map<string, number>} featureId -> dependant count
+   */
+  _buildDependantCounts(cachedFeatures) {
+    const counts = new Map();
+    if (!cachedFeatures) return counts;
+    for (const f of cachedFeatures) {
+      if (!f.dependsOn) continue;
+      const depIds = f.dependsOn
+        .split(',')
+        .map((d) => d.trim().replace(/\D/g, ''))
+        .filter(Boolean);
+      for (const depId of depIds) {
+        counts.set(depId, (counts.get(depId) || 0) + 1);
+      }
+    }
+    return counts;
+  }
+
   _canStartNow(execution) {
     if (this._isRunBlocked(execution.command, execution.featureId)) return false;
     // Block if feature has unresolved dependencies (fail-closed: null = blocked)
@@ -3022,6 +2999,7 @@ export class ClaudeService {
     } catch {
       // featureService unavailable — dep check will fail-closed per item
     }
+    const dependantCounts = this._buildDependantCounts(cachedFeatures);
 
     while (this.queue.length > 0 && this.runningCount < this.maxConcurrent) {
       // Purge non-queued items (cancelled, already started, etc.)
@@ -3049,13 +3027,16 @@ export class ClaudeService {
         const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;
         if (this.runningCount < limit) {
           const status = this.fileWatcher?.statusCache?.get(String(exec.featureId)) || '[DRAFT]';
-          startableIndices.push({ idx: i, priority: STATUS_PRIORITY[status] ?? 99 });
+          const depCount = dependantCounts.get(String(exec.featureId)) || 0;
+          startableIndices.push({ idx: i, priority: STATUS_PRIORITY[status] ?? 99, depCount });
         }
       }
       if (startableIndices.length === 0) break;
 
-      // Pick highest priority (lowest number); on tie, earlier queue position wins (stable)
-      startableIndices.sort((a, b) => a.priority - b.priority || a.idx - b.idx);
+      // Pick highest priority (lowest number); then most dependants; then FIFO
+      startableIndices.sort(
+        (a, b) => a.priority - b.priority || b.depCount - a.depCount || a.idx - b.idx,
+      );
       const idx = startableIndices[0].idx;
 
       if (idx === -1) break; // All remaining items are blocked
@@ -3071,8 +3052,9 @@ export class ClaudeService {
         timestamp: nowJSTISO(),
         level: 'info',
       });
+      const depCount = dependantCounts.get(String(nextExec.featureId)) || 0;
       claudeLog.info(
-        `[Queue] Dequeued F${nextExec.featureId} ${nextExec.command} (exec: ${nextExec.id})`,
+        `[Queue] Dequeued F${nextExec.featureId} ${nextExec.command} (exec: ${nextExec.id}, depCount: ${depCount})`,
       );
       this._startExecution(nextExec);
     }
@@ -3112,6 +3094,7 @@ export class ClaudeService {
     } catch {
       // featureService unavailable — depBlocked will default to false
     }
+    const dependantCounts = this._buildDependantCounts(cachedFeatures);
     for (const qId of this.queue) {
       const exec = this.executions.get(qId);
       if (exec) {
@@ -3122,13 +3105,14 @@ export class ClaudeService {
           featureId: exec.featureId,
           command: exec.command,
           priority: STATUS_PRIORITY[status] ?? 99,
+          dependantCount: dependantCounts.get(String(exec.featureId)) || 0,
           depBlocked: pendingDeps !== null && pendingDeps.length > 0,
           pendingDeps: pendingDeps ? pendingDeps.map((d) => `F${d}`) : [],
         });
       }
     }
     // Sort by status priority so FE WAIT# reflects actual dequeue order
-    queued.sort((a, b) => a.priority - b.priority);
+    queued.sort((a, b) => a.priority - b.priority || b.dependantCount - a.dependantCount);
     return {
       maxConcurrent: this.maxConcurrent,
       runningCount: running.length,
@@ -3230,11 +3214,24 @@ export class ClaudeService {
     const queued = [];
     const skipped = [];
 
-    // Sort by status priority (module-level STATUS_PRIORITY)
+    // Build dependant counts for priority sorting
+    let cachedFeatures = null;
+    try {
+      cachedFeatures = this.featureService?.getAllFeatures()?.features;
+    } catch {
+      /* featureService unavailable — depCount defaults to 0 */
+    }
+    const dependantCounts = this._buildDependantCounts(cachedFeatures);
+
+    // Sort by status priority, then dependant count (most dependants first)
     const sortedIds = [...featureIds].sort((a, b) => {
       const statusA = this.fileWatcher?.statusCache?.get(String(a)) || '[DRAFT]';
       const statusB = this.fileWatcher?.statusCache?.get(String(b)) || '[DRAFT]';
-      return (STATUS_PRIORITY[statusA] ?? 99) - (STATUS_PRIORITY[statusB] ?? 99);
+      const priDiff = (STATUS_PRIORITY[statusA] ?? 99) - (STATUS_PRIORITY[statusB] ?? 99);
+      if (priDiff !== 0) return priDiff;
+      const depCountA = dependantCounts.get(String(a)) || 0;
+      const depCountB = dependantCounts.get(String(b)) || 0;
+      return depCountB - depCountA;
     });
 
     for (const featureId of sortedIds) {

@@ -10,7 +10,8 @@ import {
   UPDATE_TEST_TIMEOUT_MS,
   UPDATE_IDLE_RETRY_MS,
   UPDATE_IDLE_MAX_RETRIES,
-  // Schedule constants exported from config for external use (scheduling uses private methods)
+  SONAR_HEALTH_CHECK_TIMEOUT_MS,
+  SONAR_HEALTH_CHECK_POLL_MS,
 } from '../config.js';
 import { exitWithPm2Update, setPm2UpdatePending } from '../utils/exitHelpers.js';
 
@@ -71,8 +72,8 @@ export class DependencyUpdaterService {
     {
       name: 'pip',
       type: 'pip',
-      cmd: 'python -m pip install --upgrade pytest pyyaml',
-      versionCmd: 'python -m pip show pytest pyyaml',
+      cmd: 'python -m pip install --upgrade pytest pyyaml ruff yamllint',
+      versionCmd: 'python -m pip show pytest pyyaml ruff yamllint',
       testCmd: 'python -m pytest src/tools/python/tests/ -v',
       testCwd: 'C:\\Era\\devkit',
       needsIdle: false,
@@ -661,12 +662,52 @@ export class DependencyUpdaterService {
       result.versionAfter = after.success ? after.stdout.trim() : 'unknown';
     }
 
+    // Health check (must run before postCmd stops Docker daemon)
+    if (result.recreated) {
+      log.info(`[${item.name}] Running health check...`);
+      const hc = await this._healthCheckSonarQube();
+      if (hc.passed) {
+        result.healthCheckPassed = true;
+        log.info(`[${item.name}] Health check passed`);
+      } else {
+        result.healthCheckFailed = true;
+        result.healthCheckError = hc.error;
+        log.warn(`[${item.name}] Health check failed: ${hc.error}`);
+      }
+    }
+
     // Stop docker daemon if configured
     if (item.postCmd) {
       await this._exec(item.postCmd);
     }
 
     return result;
+  }
+
+  async _healthCheckSonarQube() {
+    const startResult = await this._exec('wsl -- docker start sonarqube');
+    if (!startResult.success) {
+      return { passed: false, error: `container start failed: ${startResult.error}` };
+    }
+
+    const deadline = Date.now() + SONAR_HEALTH_CHECK_TIMEOUT_MS;
+    let lastError = 'timeout';
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, SONAR_HEALTH_CHECK_POLL_MS));
+      const check = await this._exec(
+        'curl --noproxy localhost -sf http://localhost:9000/api/system/status',
+        { timeout: 10000 },
+      );
+      if (check.success && check.stdout.includes('"status":"UP"')) {
+        await this._exec('wsl -- docker stop sonarqube');
+        return { passed: true };
+      }
+      lastError = check.success ? check.stdout : check.error || 'no response';
+    }
+
+    // Timeout — stop container regardless (docker stop on crashed container is harmless; _exec absorbs errors)
+    await this._exec('wsl -- docker stop sonarqube');
+    return { passed: false, error: `health check timeout (last: ${lastError})` };
   }
 
   // =========================================================================
@@ -720,8 +761,14 @@ export class DependencyUpdaterService {
       const lines = entry.results.map((r) => {
         if (r.skipped) return `  ✅ ${r.name}: ${r.skipped}`;
         if (!r.success) return `  ❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
-        if (r.recreated)
-          return `  🐳 ${r.name}: ${r.versionBefore} → ${r.versionAfter} (recreated)`;
+        if (r.recreated) {
+          const hcStatus = r.healthCheckPassed
+            ? ' ✅ HC'
+            : r.healthCheckFailed
+              ? ` ❌ HC: ${r.healthCheckError}`
+              : '';
+          return `  🐳 ${r.name}: ${r.versionBefore} → ${r.versionAfter} (recreated${hcStatus})`;
+        }
         if (r.committed) return `  📦 ${r.name}: committed (${r.changedFiles?.join(', ') || ''})`;
         if (r.versionBefore && r.versionAfter) {
           const suffix = r.pendingReload ? ' (daemon reload pending)' : '';

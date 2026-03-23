@@ -235,13 +235,14 @@ The word "session" appears in two unrelated contexts:
 
 ---
 
-## FL Incomplete Termination Detection (`claudeService.js`)
+## Incomplete Termination Detection (`claudeService.js`)
 
-Detects context/max_turns exhaustion mid-work where CLI reports success but FL didn't finish.
-- **Condition**: Exit 0 + `resultSubtype === 'success'` but status still `[PROPOSED]` (not `[REVIEWED]`, via `fileWatcher.statusCache`)
-- **Action**: Auto-retries FL as new execution (up to `MAX_FL_RETRIES`, shared counter with FL auto-retry)
-- **Skipped**: `[BLOCKED]` (legitimate), `[DRAFT]` after FL (fc_rerun decision), or `fileWatcher` null (fallback: register waiter normally)
-- **WS**: `chain-retry` with `retryType: 'incomplete'`. On exhaustion: falls through to email notification
+Detects when fc/fl/run exits with success but status didn't advance to expected state.
+- **Condition**: Exit 0 + `resultSubtype === 'success'` but status doesn't match `EXPECTED_STATUS_AFTER_COMMAND` (fc→`[PROPOSED]`, fl→`[REVIEWED]`, run→`[DONE]`), via `fileWatcher.statusCache`
+- **Action**: Terminal handoff (`_handoffToTerminal`) for `--resume` continuation. No fresh retry — with 1M context, resuming the existing session is more effective than restarting from Phase 1
+- **Run-lock**: For `/run`, sets `terminalActive = true` to hold run-lock + chain-slot until `[DONE]`/`[CANCELLED]`
+- **Skipped**: `[BLOCKED]` (legitimate), `[DRAFT]` after FL (fc_rerun decision), status beyond expected (`isStatusBeyond`), or `fileWatcher` null (fallback: register waiter normally)
+- **User action detected**: `_detectUserActionRequired` checks `lastAssistantText` for file deletion / y/n patterns — also hands off to terminal (separate upstream check)
 
 ## Tmp Cleanup (`cleanupService.js`)
 

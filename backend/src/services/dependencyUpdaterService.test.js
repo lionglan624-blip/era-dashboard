@@ -883,4 +883,154 @@ describe('DependencyUpdaterService', () => {
       expect(status.monthly.running).toBe(false);
     });
   });
+
+  // =========================================================================
+  // _healthCheckSonarQube
+  // =========================================================================
+
+  describe('_healthCheckSonarQube', () => {
+    it('returns passed when SonarQube reports UP', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker start')) return { success: true, stdout: '' };
+        if (cmd.includes('curl')) return { success: true, stdout: '{"status":"UP"}' };
+        if (cmd.includes('docker stop')) return { success: true, stdout: '' };
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._healthCheckSonarQube();
+
+      expect(result.passed).toBe(true);
+      expect(service._exec).toHaveBeenCalledWith(expect.stringContaining('docker stop'));
+    }, 10000);
+
+    it('returns failed on timeout when SonarQube never reports UP', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      const origDateNow = Date.now;
+      let now = 1000000;
+      Date.now = () => now;
+
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker start')) return { success: true, stdout: '' };
+        if (cmd.includes('curl')) {
+          now += 130000; // advance past 120s timeout
+          return { success: true, stdout: '{"status":"STARTING"}' };
+        }
+        if (cmd.includes('docker stop')) return { success: true, stdout: '' };
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._healthCheckSonarQube();
+
+      Date.now = origDateNow;
+
+      expect(result.passed).toBe(false);
+      expect(result.error).toMatch(/timeout/i);
+      expect(service._exec).toHaveBeenCalledWith(expect.stringContaining('docker stop'));
+    }, 10000);
+
+    it('returns failed when container cannot start', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker start')) return { success: false, error: 'no such container' };
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._healthCheckSonarQube();
+
+      expect(result.passed).toBe(false);
+      expect(result.error).toMatch(/container start failed/i);
+      // docker stop should NOT be called when container failed to start
+      const dockerStopCalls = service._exec.mock.calls.filter(([cmd]) =>
+        cmd.includes('docker stop'),
+      );
+      expect(dockerStopCalls).toHaveLength(0);
+    });
+  });
+
+  // =========================================================================
+  // _runDockerImageUpdate (docker-image integration)
+  // =========================================================================
+
+  describe('_runDockerImageUpdate', () => {
+    // Find the SonarQube entry from MONTHLY
+    const sonarItem = DependencyUpdaterService.MONTHLY.find((item) => item.name === 'SonarQube');
+
+    it('sets healthCheckPassed when recreated and health check succeeds', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker inspect')) return { success: true, stdout: 'sonarqube:community' };
+        if (cmd.includes('docker pull'))
+          return {
+            success: true,
+            stdout: 'Status: Downloaded newer image for sonarqube:community',
+          };
+        if (cmd.includes('docker stop')) return { success: true, stdout: '' };
+        if (cmd.includes('docker rm')) return { success: true, stdout: '' };
+        if (cmd.includes('docker create')) return { success: true, stdout: '' };
+        if (cmd.includes('docker start')) return { success: true, stdout: '' };
+        if (cmd.includes('curl')) return { success: true, stdout: '{"status":"UP"}' };
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._runDockerImageUpdate(sonarItem);
+
+      expect(result.recreated).toBe(true);
+      expect(result.healthCheckPassed).toBe(true);
+    }, 10000);
+
+    it('sets healthCheckFailed when recreated and health check times out', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      const origDateNow = Date.now;
+      let now = 1000000;
+      Date.now = () => now;
+
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker inspect')) return { success: true, stdout: 'sonarqube:community' };
+        if (cmd.includes('docker pull'))
+          return {
+            success: true,
+            stdout: 'Status: Downloaded newer image for sonarqube:community',
+          };
+        if (cmd.includes('docker stop')) return { success: true, stdout: '' };
+        if (cmd.includes('docker rm')) return { success: true, stdout: '' };
+        if (cmd.includes('docker create')) return { success: true, stdout: '' };
+        if (cmd.includes('docker start')) return { success: true, stdout: '' };
+        if (cmd.includes('curl')) {
+          now += 130000; // advance past 120s timeout
+          return { success: true, stdout: '{"status":"STARTING"}' };
+        }
+        return { success: true, stdout: '' };
+      });
+
+      const result = await service._runDockerImageUpdate(sonarItem);
+
+      Date.now = origDateNow;
+
+      expect(result.recreated).toBe(true);
+      expect(result.healthCheckFailed).toBe(true);
+    }, 10000);
+
+    it('does not run health check when image is already latest', async () => {
+      vi.useRealTimers();
+      const service = createService();
+      service._exec = vi.fn(async (cmd) => {
+        if (cmd.includes('docker inspect')) return { success: true, stdout: 'sonarqube:community' };
+        if (cmd.includes('docker pull'))
+          return { success: true, stdout: 'Status: Image is up to date for sonarqube:community' };
+        return { success: true, stdout: '' };
+      });
+      const hcSpy = vi.spyOn(service, '_healthCheckSonarQube');
+
+      const result = await service._runDockerImageUpdate(sonarItem);
+
+      expect(result.skipped).toBe('already latest');
+      expect(hcSpy).not.toHaveBeenCalled();
+    });
+  });
 });

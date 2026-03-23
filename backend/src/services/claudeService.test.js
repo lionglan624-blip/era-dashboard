@@ -3051,11 +3051,12 @@ describe('ClaudeService', () => {
       vi.useRealTimers();
     });
 
-    it('auto-retries FL when exit 0 success but status still [PROPOSED]', () => {
-      const { service, logStreamer } = createService();
+    it('hands off to terminal when FL exit 0 success but status still [PROPOSED]', () => {
+      const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       // Set up fileWatcher statusCache returning [PROPOSED] (FL didn't change it)
       service.fileWatcher = {
@@ -3074,36 +3075,18 @@ describe('ClaudeService', () => {
       execution.resultSubtype = 'success';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+      service.executeCommand = vi.fn();
 
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(5000); // Trigger retry setTimeout
 
-      // Waiter must NOT be registered — retry is handling it
+      // Waiter must NOT be registered — handoff handles it
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
 
-      // executeCommand should be called with fl retry using incompleteRetryCount
-      expect(service.executeCommand).toHaveBeenCalledWith('100', 'fl', {
-        chain: true,
-        chainParentId: execution.id,
-        chainHistory: [{ command: 'fl', result: 'incomplete' }],
-        retryCount: 0,
-        contextRetryCount: 0,
-        incompleteRetryCount: 1,
-        serverErrorRetryCount: 0,
-        priority: true,
-      });
-
-      // chain-retry WS event must be broadcast
-      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'chain-retry',
-          featureId: '100',
-          command: 'fl',
-          retryType: 'incomplete',
-          retryCount: 1,
-          reason: expect.stringContaining('[PROPOSED]'),
-        }),
+      // No fresh retry — terminal handoff instead
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('[PROPOSED]'),
       );
     });
 
@@ -3169,11 +3152,12 @@ describe('ClaudeService', () => {
       expect(service.executeCommand).not.toHaveBeenCalled();
     });
 
-    it('auto-retries run when exit 0 success but status still [WIP]', () => {
-      const { service, logStreamer } = createService();
+    it('hands off to terminal when run exit 0 success but status still [WIP]', () => {
+      const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       service.fileWatcher = {
         statusCache: new Map([['200', '[WIP]']]),
@@ -3190,38 +3174,26 @@ describe('ClaudeService', () => {
       execution.resultSubtype = 'success';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+      service.executeCommand = vi.fn();
 
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(5000);
 
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
-      expect(service.executeCommand).toHaveBeenCalledWith('200', 'run', {
-        chain: true,
-        chainParentId: execution.id,
-        chainHistory: [{ command: 'run', result: 'incomplete' }],
-        retryCount: 0,
-        contextRetryCount: 0,
-        incompleteRetryCount: 1,
-        serverErrorRetryCount: 0,
-        priority: true,
-      });
-
-      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'chain-retry',
-          command: 'run',
-          retryType: 'incomplete',
-          retryCount: 1,
-        }),
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('[WIP]'),
       );
+      // run command should set terminalActive for run-lock preservation
+      expect(execution.terminalActive).toBe(true);
     });
 
-    it('auto-retries fc when exit 0 success but status still [DRAFT]', () => {
+    it('hands off to terminal when fc exit 0 success but status still [DRAFT]', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       service.fileWatcher = {
         statusCache: new Map([['300', '[DRAFT]']]),
@@ -3238,22 +3210,18 @@ describe('ClaudeService', () => {
       execution.resultSubtype = 'success';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+      service.executeCommand = vi.fn();
 
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(5000);
 
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
-      expect(service.executeCommand).toHaveBeenCalledWith('300', 'fc', {
-        chain: true,
-        chainParentId: execution.id,
-        chainHistory: [{ command: 'fc', result: 'incomplete' }],
-        retryCount: 0,
-        contextRetryCount: 0,
-        incompleteRetryCount: 1,
-        serverErrorRetryCount: 0,
-        priority: true,
-      });
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('[DRAFT]'),
+      );
+      // fc is not 'run' — no terminalActive
+      expect(execution.terminalActive).toBeFalsy();
     });
 
     it('skips incomplete retry for run when status is [BLOCKED]', () => {
@@ -3347,11 +3315,12 @@ describe('ClaudeService', () => {
       expect(service._releaseChainSlot).toHaveBeenCalled();
     });
 
-    it('still triggers incomplete retry for fl when status is [PROPOSED]', () => {
+    it('still triggers incomplete handoff for fl when status is [PROPOSED]', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       service.fileWatcher = {
         statusCache: new Map([['402', '[PROPOSED]']]),
@@ -3369,24 +3338,24 @@ describe('ClaudeService', () => {
       execution.resultSubtype = 'success';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('new-exec-id');
+      service.executeCommand = vi.fn();
 
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(15000);
 
-      // [PROPOSED] after FL = incomplete termination — should retry
-      expect(service.executeCommand).toHaveBeenCalledWith(
-        '402',
-        'fl',
-        expect.objectContaining({ incompleteRetryCount: 1 }),
+      // [PROPOSED] after FL = incomplete termination — should handoff
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        execution,
+        expect.stringContaining('[PROPOSED]'),
       );
     });
 
-    it('sends email on incomplete retry exhaustion for run', () => {
+    it('hands off to terminal regardless of incompleteRetryCount (no exhaustion)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       service.fileWatcher = {
         statusCache: new Map([['500', '[WIP]']]),
@@ -3396,7 +3365,7 @@ describe('ClaudeService', () => {
         featureId: '500',
         command: 'run',
         chain: true,
-        incompleteRetryCount: 3, // already at max
+        incompleteRetryCount: 3, // previously would exhaust — now irrelevant
       });
       execution.status = 'running';
       execution.startedAt = new Date().toISOString();
@@ -3408,17 +3377,19 @@ describe('ClaudeService', () => {
 
       service._handleCompletion(execution, 0);
 
-      // Retry exhausted — waiter must NOT be registered (prevents dead waiter)
+      // Always handoff — no retry counter, no exhaustion
       expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
-      // executeCommand not called (no more retries)
       expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalled();
+      expect(execution.terminalActive).toBe(true);
     });
 
-    it('incompleteRetryCount is independent from retryCount', () => {
+    it('hands off to terminal even when retryCount is high (no fresh retry)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
+      service._handoffToTerminal = vi.fn();
 
       service.fileWatcher = {
         statusCache: new Map([['600', '[PROPOSED]']]),
@@ -3437,22 +3408,13 @@ describe('ClaudeService', () => {
       execution.resultSubtype = 'success';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+      service.executeCommand = vi.fn();
 
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(5000);
 
-      // incompleteRetryCount incremented independently, retryCount preserved
-      expect(service.executeCommand).toHaveBeenCalledWith('600', 'fl', {
-        chain: true,
-        chainParentId: execution.id,
-        chainHistory: [{ command: 'fl', result: 'incomplete' }],
-        retryCount: 2, // preserved, not incremented
-        contextRetryCount: 0,
-        incompleteRetryCount: 1, // incremented independently
-        serverErrorRetryCount: 0,
-        priority: true,
-      });
+      // No fresh retry regardless of retry counters — handoff instead
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalled();
     });
 
     it('hands off to terminal when lastAssistantText contains file deletion request', () => {
@@ -3525,7 +3487,7 @@ describe('ClaudeService', () => {
       expect(service.executeCommand).not.toHaveBeenCalled();
     });
 
-    it('retries normally when lastAssistantText has no user action pattern', () => {
+    it('hands off to terminal when lastAssistantText has no user action pattern', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
@@ -3548,16 +3510,13 @@ describe('ClaudeService', () => {
       execution.lastAssistantText = 'Task completed successfully. All tests pass.';
       service.executions.set(execution.id, execution);
 
-      service.executeCommand = vi.fn().mockReturnValue('retry-exec-id');
+      service.executeCommand = vi.fn();
 
-      vi.useFakeTimers();
       service._handleCompletion(execution, 0);
-      vi.advanceTimersByTime(5000);
-      vi.useRealTimers();
 
-      // Should retry, not hand off
-      expect(service._handoffToTerminal).not.toHaveBeenCalled();
-      expect(service.executeCommand).toHaveBeenCalled();
+      // All incomplete termination → handoff (no fresh retry)
+      expect(service._handoffToTerminal).toHaveBeenCalled();
+      expect(service.executeCommand).not.toHaveBeenCalled();
     });
 
     it('skips incomplete retry when status is beyond expected (fl: [DONE] vs [REVIEWED])', () => {
@@ -4681,6 +4640,194 @@ describe('ClaudeService', () => {
       // All 3 should start (max=3, running=0)
       expect(service._startExecution).toHaveBeenCalledTimes(3);
       expect(service.queue).toHaveLength(0);
+    });
+
+    it('dequeues feature with more dependants first within same status', () => {
+      const { service } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn((exec) => {
+        exec.status = 'running';
+      });
+
+      // F200 queued first, F100 queued second — both REVIEWED
+      const exec1 = service._createExecution({ featureId: '200', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      const exec2 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec2.status = 'queued';
+      service.executions.set(exec2.id, exec2);
+      service.queue.push(exec2.id);
+
+      // F100 is depended on by 3 features, F200 by 0
+      service.featureService = {
+        getAllFeatures: () => ({
+          features: [
+            { id: '100', dependsOn: '', pendingDeps: '' },
+            { id: '200', dependsOn: '', pendingDeps: '' },
+            { id: '301', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '302', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '303', dependsOn: 'F100', pendingDeps: 'F100' },
+          ],
+        }),
+      };
+      service.fileWatcher = {
+        statusCache: new Map([
+          ['200', '[REVIEWED]'],
+          ['100', '[REVIEWED]'],
+        ]),
+      };
+
+      service._dequeueNext();
+
+      // F100 should start first despite being queued second (more dependants)
+      expect(service._startExecution).toHaveBeenCalledTimes(1);
+      expect(service._startExecution).toHaveBeenCalledWith(
+        expect.objectContaining({ featureId: '100' }),
+      );
+    });
+
+    it('status priority takes precedence over dependant count', () => {
+      const { service } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn((exec) => {
+        exec.status = 'running';
+      });
+
+      // F100: PROPOSED, depended on by 5 features
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      // F200: WIP, depended on by 0 features
+      const exec2 = service._createExecution({ featureId: '200', command: 'run' });
+      exec2.status = 'queued';
+      service.executions.set(exec2.id, exec2);
+      service.queue.push(exec2.id);
+
+      service.featureService = {
+        getAllFeatures: () => ({
+          features: [
+            { id: '100', dependsOn: '', pendingDeps: '' },
+            { id: '200', dependsOn: '', pendingDeps: '' },
+            { id: '401', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '402', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '403', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '404', dependsOn: 'F100', pendingDeps: 'F100' },
+            { id: '405', dependsOn: 'F100', pendingDeps: 'F100' },
+          ],
+        }),
+      };
+      service.fileWatcher = {
+        statusCache: new Map([
+          ['100', '[PROPOSED]'],
+          ['200', '[WIP]'],
+        ]),
+      };
+
+      service._dequeueNext();
+
+      // F200 (WIP) should start first despite F100 having more dependants
+      expect(service._startExecution).toHaveBeenCalledTimes(1);
+      expect(service._startExecution).toHaveBeenCalledWith(
+        expect.objectContaining({ featureId: '200' }),
+      );
+    });
+
+    it('preserves FIFO order when dependant count is equal', () => {
+      const { service } = createService({ maxConcurrent: 1 });
+      service._startExecution = vi.fn((exec) => {
+        exec.status = 'running';
+      });
+
+      // F100 queued first, F200 queued second — both REVIEWED, both depCount=0
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      const exec2 = service._createExecution({ featureId: '200', command: 'fl' });
+      exec2.status = 'queued';
+      service.executions.set(exec2.id, exec2);
+      service.queue.push(exec2.id);
+
+      service.featureService = {
+        getAllFeatures: () => ({
+          features: [
+            { id: '100', dependsOn: '', pendingDeps: '' },
+            { id: '200', dependsOn: '', pendingDeps: '' },
+          ],
+        }),
+      };
+      service.fileWatcher = {
+        statusCache: new Map([
+          ['100', '[REVIEWED]'],
+          ['200', '[REVIEWED]'],
+        ]),
+      };
+
+      service._dequeueNext();
+
+      // F100 should start first (queued first, FIFO tiebreaker)
+      expect(service._startExecution).toHaveBeenCalledTimes(1);
+      expect(service._startExecution).toHaveBeenCalledWith(
+        expect.objectContaining({ featureId: '100' }),
+      );
+    });
+
+    it('falls back to status+FIFO when featureService is null', () => {
+      const { service } = createService({ maxConcurrent: 2 });
+      service._startExecution = vi.fn();
+      service.featureService = null;
+
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      const exec2 = service._createExecution({ featureId: '200', command: 'fl' });
+      exec2.status = 'queued';
+      service.executions.set(exec2.id, exec2);
+      service.queue.push(exec2.id);
+
+      service.fileWatcher = {
+        statusCache: new Map([
+          ['100', '[REVIEWED]'],
+          ['200', '[REVIEWED]'],
+        ]),
+      };
+
+      service._dequeueNext();
+
+      // Both should dequeue in FIFO order (no dependant data available)
+      expect(service._startExecution).toHaveBeenCalledTimes(2);
+      const calls = service._startExecution.mock.calls;
+      expect(calls[0][0]).toEqual(expect.objectContaining({ featureId: '100' }));
+      expect(calls[1][0]).toEqual(expect.objectContaining({ featureId: '200' }));
+    });
+
+    it('_buildDependantCounts returns correct counts', () => {
+      const { service } = createService();
+
+      const features = [
+        { id: '100', dependsOn: '' },
+        { id: '200', dependsOn: 'F100' },
+        { id: '300', dependsOn: 'F100, F200' },
+        { id: '400', dependsOn: 'F100' },
+      ];
+
+      const counts = service._buildDependantCounts(features);
+
+      expect(counts.get('100')).toBe(3); // depended on by 200, 300, 400
+      expect(counts.get('200')).toBe(1); // depended on by 300
+      expect(counts.has('300')).toBe(false); // no one depends on 300
+      expect(counts.has('400')).toBe(false); // no one depends on 400
+    });
+
+    it('_buildDependantCounts returns empty Map for null input', () => {
+      const { service } = createService();
+      const counts = service._buildDependantCounts(null);
+      expect(counts.size).toBe(0);
     });
   });
 
@@ -6272,28 +6419,24 @@ describe('Scenario Tests', () => {
       expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
     });
 
-    it('auto-answer resume enables incomplete retry when status not advanced', () => {
-      vi.useFakeTimers();
-      try {
-        const { service } = createScenarioService();
-        service.fileWatcher.statusCache.set('100', '[WIP]');
-        const exec = createRunningChainExecution(service, { command: 'run' });
-        exec._hadInputWait = true;
-        exec._resumedAnswer = true;
-        exec.resultSubtype = 'success';
+    it('auto-answer resume enables incomplete handoff when status not advanced', () => {
+      const { service } = createScenarioService();
+      service._handoffToTerminal = vi.fn();
+      service.fileWatcher.statusCache.set('100', '[WIP]');
+      const exec = createRunningChainExecution(service, { command: 'run' });
+      exec._hadInputWait = true;
+      exec._resumedAnswer = true;
+      exec.resultSubtype = 'success';
 
-        service._handleCompletion(exec, 0);
-        vi.advanceTimersByTime(5000);
+      service._handleCompletion(exec, 0);
 
-        // Incomplete retry should fire despite _hadInputWait because _resumedAnswer=true
-        expect(service.executeCommand).toHaveBeenCalledWith(
-          '100',
-          'run',
-          expect.objectContaining({ incompleteRetryCount: 1 }),
-        );
-      } finally {
-        vi.useRealTimers();
-      }
+      // Incomplete termination → handoff despite _hadInputWait because _resumedAnswer=true
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        exec,
+        expect.stringContaining('[WIP]'),
+      );
+      expect(exec.terminalActive).toBe(true);
     });
 
     it('auto-answer resume enables completion email', () => {
@@ -6549,8 +6692,9 @@ describe('Scenario Tests', () => {
       vi.useRealTimers();
     });
 
-    it('retries on incomplete, succeeds on second attempt', () => {
+    it('hands off to terminal on incomplete instead of retrying', () => {
       const { service } = createScenarioService();
+      service._handoffToTerminal = vi.fn();
       // FC completed exit 0 + success, but status still [DRAFT] (incomplete)
       const exec = createRunningChainExecution(service, { command: 'fc' });
       exec.resultSubtype = 'success';
@@ -6559,32 +6703,17 @@ describe('Scenario Tests', () => {
 
       service._handleCompletion(exec, 0);
 
-      // Incomplete detected → retry scheduled
-      vi.advanceTimersByTime(15000);
-      expect(service.executeCommand).toHaveBeenCalledWith(
-        '100',
-        'fc',
-        expect.objectContaining({ incompleteRetryCount: 1 }),
-      );
-
-      // Second attempt: status now [PROPOSED]
-      const exec2 = createRunningChainExecution(service, { command: 'fc' });
-      exec2.resultSubtype = 'success';
-      exec2.debugLogPath = null;
-      service.fileWatcher.statusCache.set('100', '[PROPOSED]');
-
-      service._handleCompletion(exec2, 0);
-
-      // Status matches → registerWaiter triggers immediate chain
-      expect(service.executeCommand).toHaveBeenCalledWith(
-        '100',
-        'fl',
-        expect.objectContaining({ chain: true }),
+      // Incomplete detected → handoff to terminal (no fresh retry)
+      expect(service.executeCommand).not.toHaveBeenCalled();
+      expect(service._handoffToTerminal).toHaveBeenCalledWith(
+        exec,
+        expect.stringContaining('[DRAFT]'),
       );
     });
 
-    it('retry exhaustion sends email', () => {
+    it('handoff on incomplete regardless of retry count (no exhaustion path)', () => {
       const { service } = createScenarioService();
+      service._handoffToTerminal = vi.fn();
       const exec = createRunningChainExecution(service, {
         command: 'fc',
         incompleteRetryCount: 3,
@@ -6595,14 +6724,9 @@ describe('Scenario Tests', () => {
 
       service._handleCompletion(exec, 0);
 
-      // Exhausted → falls through to email
-      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
-        exec,
-        'completed',
-        0,
-        expect.arrayContaining([expect.objectContaining({ result: 'incomplete-retry-exhausted' })]),
-        null, // no featureService → getFeature not available
-      );
+      // Always handoff — no exhaustion path anymore
+      expect(service._handoffToTerminal).toHaveBeenCalled();
+      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
     });
   });
 

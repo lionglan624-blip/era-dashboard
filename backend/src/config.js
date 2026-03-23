@@ -246,6 +246,12 @@ export const UPDATE_IDLE_RETRY_MS = 1800000; // 30 min
 /** Maximum idle retry attempts before skipping (30min × 6 = 3 hours) */
 export const UPDATE_IDLE_MAX_RETRIES = 6;
 
+/** Timeout for SonarQube health check after container recreation */
+export const SONAR_HEALTH_CHECK_TIMEOUT_MS = 120000; // 2 min
+
+/** Polling interval for SonarQube readiness check */
+export const SONAR_HEALTH_CHECK_POLL_MS = 5000; // 5 sec
+
 /** Daily schedule: hour in JST */
 export const UPDATE_DAILY_HOUR_JST = 6;
 
