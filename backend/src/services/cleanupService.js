@@ -7,6 +7,9 @@ import {
   DAILY_LOG_RETENTION_DAYS,
 } from '../config.js';
 
+/** Maximum size for individual debug log files (50 MB) */
+const DEBUG_LOG_MAX_SIZE_BYTES = 50 * 1024 * 1024;
+
 export class CleanupService {
   constructor(projectRoot) {
     this.dashboardTmpDir = path.join(projectRoot, '_out', 'tmp', 'dashboard');
@@ -47,6 +50,15 @@ export class CleanupService {
     );
     totalDeleted += debugResult.count;
     totalBytes += debugResult.bytes;
+
+    // 1b. Oversized debug logs — regardless of age
+    const debugSizeResult = await this._purgeBySize(
+      this.dashboardTmpDir,
+      /^debug-.+\.log$/,
+      DEBUG_LOG_MAX_SIZE_BYTES,
+    );
+    totalDeleted += debugSizeResult.count;
+    totalBytes += debugSizeResult.bytes;
 
     // 2. Daily rotated logs (*-YYYY-MM-DD.log) — 7 day retention
     const dailyResult = await this._purgeByAge(
@@ -122,6 +134,49 @@ export class CleanupService {
       }
       return 0;
     }
+  }
+
+  /**
+   * Remove files matching a pattern that exceed a size limit.
+   * @param {string} dir - Directory to scan
+   * @param {RegExp} pattern - Filename pattern
+   * @param {number} maxBytes - Maximum file size in bytes
+   * @returns {Promise<{count: number, bytes: number}>}
+   */
+  async _purgeBySize(dir, pattern, maxBytes) {
+    let count = 0;
+    let bytes = 0;
+
+    let entries;
+    try {
+      entries = await fs.readdir(dir);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        this.logger.warn(`Failed to read directory ${dir}:`, err.message);
+      }
+      return { count, bytes };
+    }
+
+    for (const entry of entries) {
+      if (!pattern.test(entry)) continue;
+
+      const filePath = path.join(dir, entry);
+      try {
+        const stat = await fs.stat(filePath);
+        if (stat.size > maxBytes) {
+          await fs.unlink(filePath);
+          count++;
+          bytes += stat.size;
+          this.logger.info(
+            `Purged oversized file ${entry} (${(stat.size / 1048576).toFixed(1)} MB)`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to check size of ${entry}:`, err.message);
+      }
+    }
+
+    return { count, bytes };
   }
 
   async _purgeByAge(dir, pattern, maxAgeDays) {

@@ -1326,6 +1326,7 @@ describe('RateLimitService', () => {
           handlers[event] = handlers[event] || [];
           handlers[event].push(cb);
         }),
+        removeAllListeners: vi.fn(),
         send: vi.fn(),
         kill: vi.fn(),
         _handlers: handlers,

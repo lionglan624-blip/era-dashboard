@@ -207,6 +207,9 @@ export class RateLimitService {
         if (resolved) return;
         resolved = true;
         clearTimeout(timeout);
+        child.removeAllListeners('message');
+        child.removeAllListeners('error');
+        child.removeAllListeners('exit');
         resolve(text);
       };
 
