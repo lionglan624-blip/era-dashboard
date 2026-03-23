@@ -1,4 +1,5 @@
-import { execSync } from 'child_process';
+import { fork } from 'child_process';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import { claudeLog } from '../utils/logger.js';
@@ -6,16 +7,13 @@ import { nowJSTISO, toJSTISO } from '../utils/timeUtils.js';
 import { CCS_INSTANCES_DIR } from '../config.js';
 
 const INSIGHTS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const MTIME_POLL_INTERVAL_MS = 5000; // Check report.html every 5 seconds
-const REPORT_READY_PATTERN = /report is ready/i;
 
 /**
  * Service for running /insights in Claude Code via PTY and emailing the report.
- * Spawns a headless PTY, sends /insights, detects completion via dual signals
- * (report.html mtime change + PTY output pattern), then emails the HTML report.
- *
- * TODO: Isolate PTY capture into a forked worker (same pattern as ratelimitService)
- * to prevent node-pty ACCESS_VIOLATION crashes from killing the main process.
+ * Spawns a headless PTY in a forked worker process (isolated from main process) to
+ * prevent node-pty ACCESS_VIOLATION crashes from killing the dashboard.
+ * Detects completion via dual signals (report.html mtime change + PTY output pattern),
+ * then emails the HTML report.
  */
 export class InsightsService {
   /**
@@ -44,26 +42,6 @@ export class InsightsService {
       return fs.statSync(reportPath).mtimeMs;
     } catch {
       return 0;
-    }
-  }
-
-  async _getPtySpawn() {
-    if (this._ptySpawn) return this._ptySpawn;
-    const nodePty = await import('node-pty');
-    return nodePty.default?.spawn || nodePty.spawn;
-  }
-
-  _killPty(ptyProcess) {
-    try {
-      ptyProcess.kill();
-    } catch {
-      try {
-        if (ptyProcess.pid) {
-          execSync(`taskkill /F /T /PID ${ptyProcess.pid}`, { windowsHide: true });
-        }
-      } catch (killErr) {
-        claudeLog.debug(`[Insights] taskkill fallback failed: ${killErr.message}`);
-      }
     }
   }
 
@@ -134,16 +112,64 @@ export class InsightsService {
   }
 
   async _runCapture(profile, reportPath, beforeMtime) {
-    const spawn = await this._getPtySpawn();
+    const workerPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'workers',
+      'insightsCapture.js',
+    );
+
+    const WORKER_TIMEOUT_MS = INSIGHTS_TIMEOUT_MS + 10000; // Worker timeout + buffer
 
     return new Promise((resolve) => {
       let resolved = false;
-      let tuiDetected = false;
-      let insightsSent = false;
-      let rawChunks = [];
-      let chunkCount = 0;
-      let trustAccepted = false;
 
+      const child = fork(workerPath, [], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+
+      const finish = (success, reason) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        child.removeAllListeners('message');
+        child.removeAllListeners('error');
+        child.removeAllListeners('exit');
+        resolve({ success, reason });
+      };
+
+      child.on('message', (msg) => {
+        if (msg.type === 'result') {
+          claudeLog.info(`[Insights] Worker result: success=${msg.success}, reason=${msg.reason}`);
+          finish(msg.success, msg.reason);
+        } else if (msg.type === 'error') {
+          claudeLog.error(`[Insights] Worker error: ${msg.message}`);
+          finish(false, `worker_error: ${msg.message}`);
+        }
+      });
+
+      child.on('error', (err) => {
+        claudeLog.error(`[Insights] Worker spawn error: ${err.message}`);
+        finish(false, `spawn_error: ${err.message}`);
+      });
+
+      child.on('exit', (code, signal) => {
+        claudeLog.info(`[Insights] Worker exited code=${code} signal=${signal}`);
+        if (!resolved) {
+          finish(code === 0, `worker_exit_${code}`);
+        }
+      });
+
+      const timeout = setTimeout(() => {
+        claudeLog.warn(`[Insights] Worker parent timeout (${WORKER_TIMEOUT_MS}ms), killing child`);
+        try {
+          child.kill();
+        } catch {
+          // ignore
+        }
+        finish(false, 'parent_timeout');
+      }, WORKER_TIMEOUT_MS);
+
+      // Build env for worker
       const env = {
         ...process.env,
         FORCE_COLOR: '0',
@@ -152,108 +178,8 @@ export class InsightsService {
       };
       delete env.CLAUDECODE;
 
-      const ptyProcess = spawn('cmd.exe', ['/c', 'claude'], {
-        cols: 120,
-        rows: 30,
-        env,
-        useConptyDll: true,
-      });
-
-      claudeLog.info(`[Insights] Spawned pty PID=${ptyProcess.pid}`);
-
-      let mtimePoll = null;
-
-      const finish = (success, reason) => {
-        if (resolved) return;
-        resolved = true;
-        if (mtimePoll) clearInterval(mtimePoll);
-        clearTimeout(overallTimeout);
-        claudeLog.info(
-          `[Insights] Finishing: success=${success}, reason=${reason}, chunks=${chunkCount}`,
-        );
-        // Log last chunks at debug for diagnostics
-        const lastChunks = rawChunks.slice(-10);
-        for (let i = 0; i < lastChunks.length; i++) {
-          claudeLog.debug(
-            `[Insights] Chunk[-${lastChunks.length - i}]: ${lastChunks[i].substring(0, 300).replace(/\n/g, '\\n')}`,
-          );
-        }
-        this._killPty(ptyProcess);
-        resolve({ success, reason });
-      };
-
-      ptyProcess.onData((data) => {
-        chunkCount++;
-        const truncated = data.length > 2000 ? data.substring(0, 2000) + '...' : data;
-        rawChunks.push(truncated);
-        if (rawChunks.length > 50) rawChunks.shift();
-
-        if (resolved) return;
-
-        // Phase 0: Trust prompt detection (same pattern as ptyCapture.js)
-        if (!trustAccepted && !tuiDetected) {
-          if (
-            /safety check/i.test(data) ||
-            /trust.*files/i.test(data) ||
-            /Yes,\s*proceed/i.test(data)
-          ) {
-            trustAccepted = true;
-            claudeLog.info(`[Insights] Trust prompt detected, accepting PID=${ptyProcess.pid}`);
-            setTimeout(() => {
-              if (!resolved) ptyProcess.write('\r');
-            }, 500);
-          }
-        }
-
-        // Dual detection signal 2: PTY output pattern
-        if (insightsSent && REPORT_READY_PATTERN.test(data)) {
-          claudeLog.info(
-            `[Insights] PTY output: "report is ready" detected at chunk ${chunkCount}`,
-          );
-          setTimeout(() => finish(true, 'pty_pattern'), 2000);
-          return;
-        }
-
-        // Phase 1: Detect TUI loaded
-        if (!tuiDetected) {
-          if (/Context:\d+%/.test(data) || rawChunks.some((c) => /Context:\d+%/.test(c))) {
-            tuiDetected = true;
-            claudeLog.info(`[Insights] TUI detected at chunk ${chunkCount}, waiting 2s`);
-
-            setTimeout(() => {
-              if (!resolved && !insightsSent) {
-                insightsSent = true;
-                claudeLog.info(`[Insights] Sending /insights`);
-                ptyProcess.write('/insights');
-                setTimeout(() => {
-                  if (!resolved) {
-                    ptyProcess.write('\r');
-                    claudeLog.info(`[Insights] Enter sent, waiting for completion...`);
-
-                    // Dual detection signal 1: mtime polling
-                    mtimePoll = setInterval(() => {
-                      const currentMtime = this._getReportMtime(reportPath);
-                      if (currentMtime > beforeMtime) {
-                        claudeLog.info(`[Insights] report.html mtime changed`);
-                        setTimeout(() => finish(true, 'mtime_changed'), 2000);
-                      }
-                    }, MTIME_POLL_INTERVAL_MS);
-                  }
-                }, 800);
-              }
-            }, 2000);
-          }
-        }
-      });
-
-      const overallTimeout = setTimeout(() => {
-        finish(false, 'timeout');
-      }, INSIGHTS_TIMEOUT_MS);
-
-      ptyProcess.onExit(({ exitCode }) => {
-        claudeLog.info(`[Insights] Pty exited code=${exitCode}`);
-        finish(exitCode === 0, `exit_${exitCode}`);
-      });
+      child.send({ type: 'start', env, reportPath, beforeMtime });
+      claudeLog.info(`[Insights] Worker spawned PID=${child.pid}`);
     });
   }
 
