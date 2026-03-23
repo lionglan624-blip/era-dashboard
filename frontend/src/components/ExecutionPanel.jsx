@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import LogViewer from './LogViewer.jsx';
 import HistoryView from './HistoryView.jsx';
 
@@ -50,18 +50,22 @@ export default function ExecutionPanel({
       });
   };
 
-  const visibleExecs = Array.from(executions.values())
-    .filter(
-      (e) =>
-        e.status !== 'queued' &&
-        e.status !== 'cancelled' &&
-        (e.logs?.length > 0 || e.status === 'running' || e.status === 'handed-off'),
-    )
-    .sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (b.status === 'running' && a.status !== 'running') return 1;
-      return (b.logs?.length || 0) - (a.logs?.length || 0);
-    });
+  const visibleExecs = useMemo(
+    () =>
+      Array.from(executions.values())
+        .filter(
+          (e) =>
+            e.status !== 'queued' &&
+            e.status !== 'cancelled' &&
+            (e.logs?.length > 0 || e.status === 'running' || e.status === 'handed-off'),
+        )
+        .sort((a, b) => {
+          if (a.status === 'running' && b.status !== 'running') return -1;
+          if (b.status === 'running' && a.status !== 'running') return 1;
+          return (b.logs?.length || 0) - (a.logs?.length || 0);
+        }),
+    [executions],
+  );
 
   const panelStyle = { top: `${headerHeight || 100}px` };
 

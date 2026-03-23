@@ -4,6 +4,18 @@ Implementation details and design decisions. Read [HANDOFF.md](HANDOFF.md) first
 
 ---
 
+## Three Limit Concepts
+
+The word "session" appears in two unrelated contexts:
+
+| Concept | What it means | Retryable | Detection |
+|---------|--------------|-----------|-----------|
+| **Conversation context** exhaustion | Single `-p` session's token window is full | Yes (3x, fresh session) | `error_max_turns`, `max_tokens`, `promptTooLong`, `exitCode≠0 && subtype=success && !accountLimitHit`, `exitCode===3 && !subtype` |
+| **CCS session** rate limit | Profile's per-session API quota (hours) | Yes (all executions) | `accountLimitHit` flag (429 `rate_limit_error`) |
+| **CCS weekly** rate limit | Profile's weekly API quota | Yes (all executions) | Same `accountLimitHit` flag |
+
+---
+
 ## Rate Limit Cache Details
 
 Tracks CCS **profile-level** usage (weekly/session/sonnet — API quota limits, NOT conversation context).
@@ -217,24 +229,6 @@ When an execution hits 429, `_scheduleRateLimitRetry()` attempts recovery:
 
 ---
 
-## Three Limit Concepts
-
-The word "session" appears in two unrelated contexts:
-
-| Concept | What it means | Retryable | Detection |
-|---------|--------------|-----------|-----------|
-| **Conversation context** exhaustion | Single `-p` session's token window is full | Yes (3x, fresh session) | `error_max_turns`, `max_tokens`, `promptTooLong`, `exitCode≠0 && subtype=success && !accountLimitHit`, `exitCode===3 && !subtype` |
-| **CCS session** rate limit | Profile's per-session API quota (hours) | Yes (all executions) | `accountLimitHit` flag (429 `rate_limit_error`) |
-| **CCS weekly** rate limit | Profile's weekly API quota | Yes (all executions) | Same `accountLimitHit` flag |
-
-**Rate limit retry** (all executions — queue-based):
-- `_scheduleRateLimitRetry()`: queues execution; first entry triggers (1) profile switch or (2) timed retry
-- `_rateLimitPaused` getter (`queue.length > 0`) blocks dequeue
-- `_processRateLimitQueue()` re-captures all profiles; evaluates per-entry by `execution.ccsProfile`, discards exhausted entries
-- Sequential drain: `_processNextInQueue()` pops entries with 5s delay between retries
-
----
-
 ## Incomplete Termination Detection (`claudeService.js`)
 
 Detects when fc/fl/run exits with success but status didn't advance to expected state.
@@ -312,11 +306,121 @@ Completed/failed/handed-off executions appended to `_out/tmp/dashboard/execution
 Previously assumed broken, but **works correctly in 2.1.0+**. Tested (2026-02-04):
 
 ```bash
-claude -p "hello" --verbose --output-format stream-json  # → session_id取得
-claude --resume {session_id} -p "write file" ...         # → Write tool成功
+claude -p "hello" --verbose --output-format stream-json  # → obtain session_id
+claude --resume {session_id} -p "write file" ...         # → Write tool succeeds
 ```
 
 Root cause: v2.1.0 fixed "files and skills not being properly discovered when resuming sessions with `-c` or `--resume`". Enables orchestrator patterns (Claude spawning Claude via `-p --resume`).
+
+---
+
+## Execution Behavior Details
+
+Detailed retry logic, detection mechanisms, and slot management for behaviors summarized in [HANDOFF.md Key Timeouts & Behaviors](HANDOFF.md#key-timeouts--behaviors).
+
+### Server Error Retry (500/529)
+
+Retries on `overloaded_error`, `api_error`, or `internal_server_error` detected from the debug log via `_scanDebugLogForServerError`.
+
+- **Detection**: Scans last 16KB of `--debug-file` for server error patterns
+- **Backoff**: Exponential — 1m→5m→30m→1h→2h (`SERVER_ERROR_BACKOFF_MS`), 5 retries max
+- **Counter**: `serverErrorRetryCount` (independent from context/FL retry counters)
+- **Profile switch**: Skipped (server errors are not profile-specific)
+- **Blocked by**: `accountLimitHit` (429 takes priority)
+- **On exhaustion**: `server-error-exhausted` WS event + email notification
+
+### Context Retry
+
+Retries on **conversation context** exhaustion (single `-p` session's token window full).
+
+- **Detection**: `error_max_turns`, `max_tokens`, `promptTooLong`, `exitCode≠0 && subtype=success` (**only when `!accountLimitHit`**), `exitCode===3 && !subtype`
+- **Retry**: 3x with 5s delay, fresh session (no `--resume`)
+- **Counter**: `contextRetryCount` (independent from FL retry)
+- **Blocked by**: `accountLimitHit` or `[BLOCKED]` status
+- **On exhaustion**: Email subject `context-limit 3/3`
+
+### FL Auto-Retry
+
+Retries FL on non-context failure (non-zero exit) or re-run request (text pattern match).
+
+- **Retry**: 3x with 5s delay
+- **Counter**: `retryCount` (independent from context retry)
+- **Blocked by**: `accountLimitHit`, `isContextExhausted`, or `[BLOCKED]` status
+- **On exhaustion**: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3`
+
+### Run-Lock (`/run` Exclusion)
+
+Only one `/run` executes at a time.
+
+- **Acquire**: At `_startExecution` (`runLockFeatureId`)
+- **Release**: **Only** on `[DONE]`/`[CANCELLED]` status change (`handleFeatureStatusChanged` → `_releaseRunLock`)
+- **NOT released** on retry/kill/completion — retries bypass via same-feature check (`_isRunBlocked`)
+- Kill without status change keeps lock until manual `[CANCELLED]` or DR
+- `_resolveTerminalActive` releases after terminal-active resolution
+
+### Terminal-Active (Run)
+
+Terminal handoff for `/run` holds run-lock + chain-slot until `[DONE]`/`[CANCELLED]`/stale(2h). On `[DONE]`, imp auto-enqueue. See `claudeService.js` `_resolveTerminalActive`.
+
+### Chain Slot Reservation
+
+Reserves execution slot for entire chain lifecycle (fc→fl→run→imp).
+
+- **Tracking**: `chainSlots` Set with root execution IDs
+- **Non-chain limit**: `maxConcurrent - idleChainSlots`
+- **Released on**: Chain completion, cancel, handoff, stale cleanup, rate limit exhaustion, or dep-blocked at bulk queue time (re-reserved at dequeue)
+- **Config**: `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4)
+- **Exempt**: Slash commands (`commit`, `sync-deps`) bypass queue limit (`SLOT_EXEMPT_COMMANDS`)
+
+### Dep-Aware Dequeue
+
+Features with unresolved dependencies (`pendingDeps`) or dependencies with active `/imp` executions stay in queue but are skipped by `_dequeueNext()` and `_canStartNow()`.
+
+- **Trigger**: `status-change` + `features-updated` events
+- **Cache invalidation**: When a dep reaches `[DONE]`/`[CANCELLED]`, featureService cache is invalidated and queue re-evaluated
+- **Fail-closed**: `_getPendingDeps()` returns `null` on error → treated as blocked
+- **Priority**: Features with more dependants dequeue first (computed per-dequeue from cachedFeatures)
+- **FE**: "Queue All" button queues all tree features including dep-blocked ones
+- **WS**: `queue-updated` event includes `depBlocked` and `pendingDeps` fields
+
+### Safe Profile Filter
+
+`_allocateProfile` filters profiles ≥80% usage. Per-execution 429 Strategy 1 switches profile on rate limit hit. Global auto-switch removed (round-robin makes global default meaningless).
+
+### Insights Capture
+
+`/insights` via node-pty ConPTY (~2min).
+
+- **Completion detection**: Dual — `report.html` mtime change + PTY `"report is ready"` pattern
+- **Email**: HTML report via `emailService.sendHtml()`
+- **Scheduler**: Cron-style `setTimeout` (Monday 07:00 JST)
+- **API**: `POST /api/insights/capture` (409 if running), `GET /api/insights/status`
+
+### Dependency Updater
+
+Scheduled auto-update of development tools and packages.
+
+- **Schedule**: CCS (daily), CodeRabbit/PM2 (weekly), NuGet-check/Go/pip/Docker-CE/SonarQube/npm (monthly)
+- **Type A** (global CLI): Version check → update → version diff → email
+- **Type B** (repo): Update → git diff → test → commit or revert
+- **Type docker**: `wsl -- sudo service docker start` → `apt-get upgrade docker-ce` → version diff
+- **Type docker-image**: `docker pull` → recreate container if updated → health check (start → poll UP → stop; 120s timeout, 5s poll) → `service docker stop`
+- **pip tier**: `pytest pyyaml ruff yamllint`
+- **PM2 reload**: Deferred to next clean exit via detached spawn (3s delay, `exitHelpers.js`)
+- **npm-dashboard**: Requires idle check (5 conditions)
+- **Weekly summary**: `[Dep-Summary]` email aggregates all tiers; per-tier `[Dep-Update]` suppressed for weekly
+- **Master switch**: `UPDATE_ENABLED` env var
+- **API**: `POST /api/deps/trigger` (per-tier, 409 if running), `GET /api/deps/status`
+
+### Update Analysis
+
+Claude Code release detection and impact analysis.
+
+- **Trigger**: IMAP listener detects GitHub notification email
+- **Execution**: `claudeService.executeUpdateAnalysis()` runs as `update-analysis` execution (tile, log, terminal resume)
+- **Analysis**: 3 dimensions — Dashboard impact, Project impact (workflow/settings/env), new feature adoption opportunities
+- **Completion**: `_onComplete` callback → HTML email with dual impact badges (D:/P:) + changelog
+- **API**: `GET /api/update/status`
 
 ---
 
@@ -324,7 +428,7 @@ Root cause: v2.1.0 fixed "files and skills not being properly discovered when re
 
 ### Repository Separation
 
-The dashboard has grown into a standalone web application (650+ backend tests, 230+ frontend tests, 12+ service modules) and should eventually be extracted into its own repository. The main coupling points are:
+The dashboard has grown into a standalone web application (12+ service modules, see [OPS.md](OPS.md) for current test counts) and should eventually be extracted into its own repository. The main coupling points are:
 
 - **`projectRoot` hardcoding**: `featureParser`, `fileWatcher`, and `logger.js` resolve paths relative to the parent project. Replace with a `PROJECT_ROOT` environment variable in `config.js`.
 - **`_out/tmp/dashboard/` log output**: `logger.js` resolves the project root by traversing 5 directory levels. Should use `PROJECT_ROOT` instead.

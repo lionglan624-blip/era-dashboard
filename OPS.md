@@ -172,7 +172,7 @@ node C:\Era\dashboard\patch-pm2.js && pm2 kill && cd C:\Era\dashboard && pm2 sta
 
 **Root cause**: `pm2 restart` sends SIGTERM to the old process and starts a new one **simultaneously**. On Windows, port release lags process death. The new process hits EADDRINUSE because the old one hasn't released port 3001 yet. See `docs/architecture/infrastructure/dr-restart-investigation.md` for the full investigation log.
 
-**Fix (2026-03-03 VBScript delegation → 2026-03-07 pm2 restart直接化)**:
+**Fix (2026-03-03 VBScript delegation → 2026-03-07 direct pm2 restart)**:
 
 Auto-DR and DR button use `pm2 restart` directly. EADDRINUSE is handled by server.js polling retry with adaptive delay (500ms → 2s) and last-resort `cleanupPort()` after 10s.
 
@@ -220,7 +220,7 @@ Auto-DR and DR button use `pm2 restart` directly. EADDRINUSE is handled by serve
 | execution.js | 62.5% | - | Routes (many paths untested) |
 | claudeService.js | 57.8% | 180 | Main logic (grew significantly) |
 
-## Mutation Score (Backend)
+## Mutation Score (Backend, 2026-03-04)
 
 | Metric | Value | Notes |
 |--------|------:|-------|

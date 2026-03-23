@@ -6,6 +6,44 @@ import TreeView from './components/TreeView.jsx';
 import FeatureDetail from './components/FeatureDetail.jsx';
 import ExecutionPanel from './components/ExecutionPanel.jsx';
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('ErrorBoundary caught:', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          style={{
+            padding: '20px',
+            color: '#ef4444',
+            background: '#1a1a2e',
+            borderRadius: '8px',
+            margin: '10px',
+          }}
+        >
+          <h3>Component Error</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px' }}>{this.state.error.message}</pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop: '10px', padding: '4px 12px', cursor: 'pointer' }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // UI timing constants
 const CS_PROFILE_SWITCH_DELAY_MS = 1500; // Wait for cs.bat profile switch to complete
 
@@ -894,16 +932,31 @@ export default function App() {
   const handleOpenTerminal = useCallback(
     async (featureId, command) => {
       try {
-        // Check if there's a running execution for this feature
-        // Note: relies on executionsRef (frontend state) which may be stale during
-        // WebSocket disconnect. Acceptable trade-off for personal tool; a backend
-        // "find running for feature" API would be more robust.
+        // Check local state first for running execution
         let runningExecId = null;
         const featureIdStr = String(featureId);
         for (const [execId, exec] of executionsRef.current) {
           if (exec.featureId === featureIdStr && exec.status === 'running') {
             runningExecId = execId;
             break;
+          }
+        }
+
+        // Fallback: check backend API if local state has no match (stale ref during WS disconnect)
+        if (!runningExecId) {
+          try {
+            const listRes = await fetch('/api/execution');
+            if (listRes.ok) {
+              const allExecs = await listRes.json();
+              const running = allExecs.find(
+                (e) => String(e.featureId) === featureIdStr && e.status === 'running',
+              );
+              if (running) {
+                runningExecId = running.executionId || running.id;
+              }
+            }
+          } catch {
+            // API unreachable — proceed with new terminal
           }
         }
 
@@ -1418,32 +1471,34 @@ export default function App() {
       </header>
 
       <main className={`app-main ${showExecutionPanel ? 'with-panel' : ''}`}>
-        <TreeView
-          features={features}
-          runningFeatures={runningFeatures}
-          featurePhases={featurePhases}
-          featureSessionIds={featureSessionIds}
-          featureContextPercent={featureContextPercent}
-          featureStartedAt={featureStartedAt}
-          featureLastOutcome={featureLastOutcome}
-          featureRunningCommand={featureRunningCommand}
-          featureInputWaiting={featureInputWaiting}
-          featureRetryInfo={featureRetryInfo}
-          featureProfiles={featureProfiles}
-          featureQueueWaiters={featureQueueWaiters}
-          runLockFeatureId={healthStatus.runLockFeatureId}
-          onReleaseLock={handleReleaseLock}
-          onRunCommand={handleRunCommand}
-          onOpenTerminal={handleOpenTerminal}
-          onResumeBrowser={handleResumeBrowserByFeature}
-          onResumeTerminal={handleResumeByFeature}
-          onInputWaitingClick={handleInputWaitingClick}
-          onBulkQueue={handleBulkQueue}
-          onCancelQueueItem={handleCancelQueueItem}
-          onClearQueue={handleClearQueue}
-          onSelect={setSelectedFeatureId}
-          onStopExecution={killExecution}
-        />
+        <ErrorBoundary>
+          <TreeView
+            features={features}
+            runningFeatures={runningFeatures}
+            featurePhases={featurePhases}
+            featureSessionIds={featureSessionIds}
+            featureContextPercent={featureContextPercent}
+            featureStartedAt={featureStartedAt}
+            featureLastOutcome={featureLastOutcome}
+            featureRunningCommand={featureRunningCommand}
+            featureInputWaiting={featureInputWaiting}
+            featureRetryInfo={featureRetryInfo}
+            featureProfiles={featureProfiles}
+            featureQueueWaiters={featureQueueWaiters}
+            runLockFeatureId={healthStatus.runLockFeatureId}
+            onReleaseLock={handleReleaseLock}
+            onRunCommand={handleRunCommand}
+            onOpenTerminal={handleOpenTerminal}
+            onResumeBrowser={handleResumeBrowserByFeature}
+            onResumeTerminal={handleResumeByFeature}
+            onInputWaitingClick={handleInputWaitingClick}
+            onBulkQueue={handleBulkQueue}
+            onCancelQueueItem={handleCancelQueueItem}
+            onClearQueue={handleClearQueue}
+            onSelect={setSelectedFeatureId}
+            onStopExecution={killExecution}
+          />
+        </ErrorBoundary>
       </main>
 
       {selectedFeature && (
@@ -1456,25 +1511,27 @@ export default function App() {
       )}
 
       {showExecutionPanel && (
-        <ExecutionPanel
-          executions={executions}
-          activeId={activeExecutionId}
-          executionStates={executionStates}
-          inputRequests={inputRequests}
-          projectRoot={healthStatus.projectRoot}
-          headerHeight={headerHeight}
-          historyEntries={historyEntries}
-          historyLoading={historyLoading}
-          onSelectExecution={setActiveExecutionId}
-          onKill={killExecution}
-          onClose={() => setShowExecutionPanel(false)}
-          onCloseTab={handleCloseTab}
-          onCloseFinishedTabs={handleCloseFinishedTabs}
-          onResumeBrowser={handleResumeBrowser}
-          onResumeTerminal={handleResumeTerminal}
-          onAnswer={handleAnswer}
-          onOpenHistory={handleOpenHistory}
-        />
+        <ErrorBoundary>
+          <ExecutionPanel
+            executions={executions}
+            activeId={activeExecutionId}
+            executionStates={executionStates}
+            inputRequests={inputRequests}
+            projectRoot={healthStatus.projectRoot}
+            headerHeight={headerHeight}
+            historyEntries={historyEntries}
+            historyLoading={historyLoading}
+            onSelectExecution={setActiveExecutionId}
+            onKill={killExecution}
+            onClose={() => setShowExecutionPanel(false)}
+            onCloseTab={handleCloseTab}
+            onCloseFinishedTabs={handleCloseFinishedTabs}
+            onResumeBrowser={handleResumeBrowser}
+            onResumeTerminal={handleResumeTerminal}
+            onAnswer={handleAnswer}
+            onOpenHistory={handleOpenHistory}
+          />
+        </ErrorBoundary>
       )}
 
       {!showExecutionPanel && (

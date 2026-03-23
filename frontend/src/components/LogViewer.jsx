@@ -42,8 +42,8 @@ export default function LogViewer({ logs }) {
         <div className="log-empty">Waiting for output...</div>
       ) : (
         <>
-          {logs.map((entry, index) => (
-            <LogLine key={entry.id || index} entry={entry} />
+          {logs.map((entry) => (
+            <LogLine key={entry.id} entry={entry} />
           ))}
         </>
       )}

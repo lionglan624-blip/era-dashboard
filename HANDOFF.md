@@ -55,35 +55,37 @@ npm run test:mutation --workspace=backend    # backend mutation testing (increme
 dr button                                   # process.exit(0) → PM2 autorestart (5s delay)
 ```
 
-### Key Timeouts
+### Key Timeouts & Behaviors
 
 | Setting | Value | Purpose |
 |---------|------:|---------|
-| Rate limit cache | dynamic | CCS profile-level usage cache (weekly/session/sonnet). See [INTERNALS.md](INTERNALS.md) Rate Limit Cache Details |
-| Rate limit polling | 5min | Periodic background capture interval |
-| Rate limit capture | 20s | Overall timeout for node-pty capture (typical: 7-10s via `/usage` command) |
-| Stall check interval | 30s | Check for stall (worst-case detection ≤90s) |
+| Rate limit cache | dynamic | Profile-level usage cache (weekly/session/sonnet) |
+| Rate limit polling | 5min | Background capture interval |
+| Rate limit capture | 20s | node-pty capture timeout (typical: 7-10s) |
+| Stall check interval | 30s | Stall polling (worst-case ≤90s) |
 | Stall detection | 60s | Mark execution as stalled |
-| Execution TTL | 1h | Keep completed executions in memory |
+| Execution TTL | 24h | In-memory execution retention |
 | Stuck cleanup | 2h | Force-terminate unresponsive executions |
-| Pending handoff timeout (y/n) | 10s | Fallback terminal handoff if result event never arrives for y/n prompts |
-| Input email delay | 2min | Delayed email for input-wait/askuserquestion; cancelled if user answers in browser |
-| AskUserQuestion | kill+resume | Process killed on tool_use detection; browser answer resumes via `--resume` |
-| Account limit (429) | auto-retry (queue) | 429 detection + auto-recovery. Multiple concurrent 429s queued and drained sequentially (profile switch / timed retry). Stop hook suppressed for dashboard-managed processes (`CLAUDE_DASHBOARD_MANAGED=1`). See [INTERNALS.md](INTERNALS.md) Account Limit (429) Details |
-| Server error (500/529) | 5x (exp backoff) | Retry on `overloaded_error`/`api_error`/`internal_server_error` detected from debug log (`_scanDebugLogForServerError`). Exponential backoff: 1m→5m→30m→1h→2h (`SERVER_ERROR_BACKOFF_MS`). Counter: `serverErrorRetryCount` (independent). Profile switch skipped (not helpful). Blocked by `accountLimitHit`. On exhaustion: `server-error-exhausted` WS event + email |
-| Safe profile filter | allocation | `_allocateProfile` filters profiles ≥80% usage; per-execution 429 Strategy 1 switches profile on rate limit hit. Global auto-switch removed (round-robin makes global default meaningless) |
-| Context retry | 3x (5s delay) | Retry on **conversation context** exhaustion (error_max_turns, max_tokens, prompt too long, success+is_error **only when `!accountLimitHit`**, exit code 3 with null subtype). Counter: `contextRetryCount` (independent from FL). Blocked by `accountLimitHit` or `[BLOCKED]` status. On exhaustion: email subject `context-limit 3/3` |
-| FL auto-retry | 3x (5s delay) | Retry FL on non-context failure (non-zero exit) or re-run request (text pattern). Counter: `retryCount` (independent from context). Blocked by `accountLimitHit`, `isContextExhausted`, or `[BLOCKED]` status. On exhaustion: `fl-retry-exhausted` WS event + email subject `fl-retry 3/3` |
-| Incomplete termination | terminal handoff | Detect fc/fl/run exit 0 + `subtype=success` but feature status didn't advance to expected state (`EXPECTED_STATUS_AFTER_COMMAND` mapping: fc→`[PROPOSED]`, fl→`[REVIEWED]`, run→`[DONE]`). Uses `fileWatcher.statusCache` for status check. Skips when status is `[BLOCKED]` (legitimate) or `[DRAFT]` after FL (fc_rerun decision). **Always hands off to terminal** for `--resume` continuation (no fresh retry). For `/run`, sets `terminalActive` to hold run-lock + chain-slot. Rationale: with 1M context, fresh retries are wasteful — they restart Progressive Disclosure from Phase 1 and hit the same blockers |
-| Run-lock (`/run` exclusion) | acquire/release | Only one `/run` executes at a time. Acquired at `_startExecution` (`runLockFeatureId`). Released **only** on `[DONE]`/`[CANCELLED]` status change (`handleFeatureStatusChanged` → `_releaseRunLock`). NOT released on retry/kill/completion — retries bypass via same-feature check (`_isRunBlocked`). Kill without status change keeps lock until manual `[CANCELLED]` or DR. `_resolveTerminalActive` releases after terminal-active resolution |
-| Terminal-active (run) | lock-hold | Terminal handoff for /run holds run-lock + chain-slot until [DONE]/[CANCELLED]/stale(2h). [DONE] → imp auto-enqueue. See claudeService.js `_resolveTerminalActive` |
-| Chain slot reservation | per-chain | Reserves execution slot for entire chain lifecycle (fc→fl→run→imp). `chainSlots` Set tracks root execution IDs. Non-chain executions limited to `maxConcurrent - idleChainSlots`. Released on chain completion, cancel, handoff, stale cleanup, rate limit exhaustion, or **dep-blocked at bulk queue time** (re-reserved at dequeue). `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4). Slash commands (`commit`, `sync-deps`) are slot-exempt (`SLOT_EXEMPT_COMMANDS`) — bypass queue limit and don't count toward `runningCount` |
-| Dep-aware dequeue | on status-change + features-updated | Features with unresolved dependencies (`pendingDeps`) or dependencies with active `/imp` executions stay in queue but are skipped by `_dequeueNext()` and `_canStartNow()`. When a dep reaches `[DONE]`/`[CANCELLED]`, featureService cache is invalidated and queue is re-evaluated. `_getPendingDeps()` is fail-closed (returns `null` on error → treated as blocked). Dep info exposed in `queue-updated` WS event (`depBlocked`, `pendingDeps` fields). FE "Queue All" button queues all tree features including dep-blocked ones. Dequeue priority within same status: features with more dependants (other features listing them in dependsOn) dequeue first, computed per-dequeue from cachedFeatures (fail-closed: dependantCount=0 when featureService unavailable) |
-| Stale waiter → Auto-DR | 5min + 10min | Chain waiters older than `CHAIN_WAITER_TIMEOUT_MS` (5min) are cleaned by `_cleanupOldExecutions()` (runs every 10min). On cleanup, `onExecutionComplete()` is called to trigger deferred Auto-DR re-check |
-| Tmp cleanup interval | 6h | Purge old dashboard debug/daily logs (debug-*.log: 30 days, daily logs: 30 days) |
-| Insights capture | ~2min | `/insights` via node-pty ConPTY. Completion: dual detection (report.html mtime change + PTY `"report is ready"` pattern). Emails HTML report via `emailService.sendHtml()`. Scheduler: cron-style `setTimeout` (Monday 07:00 JST). API: `POST /api/insights/capture`, `GET /api/insights/status` |
-| Dependency updater | daily/weekly/monthly | Scheduled auto-update of CCS (daily), CodeRabbit/PM2 (weekly), NuGet-check/Go/pip/Docker-CE/SonarQube/npm (monthly). Type A (global CLI): version check → update → version diff → email. Type B (repo): update → git diff → test → commit or revert. Type docker: `wsl -- sudo service docker start` → `apt-get upgrade docker-ce` → version diff. Type docker-image: `docker pull` → recreate container if updated → health check (start → poll UP → stop; 120s timeout, 5s poll) → `service docker stop`. pip tier: `pytest pyyaml ruff yamllint`. PM2 daemon reload deferred to next clean exit via detached spawn (3s delay, `exitHelpers.js`). npm-dashboard requires idle check (5 conditions). Weekly summary email (`[Dep-Summary]`) aggregates all tiers; per-tier `[Dep-Update]` email suppressed for weekly. Master switch: `UPDATE_ENABLED` env var. API: `POST /api/deps/trigger`, `GET /api/deps/status` |
-| Update analysis | execution | Claude Code release detected via IMAP (GitHub notification) → `claudeService.executeUpdateAnalysis()` runs as `update-analysis` execution (tile, log, terminal resume). Analyzes 3 dimensions: Dashboard impact, Project impact (workflow/settings/env), and new feature adoption opportunities. Completion: `_onComplete` callback → HTML email with dual impact badges (D:/P:) + changelog. API: `GET /api/update/status` |
+| Pending handoff (y/n) | 10s | Fallback if result event never arrives |
+| Input email delay | 2min | Email delay; cancelled on browser answer |
+| AskUserQuestion | kill+resume | Kill on detection, resume via `--resume` |
+| Account limit (429) | queue-based | Profile switch or timed retry |
+| Server error (500/529) | 5x exp backoff | 1m→5m→30m→1h→2h retry |
+| Safe profile filter | allocation | Skip profiles ≥80% usage |
+| Context retry | 3x (5s) | Retry on context exhaustion |
+| FL auto-retry | 3x (5s) | Retry FL on non-context failure |
+| Incomplete termination | terminal handoff | Status didn't advance → `--resume` |
+| Run-lock | acquire/release | Single `/run` exclusion |
+| Terminal-active (run) | lock-hold | Hold run-lock until resolution |
+| Chain slot | per-chain | Slot reserved for chain lifecycle |
+| Dep-aware dequeue | event-driven | Skip features with pending deps |
+| Stale waiter → Auto-DR | 5min+10min | Clean chain waiters, trigger DR |
+| Tmp cleanup | 6h | Purge old debug/daily logs |
+| Insights capture | ~2min | `/insights` ConPTY + email |
+| Dependency updater | daily/weekly/monthly | Auto-update CLI tools and packages |
+| Update analysis | execution | Claude Code release impact analysis |
+
+See [INTERNALS.md — Execution Behavior Details](INTERNALS.md#execution-behavior-details) for detailed retry logic, detection mechanisms, and slot management.
 
 Full config: `backend/src/config.js`
 
@@ -407,24 +409,24 @@ ddiag
 
 ### Claude Code proxy bypass required
 
-Claude Code の Bash 環境に `HTTP_PROXY=http://127.0.0.1:8888` が設定されている（CCS proxy）。Dashboard API (`localhost:3001`) への `curl` はプロキシ経由になり、CONNECT 専用プロキシが HTTP GET を拒否する。
+Claude Code's Bash environment has `HTTP_PROXY=http://127.0.0.1:8888` set (CCS proxy). `curl` to Dashboard API (`localhost:3001`) routes through the proxy, which rejects HTTP GET (CONNECT-only proxy).
 
 ```bash
-# NG — プロキシ経由で失敗
+# NG — routed through proxy, fails
 curl http://localhost:3001/api/health
 
-# OK — プロキシをバイパス
+# OK — bypass proxy
 curl --noproxy localhost http://localhost:3001/api/health
 ```
 
-**背景**: 2026-03-17 に Dashboard 稼働中にもかかわらず「not reachable」と誤認。プロキシの `"This proxy only supports CONNECT method for HTTPS"` レスポンスが JSON parse 失敗し、fallback メッセージが出力された。
+**Background**: On 2026-03-17, the dashboard was running but reported as "not reachable". The proxy responded with `"This proxy only supports CONNECT method for HTTPS"`, which caused JSON parse failure and a misleading fallback message.
 
 ### Chain slot re-reservation ordering bug in `_dequeueNext()` — FIXED
 
-`_dequeueNext()` (`claudeService.js`) で、dep-blocked により chain slot が release された実行が、deps 解決後も non-chain 扱いされ `maxConcurrent - idleChainSlots` の縮小 limit で起動不能になっていた。
+In `_dequeueNext()` (`claudeService.js`), executions whose chain slot was released due to dep-blocking were treated as non-chain after deps resolved, making them unable to start under the reduced `maxConcurrent - idleChainSlots` limit.
 
-**原因**: `_belongsToActiveChain()` が chain slot を持たない chain root を false と判定していた。
-**修正**: `_belongsToActiveChain()` で chain root (`!exec.chainParentId`) は常に true を返すよう変更。chain child は従来通り親の slot 状態で判定。
+**Cause**: `_belongsToActiveChain()` returned false for chain roots without an active chain slot.
+**Fix**: `_belongsToActiveChain()` now always returns true for chain roots (`!exec.chainParentId`). Chain children still check parent slot status as before.
 
 ---
 
