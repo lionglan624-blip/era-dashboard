@@ -694,18 +694,108 @@ export class ClaudeService {
 
   /**
    * Get all feature IDs that are eligible for bulk queue.
-   * Reads from fileWatcher.statusCache and filters to features with a valid first command.
+   * Mirrors the frontend Queue All button logic (TreeView.jsx queueableAllIds):
+   * - Only features from index (featureService.getAllFeatures), not fileWatcher.statusCache
+   * - Excludes orphans (circular-dep features not reachable from tree roots)
+   * - Must have a valid status-to-command mapping
+   * - Excludes already running or queued features
    * @returns {string[]} Array of feature IDs
    */
   _getQueueableFeatureIds() {
-    if (!this.fileWatcher?.statusCache) return [];
+    if (!this.featureService) return [];
+    const { features } = this.featureService.getAllFeatures();
+
+    // Filter to active (not DONE/CANCELLED) — mirrors FE buildTree filter
+    const active = features.filter((f) => {
+      if (f.status === '[CANCELLED]') return false;
+      if (f.status === '[DONE]') return false;
+      return true;
+    });
+
+    // Build orphan set — mirrors FE buildTree orphan detection
+    const orphanIds = this._findOrphanIds(active);
+
+    // Build sets of running and queued feature IDs (mirrors FE's runningFeatures / featureQueueWaiters)
+    const runningFeatureIds = new Set();
+    const queuedFeatureIds = new Set();
+    for (const exec of this.executions.values()) {
+      if (exec.status === 'running' && exec.featureId) {
+        runningFeatureIds.add(String(exec.featureId));
+      }
+      if (exec.status === 'queued' && exec.featureId) {
+        queuedFeatureIds.add(String(exec.featureId));
+      }
+    }
+
     const ids = [];
-    for (const [featureId, status] of this.fileWatcher.statusCache) {
-      if (STATUS_TO_FIRST_COMMAND[status]) {
-        ids.push(featureId);
+    for (const f of active) {
+      const featureIdStr = String(f.id);
+      if (
+        STATUS_TO_FIRST_COMMAND[f.status] &&
+        !orphanIds.has(featureIdStr) &&
+        !runningFeatureIds.has(featureIdStr) &&
+        !queuedFeatureIds.has(featureIdStr)
+      ) {
+        ids.push(featureIdStr);
       }
     }
     return ids;
+  }
+
+  /**
+   * Find orphan feature IDs — features not reachable from tree roots.
+   * Mirrors frontend TreeView.jsx buildTree orphan detection.
+   * @param {Array} active - Active features (not DONE/CANCELLED)
+   * @returns {Set<string>} Set of orphan feature ID strings
+   */
+  _findOrphanIds(active) {
+    const activeIds = new Set(active.map((f) => String(f.id)));
+
+    // Build parent map: childId -> [parentIds within active set]
+    const parentMap = new Map();
+    for (const f of active) {
+      const fId = String(f.id);
+      const deps = (f.dependsOn || '')
+        .split(',')
+        .map((d) => d.trim().replace(/\D/g, ''))
+        .filter((d) => d && activeIds.has(d));
+      parentMap.set(fId, deps);
+    }
+
+    // Roots: features with no active parents
+    const roots = active.filter((f) => {
+      const parents = parentMap.get(String(f.id)) || [];
+      return parents.length === 0;
+    });
+
+    // Build children map for DFS
+    const childrenMap = new Map();
+    for (const f of active) childrenMap.set(String(f.id), []);
+    for (const [childId, parentIds] of parentMap) {
+      for (const pid of parentIds) {
+        if (childrenMap.has(pid)) childrenMap.get(pid).push(childId);
+      }
+    }
+
+    // DFS from roots to find reachable features
+    const visited = new Set();
+    const stack = roots.map((r) => String(r.id));
+    while (stack.length > 0) {
+      const id = stack.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const childId of childrenMap.get(id) || []) {
+        if (!visited.has(childId)) stack.push(childId);
+      }
+    }
+
+    // Orphans: active features not visited
+    const orphans = new Set();
+    for (const f of active) {
+      const fId = String(f.id);
+      if (!visited.has(fId)) orphans.add(fId);
+    }
+    return orphans;
   }
 
   /** Build environment variables for claude child processes */
