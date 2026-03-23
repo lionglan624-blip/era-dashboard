@@ -47,6 +47,7 @@ import {
   INPUT_EMAIL_DELAY_MS,
   getMaxConcurrentExecutions,
   getAutoSwitchThreshold,
+  getPromoMultiplier,
 } from '../config.js';
 
 // Import extracted modules
@@ -182,6 +183,8 @@ export class ClaudeService {
     this.emailService = new EmailService();
 
     this._cleanupInterval = setInterval(() => this._cleanupOldExecutions(), CLEANUP_INTERVAL_MS);
+    this._lastPromoMultiplier = getPromoMultiplier();
+    this._promoCheckInterval = setInterval(() => this._checkPromoTransition(), 60000);
 
     // Rate limit retry state (queue-based: supports multiple concurrent 429 recoveries)
     this._rateLimitRetryQueue = []; // Array of { execution, queuedAt }
@@ -645,13 +648,64 @@ export class ClaudeService {
             finalHistory,
             featureInfo,
           )
-          .catch(() => {});
+          .catch((err) =>
+            claudeLog.warn('[ClaudeService] Email notification failed:', err.message),
+          );
       }
     }
     // Trigger Auto-DR re-check if any stale waiters were removed
     if (staleFeatureIds.length > 0) {
       this.onExecutionComplete?.();
     }
+  }
+
+  /**
+   * Check for promo multiplier transitions and auto-queue/clear.
+   * Called every 60 seconds.
+   * - 1x → 2x: bulk queue all eligible features
+   * - 2x → 1x: clear the queue
+   */
+  _checkPromoTransition() {
+    const current = getPromoMultiplier();
+    const previous = this._lastPromoMultiplier;
+    this._lastPromoMultiplier = current;
+
+    if (previous === current) return;
+
+    if (current === 2) {
+      // 1x → 2x: queue all eligible features
+      claudeLog.info('[Promo] Transition 1x → 2x detected, bulk queuing all eligible features');
+      const featureIds = this._getQueueableFeatureIds();
+      if (featureIds.length > 0) {
+        const result = this.bulkQueue(featureIds);
+        claudeLog.info(
+          `[Promo] Bulk queued: ${result.queued.length} features, skipped: ${result.skipped.length}`,
+        );
+      } else {
+        claudeLog.info('[Promo] No queueable features found');
+      }
+    } else {
+      // 2x → 1x: clear queue
+      claudeLog.info('[Promo] Transition 2x → 1x detected, clearing queue');
+      const cleared = this.clearQueue();
+      claudeLog.info(`[Promo] Cleared ${cleared.length} queued items`);
+    }
+  }
+
+  /**
+   * Get all feature IDs that are eligible for bulk queue.
+   * Reads from fileWatcher.statusCache and filters to features with a valid first command.
+   * @returns {string[]} Array of feature IDs
+   */
+  _getQueueableFeatureIds() {
+    if (!this.fileWatcher?.statusCache) return [];
+    const ids = [];
+    for (const [featureId, status] of this.fileWatcher.statusCache) {
+      if (STATUS_TO_FIRST_COMMAND[status]) {
+        ids.push(featureId);
+      }
+    }
+    return ids;
   }
 
   /** Build environment variables for claude child processes */
@@ -869,6 +923,26 @@ export class ClaudeService {
     const { id: executionId, featureId, command } = execution;
     const cliPrompt =
       execution._debugPrompt || (featureId ? `/${command} ${featureId}` : `/${command}`);
+
+    // Defense-in-depth: final dep check before starting
+    // (SLOT_EXEMPT commands have no featureId, _getPendingDeps returns [] for them)
+    const pendingDeps = this._getPendingDeps(featureId);
+    if (pendingDeps === null || pendingDeps.length > 0) {
+      const depList = pendingDeps ? pendingDeps.map((d) => `F${d}`).join(', ') : 'unknown';
+      claudeLog.warn(
+        `[DepGuard] F${featureId} ${command} blocked at _startExecution: deps [${depList}]`,
+      );
+      this._pushLog(execution, {
+        line: `Blocked: waiting for dependencies [${depList}]`,
+        timestamp: nowJSTISO(),
+        level: 'warn',
+      });
+      // Re-queue — _dequeueNext() uses priority-aware sorting, position doesn't matter
+      this.queue.push(executionId);
+      this._releaseChainSlot(execution);
+      this._broadcastQueueUpdate();
+      return;
+    }
 
     execution.status = 'running';
     execution.startedAt = nowJSTISO();
@@ -1676,7 +1750,9 @@ export class ClaudeService {
             : null;
         this.emailService
           ?.sendServerErrorExhaustedNotification(execution, featureInfo)
-          .catch(() => {});
+          .catch((err) =>
+            claudeLog.warn('[ClaudeService] Email notification failed:', err.message),
+          );
         // Fall through to normal completion
       }
     }
@@ -1961,7 +2037,11 @@ export class ClaudeService {
       // Refresh rate limit for the profile that hit 429
       if (this.rateLimitService) {
         const profile = this.getCcsProfile();
-        this.rateLimitService.capture({ forceRefresh: true, profile }).catch(() => {});
+        this.rateLimitService
+          .capture({ forceRefresh: true, profile })
+          .catch((err) =>
+            claudeLog.warn('[ClaudeService] Rate limit capture failed:', err.message),
+          );
       }
 
       // Don't dequeue (paused or immediate retry pending)
@@ -3059,6 +3139,37 @@ export class ClaudeService {
       this._startExecution(nextExec);
     }
     this._broadcastQueueUpdate();
+  }
+
+  /**
+   * Check running executions for retroactive dependency violations.
+   * Called on features-updated to catch deps added after execution started.
+   * Kills violating executions immediately.
+   */
+  _checkRunningDepViolations() {
+    for (const [executionId, exec] of this.executions) {
+      if (exec.status !== 'running') continue;
+      // Slash commands and update-analysis are dep-exempt (no featureId)
+      if (SLOT_EXEMPT_COMMANDS.has(exec.command)) continue;
+
+      const pendingDeps = this._getPendingDeps(exec.featureId);
+      if (pendingDeps && pendingDeps.length > 0) {
+        const depList = pendingDeps.map((d) => `F${d}`).join(', ');
+        claudeLog.warn(
+          `[DepViolation] F${exec.featureId} ${exec.command} has unresolved deps ` +
+            `[${depList}] — killing execution ${executionId}`,
+        );
+        this.logStreamer?.broadcastAll({
+          type: 'dep-violation',
+          executionId,
+          featureId: exec.featureId,
+          command: exec.command,
+          pendingDeps: pendingDeps.map((d) => `F${d}`),
+          timestamp: nowJSTISO(),
+        });
+        this.killExecution(executionId);
+      }
+    }
   }
 
   _broadcastQueueUpdate() {

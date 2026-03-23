@@ -173,6 +173,7 @@ claudeService.featureService = featureService;
 
 // Wire fileWatcher features-updated to claudeService for dep-aware dequeue
 fileWatcher.onFeaturesUpdated = () => {
+  claudeService._checkRunningDepViolations();
   claudeService._dequeueNext();
 };
 

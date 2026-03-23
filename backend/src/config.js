@@ -23,7 +23,7 @@ export const DEFAULT_CONTEXT_WINDOW = 1000000;
 export const PROXY_TIMEOUT_MS = 2000;
 
 /** Time to keep completed executions in memory before cleanup */
-export const EXECUTION_TTL_MS = 3600000; // 1 hour
+export const EXECUTION_TTL_MS = 86400000; // 24 hours
 
 /** Maximum log entries per execution (prevents unbounded memory growth) */
 export const MAX_LOG_ENTRIES = 5000;

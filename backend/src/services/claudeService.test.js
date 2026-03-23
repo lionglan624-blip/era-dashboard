@@ -5200,8 +5200,8 @@ describe('ClaudeService', () => {
       const { service } = createService();
       const exec = service._createExecution({ featureId: '100', command: 'fl' });
       exec.status = 'completed';
-      // completedAt 2 hours ago (TTL is 1 hour)
-      exec.completedAt = new Date(Date.now() - 7200000).toISOString();
+      // completedAt 25 hours ago (TTL is 24 hours)
+      exec.completedAt = new Date(Date.now() - 90000000).toISOString();
       service.executions.set(exec.id, exec);
 
       service._cleanupOldExecutions();
@@ -5412,7 +5412,8 @@ describe('ClaudeService', () => {
       const { service } = createService();
       const exec = service._createExecution({ featureId: '100', command: 'fl' });
       exec.status = 'completed';
-      exec.completedAt = new Date(Date.now() - 7200000).toISOString();
+      // completedAt 25 hours ago (TTL is 24 hours)
+      exec.completedAt = new Date(Date.now() - 90000000).toISOString();
       service.executions.set(exec.id, exec);
 
       // Add some ring buffer data
