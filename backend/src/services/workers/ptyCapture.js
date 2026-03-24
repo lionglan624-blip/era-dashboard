@@ -134,7 +134,7 @@ function runCapture({ env, cols, rows, timeoutMs }) {
 
     // Phase 1: Detect TUI loaded (status bar)
     if (!tuiDetected) {
-      const hasStatusBar = /Context:\d+%/.test(text);
+      const hasStatusBar = /Context:\d+%/.test(text) || /\|\s*\d+%\s*\|/.test(text);
       if (hasStatusBar) {
         tuiDetected = true;
         // Phase 2: Wait 1.5s for TUI stabilization, then send /usage

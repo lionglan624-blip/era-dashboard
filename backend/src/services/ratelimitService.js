@@ -366,7 +366,7 @@ export class RateLimitService {
 
         // Phase 1: Detect TUI loaded (status bar)
         if (!tuiDetected) {
-          const hasStatusBar = /Context:\d+%/.test(text);
+          const hasStatusBar = /Context:\d+%/.test(text) || /\|\s*\d+%\s*\|/.test(text);
           if (hasStatusBar) {
             tuiDetected = true;
             claudeLog.info(

@@ -99,7 +99,11 @@ function run(env, reportPath, beforeMtime) {
 
       // Phase 1: Detect TUI loaded
       if (!tuiDetected) {
-        if (/Context:\d+%/.test(data) || rawChunks.some((c) => /Context:\d+%/.test(c))) {
+        if (
+          /Context:\d+%/.test(data) ||
+          /\|\s*\d+%\s*\|/.test(data) ||
+          rawChunks.some((c) => /Context:\d+%/.test(c) || /\|\s*\d+%\s*\|/.test(c))
+        ) {
           tuiDetected = true;
 
           setTimeout(() => {

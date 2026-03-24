@@ -1400,4 +1400,151 @@ describe('RateLimitService', () => {
       }
     });
   });
+
+  describe('TUI detection scenarios (end-to-end capture)', () => {
+    // These scenario tests verify the full capture flow:
+    //   PTY spawn → phased data emission → TUI detection → /usage command → parse
+    // The createMockPty helper emits all data at once and exits,
+    // which bypasses TUI detection entirely. These tests use phased
+    // data emission to exercise the actual regex matching in onData.
+
+    const USAGE_RESPONSE = [
+      'Current session\r\n',
+      '██████████████           28% used\r\n',
+      'Resets 11am (Asia/Tokyo)\r\n',
+      'Current week (all models)\r\n',
+      '██                       4% used\r\n',
+      'Resets Mar 28, 6am (Asia/Tokyo)\r\n',
+    ].join('');
+
+    /**
+     * Create a mock PTY that emits data in phases (simulating real PTY behavior).
+     * When /usage + Enter are detected in writes, emits usageResponse.
+     */
+    function createScenarioPty({ phases, usageResponse }) {
+      const handlers = { data: [], exit: [] };
+      let usageCommandSent = false;
+      let usageDataEmitted = false;
+
+      const mockPty = {
+        pid: 99999,
+        onData: (cb) => handlers.data.push(cb),
+        onExit: (cb) => handlers.exit.push(cb),
+        kill: vi.fn(),
+        write: vi.fn((text) => {
+          if (text === '/usage') usageCommandSent = true;
+          if (text === '\r' && usageCommandSent && !usageDataEmitted && usageResponse) {
+            usageDataEmitted = true;
+            setTimeout(() => handlers.data.forEach((cb) => cb(usageResponse)), 30);
+          }
+        }),
+      };
+
+      const mockSpawn = vi.fn(() => {
+        for (const phase of phases) {
+          setTimeout(() => handlers.data.forEach((cb) => cb(phase.data)), phase.delay);
+        }
+        return mockPty;
+      });
+
+      return { mockSpawn, mockPty, handlers };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('detects TUI with old format (Context:N%) and captures /usage output', async () => {
+      const { mockSpawn, mockPty } = createScenarioPty({
+        phases: [
+          { data: '▐▛███▜▌   Claude Code v2.1.81\r\n', delay: 10 },
+          { data: '❯\r\nContext:50%\r\n', delay: 100 },
+        ],
+        usageResponse: USAGE_RESPONSE,
+      });
+
+      service = new RateLimitService('/fake/root', {
+        getProfiles: () => ['p1'],
+        ptySpawn: mockSpawn,
+      });
+
+      const promise = service.capture({ forceRefresh: true });
+
+      // Phase 1: Banner + status bar arrive
+      await vi.advanceTimersByTimeAsync(200);
+      // Phase 2: TUI stabilization wait (1.5s) → /usage written
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(mockPty.write).toHaveBeenCalledWith('/usage');
+      // Phase 3: Autocomplete settle (800ms) → Enter → usage data (30ms) → detection wait (500ms)
+      await vi.advanceTimersByTimeAsync(1400);
+
+      const result = await promise;
+      expect(result.p1.session).toEqual({ percent: 28, resetsAt: '11am' });
+      expect(result.p1.weekly).toEqual({ percent: 4, resetsAt: 'Mar 28, 6am' });
+    });
+
+    it('detects TUI with new pipe-delimited format (profile | model | N% | session)', async () => {
+      // Actual v2.1.81 status bar format captured from production logs
+      const { mockSpawn, mockPty } = createScenarioPty({
+        phases: [
+          {
+            data: '▐▛███▜▌   Claude Code v2.1.81\r\n▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max\r\n',
+            delay: 10,
+          },
+          { data: '❯\r\n  google | Opus4.6/1M | 0% | 0d32ce49\r\n', delay: 100 },
+        ],
+        usageResponse: USAGE_RESPONSE,
+      });
+
+      service = new RateLimitService('/fake/root', {
+        getProfiles: () => ['p1'],
+        ptySpawn: mockSpawn,
+      });
+
+      const promise = service.capture({ forceRefresh: true });
+
+      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(mockPty.write).toHaveBeenCalledWith('/usage');
+      await vi.advanceTimersByTimeAsync(1400);
+
+      const result = await promise;
+      expect(result.p1.session).toEqual({ percent: 28, resetsAt: '11am' });
+      expect(result.p1.weekly).toEqual({ percent: 4, resetsAt: 'Mar 28, 6am' });
+    });
+
+    it('does NOT send /usage when only banner is shown (no status bar)', async () => {
+      const { mockSpawn, mockPty, handlers } = createScenarioPty({
+        phases: [
+          {
+            data: '▐▛███▜▌   Claude Code v2.1.81\r\n▝▜█████▛▘  Opus 4.6\r\n',
+            delay: 10,
+          },
+          // No status bar phase — simulates pre-fix regression
+        ],
+        usageResponse: USAGE_RESPONSE,
+      });
+
+      service = new RateLimitService('/fake/root', {
+        getProfiles: () => ['p1'],
+        ptySpawn: mockSpawn,
+      });
+
+      const promise = service.capture({ forceRefresh: true });
+
+      // Banner arrives, but no status bar
+      await vi.advanceTimersByTimeAsync(200);
+      // Simulate pty exit (e.g., timeout or process termination)
+      handlers.exit.forEach((cb) => cb({ exitCode: 0 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const result = await promise;
+      expect(mockPty.write).not.toHaveBeenCalledWith('/usage');
+      expect(result.p1).toBeNull();
+    });
+  });
 });
