@@ -952,6 +952,39 @@ describe('DependencyUpdaterService', () => {
   });
 
   // =========================================================================
+  // _runNugetSync
+  // =========================================================================
+
+  describe('_runNugetSync', () => {
+    const nugetSyncItem = DependencyUpdaterService.MONTHLY.find(
+      (item) => item.name === 'SonarAnalyzer-NuGet',
+    );
+
+    it('exists in MONTHLY tier with correct structure', () => {
+      expect(nugetSyncItem.repos).toHaveLength(2);
+      expect(nugetSyncItem.repos[0].name).toBe('core');
+      expect(nugetSyncItem.repos[1].name).toBe('devkit');
+      expect(nugetSyncItem.sonarApiUrl).toContain('plugins/installed');
+      expect(nugetSyncItem.packageName).toBe('SonarAnalyzer.CSharp');
+      expect(nugetSyncItem.slnMap.core).toBe('Era.Core.sln');
+      expect(nugetSyncItem.slnMap.devkit).toBe('devkit.sln');
+    });
+
+    it('buildCmd generates correct WSL command', () => {
+      const cmd = nugetSyncItem.buildCmd('C:\\Era\\core', 'Era.Core.sln');
+      expect(cmd).toContain('/mnt/c/Era/core');
+      expect(cmd).toContain('Era.Core.sln');
+      expect(cmd).toContain('dotnet build');
+    });
+
+    it('exists in MONTHLY tier definition', () => {
+      expect(nugetSyncItem).toBeDefined();
+      expect(nugetSyncItem.type).toBe('nuget-sync');
+      expect(nugetSyncItem.repos).toHaveLength(2);
+    });
+  });
+
+  // =========================================================================
   // _runDockerImageUpdate (docker-image integration)
   // =========================================================================
 

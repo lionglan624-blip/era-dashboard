@@ -110,6 +110,22 @@ export class DependencyUpdaterService {
       postCmd: 'wsl -- sudo service docker stop',
       needsIdle: false,
     },
+    {
+      name: 'SonarAnalyzer-NuGet',
+      type: 'nuget-sync',
+      // Syncs SonarAnalyzer.CSharp NuGet version in core + devkit to match SonarQube csharp plugin
+      sonarApiUrl: 'http://localhost:9000/api/plugins/installed',
+      packageName: 'SonarAnalyzer.CSharp',
+      repos: [
+        { name: 'core', dir: 'C:\\Era\\core', propsPath: 'Directory.Build.props' },
+        { name: 'devkit', dir: 'C:\\Era\\devkit', propsPath: 'Directory.Build.props' },
+      ],
+      buildCmd: (dir, sln) =>
+        `wsl -- bash -c 'cd ${dir.replace(/\\/g, '/').replace('C:', '/mnt/c')} && /home/siihe/.dotnet/dotnet build ${sln} --nologo -v q'`,
+      slnMap: { core: 'Era.Core.sln', devkit: 'devkit.sln' },
+      commitMsg: 'chore(deps): sync SonarAnalyzer.CSharp to SonarQube plugin version',
+      needsIdle: false,
+    },
     // npm-dashboard MUST be last (triggerRestart causes process.exit)
     {
       name: 'npm-dashboard',
@@ -386,6 +402,9 @@ export class DependencyUpdaterService {
               break;
             case 'docker-image':
               result = await this._runDockerImageUpdate(item);
+              break;
+            case 'nuget-sync':
+              result = await this._runNugetSync(item);
               break;
             default:
               result = { name: item.name, success: false, error: `Unknown type: ${item.type}` };
@@ -708,6 +727,133 @@ export class DependencyUpdaterService {
     // Timeout — stop container regardless (docker stop on crashed container is harmless; _exec absorbs errors)
     await this._exec('wsl -- docker stop sonarqube');
     return { passed: false, error: `health check timeout (last: ${lastError})` };
+  }
+
+  // =========================================================================
+  // NuGet sync: match SonarAnalyzer.CSharp to SonarQube csharp plugin version
+  // =========================================================================
+
+  async _runNugetSync(item) {
+    const result = { name: item.name, success: true, repos: {} };
+
+    // Step 1: Query SonarQube for csharp plugin version
+    // SonarQube must be running (started by preceding SonarQube docker-image step)
+    const startResult = await this._exec('wsl -- docker start sonarqube');
+    if (!startResult.success) {
+      return { ...result, success: false, error: `container start failed: ${startResult.error}` };
+    }
+
+    // Wait for SonarQube readiness
+    const deadline = Date.now() + SONAR_HEALTH_CHECK_TIMEOUT_MS;
+    let ready = false;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, SONAR_HEALTH_CHECK_POLL_MS));
+      const check = await this._exec(
+        'curl --noproxy localhost -sf http://localhost:9000/api/system/status',
+        { timeout: 10000 },
+      );
+      if (check.success && check.stdout.includes('"status":"UP"')) {
+        ready = true;
+        break;
+      }
+    }
+    if (!ready) {
+      await this._exec('wsl -- docker stop sonarqube');
+      return { ...result, success: false, error: 'SonarQube not ready within timeout' };
+    }
+
+    // Query plugin version
+    const pluginResult = await this._exec(`curl --noproxy localhost -sf "${item.sonarApiUrl}"`, {
+      timeout: 10000,
+    });
+    if (!pluginResult.success) {
+      await this._exec('wsl -- docker stop sonarqube');
+      return { ...result, success: false, error: `plugin API failed: ${pluginResult.error}` };
+    }
+
+    let targetVersion;
+    try {
+      const plugins = JSON.parse(pluginResult.stdout).plugins;
+      const csharpPlugin = plugins.find((p) => p.key === 'csharp');
+      if (!csharpPlugin) {
+        await this._exec('wsl -- docker stop sonarqube');
+        return { ...result, success: false, error: 'csharp plugin not found in SonarQube' };
+      }
+      targetVersion = csharpPlugin.version;
+      result.targetVersion = targetVersion;
+      log.info(`[${item.name}] SonarQube csharp plugin version: ${targetVersion}`);
+    } catch (err) {
+      await this._exec('wsl -- docker stop sonarqube');
+      return { ...result, success: false, error: `plugin version parse failed: ${err.message}` };
+    }
+
+    await this._exec('wsl -- docker stop sonarqube');
+
+    // Step 2: Update each repo's Directory.Build.props
+    for (const repo of item.repos) {
+      const repoResult = { updated: false };
+      const propsFile = path.join(repo.dir, repo.propsPath);
+
+      try {
+        const content = fs.readFileSync(propsFile, 'utf8');
+
+        // Check if SonarAnalyzer.CSharp PackageReference exists
+        const pkgMatch = content.match(
+          /(<PackageReference\s+Include="SonarAnalyzer\.CSharp"\s+Version=")([^"]+)(")/,
+        );
+
+        if (!pkgMatch) {
+          repoResult.skipped = 'SonarAnalyzer.CSharp not in Directory.Build.props';
+          result.repos[repo.name] = repoResult;
+          continue;
+        }
+
+        const currentVersion = pkgMatch[2];
+        repoResult.versionBefore = currentVersion;
+
+        if (currentVersion === targetVersion) {
+          repoResult.skipped = 'already in sync';
+          result.repos[repo.name] = repoResult;
+          continue;
+        }
+
+        // Update version
+        const updated = content.replace(
+          pkgMatch[0],
+          `${pkgMatch[1]}${targetVersion}${pkgMatch[3]}`,
+        );
+        fs.writeFileSync(propsFile, updated, 'utf8');
+        repoResult.versionAfter = targetVersion;
+
+        // Build verification
+        const sln = item.slnMap[repo.name];
+        const buildResult = await this._exec(item.buildCmd(repo.dir, sln), {
+          timeout: UPDATE_COMMAND_TIMEOUT_MS,
+        });
+
+        if (!buildResult.success) {
+          // Revert on build failure
+          fs.writeFileSync(propsFile, content, 'utf8');
+          repoResult.success = false;
+          repoResult.reverted = true;
+          repoResult.buildError = buildResult.stderr || buildResult.error;
+          result.repos[repo.name] = repoResult;
+          continue;
+        }
+
+        // Commit
+        await this._gitCommit(repo.dir, [repo.propsPath], `${item.commitMsg} (${targetVersion})`);
+        repoResult.updated = true;
+        repoResult.committed = true;
+      } catch (err) {
+        repoResult.success = false;
+        repoResult.error = err.message;
+      }
+
+      result.repos[repo.name] = repoResult;
+    }
+
+    return result;
   }
 
   // =========================================================================
