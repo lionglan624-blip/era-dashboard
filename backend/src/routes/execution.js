@@ -185,6 +185,20 @@ export function createExecutionRouter(claudeService, featureService) {
     res.json(claudeService.getQueueStatus());
   });
 
+  // POST /api/execution/run-lock - Manually acquire run-lock (DR recovery)
+  router.post('/run-lock', (req, res) => {
+    const { featureId } = req.body;
+    if (!featureId) {
+      return res.status(400).json({ error: 'featureId is required' });
+    }
+    try {
+      claudeService.acquireRunLock(featureId);
+      res.json({ acquired: true, featureId: String(featureId) });
+    } catch (err) {
+      res.status(err.status || 500).json({ acquired: false, message: err.message });
+    }
+  });
+
   // DELETE /api/execution/run-lock - Release stale run-lock (only when no /run is actively running)
   router.delete('/run-lock', (req, res) => {
     const held = claudeService.runLockFeatureId;

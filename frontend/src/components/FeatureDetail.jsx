@@ -2,7 +2,15 @@ import React from 'react';
 import StatusBadge from './StatusBadge.jsx';
 import ProgressBar from './ProgressBar.jsx';
 
-export default function FeatureDetail({ feature, onClose, onRunCommand, isRunning }) {
+export default function FeatureDetail({
+  feature,
+  onClose,
+  onRunCommand,
+  isRunning,
+  runLockFeatureId,
+  onAcquireLock,
+  onReleaseLock,
+}) {
   if (!feature) return null;
 
   const {
@@ -62,6 +70,29 @@ export default function FeatureDetail({ feature, onClose, onRunCommand, isRunnin
             >
               run
             </button>
+            {runLockFeatureId === String(id) ? (
+              <button
+                className="btn-detail-cmd btn-lock"
+                onClick={() => {
+                  onReleaseLock(id);
+                  onClose();
+                }}
+                disabled={isRunning}
+              >
+                Unlock
+              </button>
+            ) : (
+              <button
+                className="btn-detail-cmd btn-lock"
+                onClick={() => {
+                  onAcquireLock(id);
+                  onClose();
+                }}
+                disabled={isRunning || !!runLockFeatureId}
+              >
+                Lock
+              </button>
+            )}
           </div>
         </div>
 

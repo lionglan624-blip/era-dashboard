@@ -681,6 +681,16 @@ body {
   color: #fff;
 }
 
+.btn-detail-cmd.btn-lock {
+  border-color: #f59e0b;
+}
+
+.btn-detail-cmd.btn-lock:hover:not(:disabled) {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #000;
+}
+
 .btn-detail-cmd:disabled {
   opacity: 0.3;
   cursor: not-allowed;

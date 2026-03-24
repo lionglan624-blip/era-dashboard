@@ -109,6 +109,7 @@ Full config: `backend/src/config.js`
 | `/api/execution` | GET | List all executions |
 | `/api/ratelimit/:profile` | POST | Manual rate limit cache injection |
 | `/api/execution/queue` | GET | Queue status (includes `chainSlotHolders` with execution details, `runLockFeatureId`) |
+| `/api/execution/run-lock` | POST | Manually acquire run-lock (DR recovery) |
 | `/api/execution/queue/clear` | POST | Clear queued items |
 | `/api/execution/queue/bulk` | POST | Bulk queue features |
 | `/api/features` | GET | List features |

@@ -1,4 +1,4 @@
-import { spawn, spawnSync, execSync } from 'child_process';
+import { spawn, fork, spawnSync, execSync } from 'child_process';
 import { mkdir } from 'fs/promises';
 import {
   writeFileSync,
@@ -45,6 +45,10 @@ import {
   MAX_SERVER_ERROR_RETRIES,
   SERVER_ERROR_BACKOFF_MS,
   INPUT_EMAIL_DELAY_MS,
+  HANDOFF_MODE,
+  REMOTE_CONTROL_PROFILE,
+  REMOTE_URL_TIMEOUT_MS,
+  REMOTE_CONTROL_TIMEOUT_MS,
   getMaxConcurrentExecutions,
   getAutoSwitchThreshold,
   getPromoMultiplier,
@@ -553,6 +557,18 @@ export class ClaudeService {
     }
     // Detect stuck running executions (process likely dead, no output for extended period)
     for (const [id, exec] of this.executions) {
+      if (exec.remoteControlActive) {
+        const remoteAge = now - exec.remoteControlActiveAt;
+        if (remoteAge > REMOTE_CONTROL_TIMEOUT_MS) {
+          claudeLog.warn(
+            `[Queue] Stale remote-control cleanup: F${exec.featureId} (${Math.round(remoteAge / 60000)}min)`,
+          );
+          exec.remoteControlActive = false;
+          exec.terminalActive = false;
+          this._releaseChainSlot(exec);
+        }
+        continue;
+      }
       if (exec.terminalActive) {
         const terminalAge = now - exec.terminalActiveAt;
         if (terminalAge > STUCK_RUNNING_TIMEOUT_MS) {
@@ -1397,8 +1413,12 @@ export class ClaudeService {
     this._saveHistoryEntry(execution);
 
     setTimeout(() => {
-      this.resumeInTerminal(execution.id);
-      // Notify after terminal is opened — prevents Auto-DR from killing
+      if (HANDOFF_MODE === 'remote') {
+        this.resumeRemote(execution.id, reason);
+      } else {
+        this.resumeInTerminal(execution.id);
+      }
+      // Notify after terminal/remote is opened — prevents Auto-DR from killing
       // the process before the 300ms handoff delay completes.
       this.onExecutionComplete?.(execution);
     }, HANDOFF_DELAY_MS);
@@ -2962,6 +2982,23 @@ export class ClaudeService {
   }
 
   /**
+   * Manually acquire run-lock (DR recovery).
+   * Post-DR both runLockFeatureId and executions map are lost,
+   * so no running-/run check is needed (unlike DELETE which guards against it).
+   */
+  acquireRunLock(featureId) {
+    const validatedId = validateFeatureId(featureId);
+    if (this.runLockFeatureId) {
+      const err = new Error(`Run-lock already held by F${this.runLockFeatureId}`);
+      err.status = 409;
+      throw err;
+    }
+    this.runLockFeatureId = validatedId;
+    claudeLog.info(`[Queue] Run-lock manually acquired: F${validatedId}`);
+    this._broadcastQueueUpdate();
+  }
+
+  /**
    * Release run-lock on terminal status ([DONE]/[CANCELLED]) only.
    * Called from fileWatcher status-change events.
    * @param {string} featureId
@@ -4145,6 +4182,145 @@ export class ClaudeService {
     proc.unref();
 
     return { tabTitle, sessionId };
+  }
+
+  /**
+   * Resume execution via Remote Control (node-pty worker).
+   * Spawns claude --resume --remote-control in a crash-isolated worker,
+   * captures the Remote Control URL from PTY output, and emails it.
+   * Falls back to resumeInTerminal on failure.
+   */
+  resumeRemote(executionId, reason = '') {
+    const exec = this.executions.get(executionId);
+    const persisted = !exec?.sessionId ? this._lookupSessionId(executionId) : null;
+    const sessionId = exec?.sessionId || persisted?.sessionId;
+    const featureId = exec?.featureId || persisted?.featureId;
+
+    if (!sessionId) {
+      claudeLog.warn(`[RemoteControl] No session ID for ${executionId}, falling back to terminal`);
+      return this.resumeInTerminal(executionId);
+    }
+
+    // Use fixed Apple profile for Remote Control (matches phone browser login)
+    const profile = REMOTE_CONTROL_PROFILE;
+    const profileDir = path.join(CCS_INSTANCES_DIR, profile);
+    if (!existsSync(profileDir)) {
+      claudeLog.warn(
+        `[RemoteControl] Profile '${profile}' not found at ${profileDir}, falling back to terminal`,
+      );
+      return this.resumeInTerminal(executionId);
+    }
+
+    claudeLog.info(
+      `[RemoteControl] Starting remote-control for F${featureId} session ${sessionId} (profile: ${profile})`,
+    );
+
+    // Build env with fixed Apple profile
+    const env = this._buildClaudeEnv({ terminal: true, ccsProfile: profile });
+
+    // Fork crash-isolated worker
+    const workerPath = path.join(__dirname, 'workers', 'remoteCapture.js');
+    const worker = fork(workerPath, [], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+
+    let urlCaptured = false;
+    let urlTimeout = null;
+    let sessionTimeout = null;
+
+    // Mark execution as remote-control active
+    if (exec) {
+      exec.remoteControlActive = true;
+      exec.remoteControlActiveAt = Date.now();
+    }
+
+    // URL capture timeout: fall back to terminal if URL not captured in time
+    urlTimeout = setTimeout(() => {
+      if (!urlCaptured) {
+        claudeLog.warn(
+          `[RemoteControl] URL capture timeout for F${featureId}, killing worker and falling back to terminal`,
+        );
+        worker.send({ type: 'kill' });
+        if (exec) {
+          exec.remoteControlActive = false;
+        }
+        // Wait for worker to exit before opening terminal
+        setTimeout(() => this.resumeInTerminal(executionId), 1000);
+      }
+    }, REMOTE_URL_TIMEOUT_MS);
+
+    // IPC handler
+    worker.on('message', (msg) => {
+      if (msg.type === 'url') {
+        urlCaptured = true;
+        clearTimeout(urlTimeout);
+        claudeLog.info(`[RemoteControl] URL captured for F${featureId}: ${msg.url}`);
+
+        // Send email with URL
+        this.emailService
+          ?.sendRemoteUrlNotification(
+            exec || { featureId, command: 'resume', sessionId },
+            msg.url,
+            reason,
+          )
+          .catch((err) => {
+            claudeLog.error(`[RemoteControl] Email failed for F${featureId}: ${err.message}`);
+          });
+
+        // Start session timeout (4h)
+        sessionTimeout = setTimeout(() => {
+          claudeLog.warn(
+            `[RemoteControl] Session timeout (${REMOTE_CONTROL_TIMEOUT_MS / 3600000}h) for F${featureId}, killing worker`,
+          );
+          worker.send({ type: 'kill' });
+        }, REMOTE_CONTROL_TIMEOUT_MS);
+      } else if (msg.type === 'exit') {
+        claudeLog.info(
+          `[RemoteControl] Worker exited for F${featureId} (exitCode: ${msg.exitCode})`,
+        );
+        clearTimeout(urlTimeout);
+        clearTimeout(sessionTimeout);
+        // Clean up execution state
+        if (exec) {
+          exec.remoteControlActive = false;
+          exec.terminalActive = false;
+          this._releaseChainSlot(exec);
+        }
+      } else if (msg.type === 'error') {
+        claudeLog.error(`[RemoteControl] Worker error for F${featureId}: ${msg.message}`);
+        clearTimeout(urlTimeout);
+        if (exec) {
+          exec.remoteControlActive = false;
+        }
+        this.resumeInTerminal(executionId);
+      }
+    });
+
+    worker.on('error', (err) => {
+      claudeLog.error(`[RemoteControl] Worker process error for F${featureId}: ${err.message}`);
+      clearTimeout(urlTimeout);
+      clearTimeout(sessionTimeout);
+      if (exec) {
+        exec.remoteControlActive = false;
+      }
+      this.resumeInTerminal(executionId);
+    });
+
+    worker.on('exit', (code) => {
+      clearTimeout(urlTimeout);
+      clearTimeout(sessionTimeout);
+      if (exec) {
+        exec.remoteControlActive = false;
+        exec.terminalActive = false;
+        this._releaseChainSlot(exec);
+      }
+      claudeLog.info(`[RemoteControl] Worker process exited for F${featureId} (code: ${code})`);
+    });
+
+    // Start the capture
+    worker.send({ type: 'start', sessionId, env, cols: 120, rows: 30, cwd: this.projectRoot });
+
+    return { sessionId, featureId, mode: 'remote' };
   }
 
   /**

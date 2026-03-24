@@ -848,6 +848,36 @@ export default function App() {
     [startCommand, subscribe, addNotification, healthStatus.runLockFeatureId, checkHealth],
   );
 
+  const handleAcquireLock = useCallback(
+    async (featureId) => {
+      try {
+        const res = await fetch('/api/execution/run-lock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ featureId: String(featureId) }),
+        });
+        const data = await res.json();
+        if (data.acquired) {
+          addNotification({
+            type: 'info',
+            title: 'Run Lock',
+            message: `F${featureId} lock acquired`,
+          });
+          checkHealth();
+        } else {
+          addNotification({
+            type: 'warning',
+            title: 'Lock Failed',
+            message: data.message || 'Could not acquire lock',
+          });
+        }
+      } catch (err) {
+        addNotification({ type: 'warning', title: 'Lock Failed', message: err.message });
+      }
+    },
+    [addNotification, checkHealth],
+  );
+
   const handleReleaseLock = useCallback(
     async (featureId) => {
       try {
@@ -1507,6 +1537,9 @@ export default function App() {
           onClose={() => setSelectedFeatureId(null)}
           onRunCommand={handleRunCommand}
           isRunning={runningFeatures.has(String(selectedFeature.id))}
+          runLockFeatureId={healthStatus.runLockFeatureId}
+          onAcquireLock={handleAcquireLock}
+          onReleaseLock={handleReleaseLock}
         />
       )}
 

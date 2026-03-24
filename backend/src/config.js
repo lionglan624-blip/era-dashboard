@@ -170,6 +170,22 @@ export const AUTO_DR_DEBOUNCE_MS = 2000;
 export const AUTO_DR_STARTUP_COOLDOWN_MS = 10000;
 
 // =============================================================================
+// Remote Control (Handoff Mode) Configuration
+// =============================================================================
+
+/** Handoff mode: 'terminal' (wt.exe, default) or 'remote' (node-pty + Remote Control URL email) */
+export const HANDOFF_MODE = process.env.HANDOFF_MODE || 'terminal';
+
+/** CCS profile for Remote Control sessions (must match phone browser's claude.ai account) */
+export const REMOTE_CONTROL_PROFILE = process.env.REMOTE_CONTROL_PROFILE || 'apple';
+
+/** Timeout for capturing Remote Control URL from PTY output (ms) */
+export const REMOTE_URL_TIMEOUT_MS = 30000;
+
+/** Maximum remote control session duration before force-kill (ms) */
+export const REMOTE_CONTROL_TIMEOUT_MS = 14400000; // 4 hours
+
+// =============================================================================
 // Tmp Cleanup Configuration
 // =============================================================================
 

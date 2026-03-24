@@ -77,6 +77,7 @@ function createMockClaudeService() {
       running: [],
     })),
     runLockFeatureId: null,
+    acquireRunLock: vi.fn(),
   };
 }
 
@@ -791,6 +792,43 @@ describe('Execution Routes', () => {
       const res = await request(app, 'GET', '/api/execution/status');
       expect(res.status).toBe(200);
       expect(res.body.features).toEqual([]);
+    });
+  });
+
+  describe('POST /run-lock', () => {
+    it('acquires run-lock for valid featureId', async () => {
+      const mock = createMockClaudeService();
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'POST', '/api/execution/run-lock', { featureId: '100' });
+      expect(res.status).toBe(200);
+      expect(res.body.acquired).toBe(true);
+      expect(res.body.featureId).toBe('100');
+      expect(mock.acquireRunLock).toHaveBeenCalledWith('100');
+    });
+
+    it('returns 400 when featureId is missing', async () => {
+      const mock = createMockClaudeService();
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'POST', '/api/execution/run-lock', {});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('featureId is required');
+    });
+
+    it('returns 409 when lock already held', async () => {
+      const mock = createMockClaudeService();
+      const err = new Error('Run-lock already held by F200');
+      err.status = 409;
+      mock.acquireRunLock.mockImplementation(() => {
+        throw err;
+      });
+      const featureMock = createMockFeatureService();
+      const app = createApp(mock, featureMock);
+      const res = await request(app, 'POST', '/api/execution/run-lock', { featureId: '100' });
+      expect(res.status).toBe(409);
+      expect(res.body.acquired).toBe(false);
+      expect(res.body.message).toContain('Run-lock already held');
     });
   });
 });

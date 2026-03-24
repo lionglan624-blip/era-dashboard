@@ -191,6 +191,18 @@ export class EmailService {
     await this._send(subject, textLines.join('\n'));
   }
 
+  async sendRemoteUrlNotification(execution, url, reason) {
+    const command = execution.command.replace(/^resume:/i, '');
+    const cmdUpper = command.toUpperCase();
+
+    const subject = execution.featureId
+      ? `${cmdUpper} ${execution.featureId} remote-control`
+      : `${command} remote-control ${nowJST().slice(11, 16)}`;
+
+    const text = `${url}\n\n${reason}\n${nowJST()}`;
+    await this._send(subject, text);
+  }
+
   /**
    * Format chain history into a compact summary string
    * @param {Array<{command: string, result: string, reason?: string}>} chainHistory - Chain execution history
