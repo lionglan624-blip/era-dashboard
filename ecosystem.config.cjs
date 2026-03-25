@@ -41,6 +41,7 @@ module.exports = {
           devkit: 'C:\\Era\\devkit',
           dashboard: 'C:\\Era\\dashboard'
         }),
+        HANDOFF_MODE: 'remote',
         // CCS_PROFILE: Auto-detected from ~/.ccs/config.yaml (set manually to override)
       },
     },
