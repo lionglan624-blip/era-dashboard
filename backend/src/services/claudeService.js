@@ -1392,14 +1392,15 @@ export class ClaudeService {
       clearTimeout(execution._pendingInputEmailTimeout);
       execution._pendingInputEmailTimeout = null;
     }
-    this.emailService
-      ?.sendHandoffNotification(
-        execution,
-        reason,
-        execution.chain?.enabled ? finalHistory : undefined,
-        featureInfo,
-      )
-      .catch(() => {});
+    const emailPromise =
+      this.emailService
+        ?.sendHandoffNotification(
+          execution,
+          reason,
+          execution.chain?.enabled ? finalHistory : undefined,
+          featureInfo,
+        )
+        ?.catch(() => {}) ?? Promise.resolve();
 
     if (execution.process) {
       this._killProcess(execution.process);
@@ -1412,14 +1413,15 @@ export class ClaudeService {
 
     this._saveHistoryEntry(execution);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       if (HANDOFF_MODE === 'remote') {
         this.resumeRemote(execution.id, reason);
       } else {
         this.resumeInTerminal(execution.id);
       }
-      // Notify after terminal/remote is opened — prevents Auto-DR from killing
-      // the process before the 300ms handoff delay completes.
+      // Ensure handoff email is sent before Auto-DR can kill the process.
+      // setTimeout does not propagate async errors, but emailPromise already has .catch().
+      await emailPromise;
       this.onExecutionComplete?.(execution);
     }, HANDOFF_DELAY_MS);
 
@@ -2292,6 +2294,7 @@ export class ClaudeService {
       !incompleteRetryExhausted &&
       !isBlocked &&
       !isDraftAfterFl &&
+      !execution.chainCutRequested &&
       (!execution._hadInputWait || execution._resumedAnswer)
     ) {
       this.chainExecutor.registerWaiter(execution);
@@ -2304,7 +2307,8 @@ export class ClaudeService {
         isLastChainStep ||
         incompleteRetryExhausted ||
         isBlocked ||
-        isDraftAfterFl) &&
+        isDraftAfterFl ||
+        execution.chainCutRequested) &&
       !execution.waitingForInput &&
       !execution.inputRequired &&
       (!execution._hadInputWait || execution._resumedAnswer)
@@ -2314,17 +2318,19 @@ export class ClaudeService {
       const chainHistory = execution.chain?.history || [];
       const isContextRetryExhausted =
         execution.chain?.contextRetryCount >= MAX_RETRIES && isContextExhausted;
-      const currentResult = execution.accountLimitHit
-        ? 'account-limit'
-        : isFlRetryExhausted
-          ? 'retry-exhausted'
-          : isContextRetryExhausted
-            ? 'context-retry-exhausted'
-            : incompleteRetryExhausted
-              ? 'incomplete-retry-exhausted'
-              : exitCode === 0
-                ? 'ok'
-                : 'fail';
+      const currentResult = execution.chainCutRequested
+        ? 'chain-cut'
+        : execution.accountLimitHit
+          ? 'account-limit'
+          : isFlRetryExhausted
+            ? 'retry-exhausted'
+            : isContextRetryExhausted
+              ? 'context-retry-exhausted'
+              : incompleteRetryExhausted
+                ? 'incomplete-retry-exhausted'
+                : exitCode === 0
+                  ? 'ok'
+                  : 'fail';
       const finalHistory = [...chainHistory, { command: execution.command, result: currentResult }];
       const featureInfo =
         execution.featureId && this.featureService
@@ -3572,6 +3578,7 @@ export class ClaudeService {
           }
         : null,
       chainParentId: exec.chainParentId,
+      chainCutRequested: exec.chainCutRequested || false,
       inputRequired: exec.inputRequired
         ? {
             questions: exec.inputRequired.questions,
@@ -3615,6 +3622,37 @@ export class ClaudeService {
     this.streamParser.clearRingBuffer(id);
     this.executions.delete(id);
     return true;
+  }
+
+  chainCut(executionId) {
+    const exec = this.executions.get(executionId);
+    if (!exec) return { success: false, reason: 'not-found' };
+    if (!exec.chain?.enabled) return { success: false, reason: 'not-chain' };
+    if (exec.chainCutRequested) return { success: false, reason: 'already-requested' };
+    if (exec.status !== 'running') return { success: false, reason: 'not-running' };
+
+    exec.chainCutRequested = true;
+    // Edge case: waiter already registered (process exited, handleStatusChanged pending)
+    this.chainExecutor.deleteWaiter(exec.featureId);
+
+    this._pushLog(exec, {
+      line: '[Chain] Chain-cut requested. Current command will finish, chain will not advance.',
+      timestamp: nowJSTISO(),
+      level: 'warning',
+    });
+
+    this.logStreamer?.broadcastAll({
+      type: 'chain-cut',
+      featureId: exec.featureId,
+      executionId,
+      command: exec.command,
+      timestamp: nowJSTISO(),
+    });
+
+    claudeLog.info(
+      `[Chain] Chain-cut requested for F${exec.featureId} after ${exec.command} (exec: ${executionId})`,
+    );
+    return { success: true };
   }
 
   killExecution(executionId) {

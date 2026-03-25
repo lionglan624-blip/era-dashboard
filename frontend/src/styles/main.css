@@ -696,6 +696,22 @@ body {
   cursor: not-allowed;
 }
 
+.btn-chain-cut {
+  background: #e67e22;
+  color: white;
+  border-color: #d35400;
+}
+
+.btn-chain-cut:hover:not(:disabled) {
+  background: #d35400;
+}
+
+.btn-chain-cut:disabled {
+  background: #95a5a6;
+  border-color: #7f8c8d;
+  cursor: not-allowed;
+}
+
 .detail-section {
   margin-bottom: 24px;
 }

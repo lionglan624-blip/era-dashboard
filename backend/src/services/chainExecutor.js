@@ -130,6 +130,10 @@ export class ChainExecutor {
    * @param {string|null} execution.chainParentId - Parent chain execution ID
    */
   registerWaiter(execution) {
+    if (execution.chainCutRequested) {
+      claudeLog.info(`[Chain] Chain-cut: skipping waiter for F${execution.featureId}`);
+      return false;
+    }
     claudeLog.info(
       `[Chain] Registered waiter for F${execution.featureId} after ${execution.command} (exec: ${execution.id})`,
     );
@@ -200,6 +204,14 @@ export class ChainExecutor {
 
     const execution = this.deps.getExecution(waiter.executionId);
     if (!execution) {
+      this.chainWaiters.delete(featureId);
+      return;
+    }
+
+    if (execution.chainCutRequested) {
+      claudeLog.info(
+        `[Chain] F${featureId}: chain-cut active, ignoring status change ${oldStatus} → ${newStatus}`,
+      );
       this.chainWaiters.delete(featureId);
       return;
     }

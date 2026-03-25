@@ -795,6 +795,47 @@ describe('Execution Routes', () => {
     });
   });
 
+  describe('POST /:id/chain-cut', () => {
+    const EXEC_ID = '12345678-1234-1234-1234-123456789abc';
+
+    it('returns 200 when chain-cut succeeds', async () => {
+      const mock = createMockClaudeService();
+      mock.chainCut = vi.fn(() => ({ success: true }));
+      const app = createApp(mock);
+      const res = await request(app, 'POST', `/api/execution/${EXEC_ID}/chain-cut`);
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('chain-cut-requested');
+      expect(mock.chainCut).toHaveBeenCalledWith(EXEC_ID);
+    });
+
+    it('returns 404 when execution not found', async () => {
+      const mock = createMockClaudeService();
+      mock.chainCut = vi.fn(() => ({ success: false, reason: 'not-found' }));
+      const app = createApp(mock);
+      const res = await request(app, 'POST', `/api/execution/${EXEC_ID}/chain-cut`);
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('not-found');
+    });
+
+    it('returns 400 when not a chain execution', async () => {
+      const mock = createMockClaudeService();
+      mock.chainCut = vi.fn(() => ({ success: false, reason: 'not-chain' }));
+      const app = createApp(mock);
+      const res = await request(app, 'POST', `/api/execution/${EXEC_ID}/chain-cut`);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('not-chain');
+    });
+
+    it('returns 409 when chain-cut already requested', async () => {
+      const mock = createMockClaudeService();
+      mock.chainCut = vi.fn(() => ({ success: false, reason: 'already-requested' }));
+      const app = createApp(mock);
+      const res = await request(app, 'POST', `/api/execution/${EXEC_ID}/chain-cut`);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('already-requested');
+    });
+  });
+
   describe('POST /run-lock', () => {
     it('acquires run-lock for valid featureId', async () => {
       const mock = createMockClaudeService();

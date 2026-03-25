@@ -2698,6 +2698,53 @@ describe('ClaudeService', () => {
       // It gets cleared on completion, not handoff
       expect(service.streamParser.getRingBufferSnapshot(execution.id)).toHaveLength(2);
     });
+
+    it('calls onExecutionComplete only after email promise resolves', async () => {
+      vi.useFakeTimers();
+      try {
+        const { service } = createService();
+        service._broadcastState = vi.fn();
+        service._killProcess = vi.fn();
+        service.resumeInTerminal = vi.fn().mockReturnValue({ tabTitle: 'test' });
+
+        // Set up a controllable email promise
+        let resolveEmail;
+        const emailPromise = new Promise((resolve) => {
+          resolveEmail = resolve;
+        });
+        service.emailService = {
+          sendHandoffNotification: vi.fn().mockReturnValue(emailPromise),
+        };
+
+        const onExecutionComplete = vi.fn();
+        service.onExecutionComplete = onExecutionComplete;
+
+        const execution = service._createExecution({ featureId: '100', command: 'run' });
+        execution.status = 'running';
+        execution.sessionId = 'sess-race';
+        execution.process = { pid: 456 };
+        service.executions.set(execution.id, execution);
+
+        service._handoffToTerminal(execution, 'race condition test');
+
+        // Advance past HANDOFF_DELAY_MS to fire the setTimeout callback.
+        // The async callback awaits emailPromise (still pending), so onExecutionComplete
+        // must NOT be called yet.
+        await vi.advanceTimersByTimeAsync(400);
+
+        expect(onExecutionComplete).not.toHaveBeenCalled();
+
+        // Resolve the email promise and flush microtasks
+        resolveEmail();
+        await Promise.resolve();
+        await Promise.resolve(); // second flush for the await chain inside the callback
+
+        // Now onExecutionComplete must have been called
+        expect(onExecutionComplete).toHaveBeenCalledWith(execution);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('_handleCompletion - FL auto-retry', () => {

@@ -443,6 +443,21 @@ export function createExecutionRouter(claudeService, featureService) {
     }
   });
 
+  // Chain-cut: stop chain progression after current command
+  router.post('/:id/chain-cut', (req, res) => {
+    const result = claudeService.chainCut(req.params.id);
+    if (!result.success) {
+      const statusMap = {
+        'not-found': 404,
+        'not-chain': 400,
+        'already-requested': 409,
+        'not-running': 400,
+      };
+      return res.status(statusMap[result.reason] || 400).json({ error: result.reason });
+    }
+    res.json({ status: 'chain-cut-requested' });
+  });
+
   // POST /api/execution/:id/resume/terminal - Resume in terminal (interactive)
   router.post('/:id/resume/terminal', (req, res) => {
     try {

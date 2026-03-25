@@ -111,6 +111,7 @@ export default function App() {
     dispatch,
     startCommand,
     killExecution,
+    chainCut,
     bulkQueueRoots,
     cancelQueueItem,
     addLog,
@@ -525,6 +526,13 @@ export default function App() {
           message: `Pending deps: ${msg.pendingDeps}`,
           featureId: msg.featureId,
           persistent: true,
+        });
+      },
+      'chain-cut': (msg) => {
+        addNotification({
+          type: 'warning',
+          title: `Chain Cut: F${msg.featureId}`,
+          message: `${msg.command} 完了後にチェーン停止予定`,
         });
       },
       'execution-started': (msg) => {
@@ -1531,17 +1539,29 @@ export default function App() {
         </ErrorBoundary>
       </main>
 
-      {selectedFeature && (
-        <FeatureDetail
-          feature={selectedFeature}
-          onClose={() => setSelectedFeatureId(null)}
-          onRunCommand={handleRunCommand}
-          isRunning={runningFeatures.has(String(selectedFeature.id))}
-          runLockFeatureId={healthStatus.runLockFeatureId}
-          onAcquireLock={handleAcquireLock}
-          onReleaseLock={handleReleaseLock}
-        />
-      )}
+      {selectedFeature &&
+        (() => {
+          const activeChainExecution =
+            Array.from(executions.values()).find(
+              (e) =>
+                String(e.featureId) === String(selectedFeature.id) &&
+                e.chain?.enabled &&
+                e.status === 'running',
+            ) || null;
+          return (
+            <FeatureDetail
+              feature={selectedFeature}
+              onClose={() => setSelectedFeatureId(null)}
+              onRunCommand={handleRunCommand}
+              isRunning={runningFeatures.has(String(selectedFeature.id))}
+              runLockFeatureId={healthStatus.runLockFeatureId}
+              onAcquireLock={handleAcquireLock}
+              onReleaseLock={handleReleaseLock}
+              activeChainExecution={activeChainExecution}
+              onChainCut={(execId) => chainCut(execId)}
+            />
+          );
+        })()}
 
       {showExecutionPanel && (
         <ErrorBoundary>

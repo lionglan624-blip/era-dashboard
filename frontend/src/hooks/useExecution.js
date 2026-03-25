@@ -429,6 +429,10 @@ export function useExecution() {
     await fetch(`${API_BASE}/execution/${executionId}`, { method: 'DELETE' });
   }, []);
 
+  const chainCut = useCallback(async (executionId) => {
+    await fetch(`/api/execution/${executionId}/chain-cut`, { method: 'POST' });
+  }, []);
+
   const bulkQueueRoots = useCallback(
     async (featureIds) => {
       const res = await fetch('/api/execution/queue/bulk', {
@@ -567,6 +571,7 @@ export function useExecution() {
     dispatch, // For WS_STATE, WS_HANDOFF, etc. from wsHandlers
     startCommand,
     killExecution,
+    chainCut,
     bulkQueueRoots,
     cancelQueueItem,
     addLog,

@@ -100,6 +100,7 @@ Full config: `backend/src/config.js`
 | `/api/execution/debug` | POST | Run arbitrary prompt (requires `.debug-enabled` file gate, 30-min TTL). Body: `{ "prompt": "..." }` |
 | `/api/execution/:id/resume/{browser,terminal}` | POST | Resume session |
 | `/api/execution/:id/answer` | POST | Answer input prompt in browser (y/n or AskUserQuestion option) |
+| `/api/execution/:id/chain-cut` | POST | Stop chain progression after current command finishes. 409 if already requested, 400 if not chain |
 | `/api/execution/:id` | GET | Execution status |
 | `/api/execution/:id/logs` | GET | Execution logs (with offset) |
 | `/api/execution/:id` | DELETE | Stop execution |
@@ -139,6 +140,7 @@ Full config: `backend/src/config.js`
 | `rate-limit-retry` | S→C (all) | Rate limit retry triggered (oldExecutionId, newExecutionId) |
 | `rate-limit-exhausted` | S→C (all) | Rate limit retry failed, manual re-run needed |
 | `account-limit` | S→C (all) | Anthropic account rate limit hit (429 detected) |
+| `chain-cut` | S→C (all) | Chain-cut requested (featureId, command, executionId) |
 | `chain-blocked` | S→C (all) | Chain blocked by pending deps (emitted from `bulkQueue()` for dep-blocked items) |
 | `features-updated` | S→C (all) | Feature file changed |
 | `status-changed` | S→C (all) | Feature status changed (e.g., [DRAFT]→[PROPOSED]) |
@@ -176,7 +178,7 @@ Frontend (React+Vite :5173)  →  Backend (Express :3001)  →  claude.exe (spaw
 [DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE] → imp → [DONE]
 ```
 
-**Stop conditions**: Error, Handoff, [BLOCKED], [DRAFT] after FL (fc_rerun), User kill
+**Stop conditions**: Error, Handoff, [BLOCKED], [DRAFT] after FL (fc_rerun), User kill, Chain-cut
 
 ### Input Handling (Browser-First)
 

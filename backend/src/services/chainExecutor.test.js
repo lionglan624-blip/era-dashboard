@@ -436,6 +436,49 @@ describe('ChainExecutor', () => {
     });
   });
 
+  describe('registerWaiter chain-cut guard', () => {
+    it('returns false and skips waiter when chainCutRequested is true', () => {
+      const execution = {
+        id: 'exec-cut',
+        featureId: '500',
+        command: 'fc',
+        chainParentId: null,
+        chainCutRequested: true,
+      };
+
+      const result = chainExecutor.registerWaiter(execution);
+
+      expect(result).toBe(false);
+      expect(chainExecutor.hasWaiter('500')).toBe(false);
+      expect(mockDeps.executeCommand).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleStatusChanged chain-cut guard', () => {
+    beforeEach(() => {
+      const execution = {
+        id: 'exec-123',
+        featureId: '100',
+        command: 'fc',
+        chainParentId: null,
+        chain: { history: [] },
+        chainCutRequested: true,
+      };
+      mockDeps.getExecution.mockReturnValue(execution);
+      chainExecutor.chainWaiters.set('100', {
+        executionId: 'exec-123',
+        registeredAt: Date.now(),
+      });
+    });
+
+    it('deletes waiter and does not execute next command when chainCutRequested is true', () => {
+      chainExecutor.handleStatusChanged('100', '[DRAFT]', '[PROPOSED]');
+
+      expect(chainExecutor.hasWaiter('100')).toBe(false);
+      expect(mockDeps.executeCommand).not.toHaveBeenCalled();
+    });
+  });
+
   describe('_broadcastChainProgress', () => {
     it('broadcasts with timestamp', () => {
       chainExecutor._broadcastChainProgress({

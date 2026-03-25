@@ -10,6 +10,8 @@ export default function FeatureDetail({
   runLockFeatureId,
   onAcquireLock,
   onReleaseLock,
+  activeChainExecution,
+  onChainCut,
 }) {
   if (!feature) return null;
 
@@ -91,6 +93,15 @@ export default function FeatureDetail({
                 disabled={isRunning || !!runLockFeatureId}
               >
                 Lock
+              </button>
+            )}
+            {activeChainExecution && (
+              <button
+                className="btn-detail-cmd btn-chain-cut"
+                onClick={() => onChainCut(activeChainExecution.id)}
+                disabled={activeChainExecution.chainCutRequested}
+              >
+                {activeChainExecution.chainCutRequested ? 'Cut予約済' : 'Chain Cut'}
               </button>
             )}
           </div>
