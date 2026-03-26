@@ -2314,7 +2314,10 @@ describe('ClaudeService', () => {
   describe('handleFeatureStatusChanged', () => {
     it('triggers next command when waiter exists', () => {
       const { service, logStreamer } = createService({ maxConcurrent: 99 });
-      service._startExecution = vi.fn();
+      // Mock _startExecution to set status = 'running' (simulates real behavior)
+      service._startExecution = vi.fn((exec) => {
+        exec.status = 'running';
+      });
 
       const exec = service._createExecution({ featureId: '100', command: 'fc', chain: true });
       exec.status = 'completed';
@@ -8205,5 +8208,128 @@ describe('_getPendingDeps imp-execution blocking', () => {
     const result = service._getPendingDeps('940');
 
     expect(result).toEqual([]);
+  });
+
+  it('skips imp-blocking when skipImpBlocking option is true', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '' },
+          { id: '936', status: '[DONE]' },
+        ],
+      }),
+    };
+    service.executions.set('imp-936', { command: 'imp', status: 'running', featureId: '936' });
+
+    const result = service._getPendingDeps('940', null, { skipImpBlocking: true });
+
+    expect(result).toEqual([]);
+  });
+
+  it('still returns status-based pending deps when skipImpBlocking is true', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '940', dependsOn: 'F936', pendingDeps: '936' },
+          { id: '936', status: '[WIP]' },
+        ],
+      }),
+    };
+    service.executions.set('imp-936', { command: 'imp', status: 'running', featureId: '936' });
+
+    const result = service._getPendingDeps('940', null, { skipImpBlocking: true });
+
+    expect(result).toEqual(['936']);
+  });
+});
+
+// =============================================================================
+// S30: bulkQueue — terminal-active / run-lock exclusion
+// =============================================================================
+describe('bulkQueue terminal-active exclusion', () => {
+  function setupBulkQueueService() {
+    const { service } = createService();
+    service.fileWatcher = {
+      statusCache: new Map([
+        ['100', '[REVIEWED]'],
+        ['200', '[PROPOSED]'],
+        ['300', '[WIP]'],
+      ]),
+    };
+    service.featureService = {
+      getAllFeatures: () => ({
+        features: [
+          { id: '100', status: '[REVIEWED]', dependsOn: '' },
+          { id: '200', status: '[PROPOSED]', dependsOn: '' },
+          { id: '300', status: '[WIP]', dependsOn: '' },
+        ],
+      }),
+    };
+    // Stub executeCommand to return a fake execution ID and track calls
+    service.executeCommand = vi.fn((fid) => `exec-${fid}`);
+    service.getExecution = vi.fn(() => ({ status: 'queued' }));
+    service.logStreamer = { broadcastAll: vi.fn() };
+    service._getPendingDeps = vi.fn(() => []);
+    return service;
+  }
+
+  it('skips feature with terminal-active execution', () => {
+    const service = setupBulkQueueService();
+
+    // Simulate a terminal-active execution for F100
+    const exec = service._createExecution({ featureId: '100', command: 'run' });
+    exec.terminalActive = true;
+    exec.terminalActiveAt = Date.now();
+    exec.status = 'handed-off';
+    service.executions.set(exec.id, exec);
+
+    const result = service.bulkQueue(['100', '200']);
+
+    // F100 skipped (terminal-active), F200 queued
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureId: '100',
+          reason: 'terminal-active session holding lock',
+        }),
+      ]),
+    );
+    expect(result.queued).toEqual(
+      expect.arrayContaining([expect.objectContaining({ featureId: '200' })]),
+    );
+    expect(service.executeCommand).not.toHaveBeenCalledWith(
+      '100',
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it('skips feature holding run-lock even without terminal-active execution', () => {
+    const service = setupBulkQueueService();
+
+    // Run-lock held by F300 (e.g., terminal-resumed session whose execution was TTL-evicted)
+    service.runLockFeatureId = '300';
+
+    const result = service.bulkQueue(['200', '300']);
+
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ featureId: '300', reason: 'run-lock held (terminal session)' }),
+      ]),
+    );
+    expect(result.queued).toEqual(
+      expect.arrayContaining([expect.objectContaining({ featureId: '200' })]),
+    );
+  });
+
+  it('queues all features when no terminal-active or run-lock', () => {
+    const service = setupBulkQueueService();
+
+    const result = service.bulkQueue(['100', '200', '300']);
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.queued).toHaveLength(3);
   });
 });

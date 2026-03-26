@@ -155,6 +155,8 @@ describe('ChainExecutor', () => {
 
     it('triggers immediately when status already matches expected', () => {
       mockDeps.getStatusFromCache.mockReturnValue('[PROPOSED]');
+      // New execution started immediately (not queued)
+      mockDeps.getExecution.mockReturnValue({ status: 'running' });
       const execution = createExecution({ command: 'fc', chain: { history: [] } });
 
       chainExecutor.registerWaiter(execution);
@@ -168,6 +170,25 @@ describe('ChainExecutor', () => {
       expect(mockDeps.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'chain-progress',
+          featureId: '100',
+          previousCommand: 'fc',
+          nextCommand: 'fl',
+        }),
+      );
+    });
+
+    it('defers chain-progress broadcast when execution is queued', () => {
+      mockDeps.getStatusFromCache.mockReturnValue('[PROPOSED]');
+      const newExec = { status: 'queued' };
+      mockDeps.getExecution.mockReturnValue(newExec);
+      const execution = createExecution({ command: 'fc', chain: { history: [] } });
+
+      chainExecutor.registerWaiter(execution);
+
+      expect(mockDeps.executeCommand).toHaveBeenCalled();
+      expect(mockDeps.broadcastAll).not.toHaveBeenCalled();
+      expect(newExec._pendingChainProgress).toEqual(
+        expect.objectContaining({
           featureId: '100',
           previousCommand: 'fc',
           nextCommand: 'fl',
@@ -248,12 +269,37 @@ describe('ChainExecutor', () => {
       expect(chainExecutor.hasWaiter('100')).toBe(false);
     });
 
-    it('broadcasts chain-progress event', () => {
+    it('broadcasts chain-progress event immediately when execution starts', () => {
+      // Override to return running execution for new exec ID
+      const oldExec = mockDeps.getExecution();
+      mockDeps.getExecution.mockImplementation((id) =>
+        id === 'new-exec-id' ? { status: 'running' } : oldExec,
+      );
+
       chainExecutor.handleStatusChanged('100', '[DRAFT]', '[PROPOSED]');
 
       expect(mockDeps.broadcastAll).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'chain-progress',
+          featureId: '100',
+          previousCommand: 'fc',
+          nextCommand: 'fl',
+          oldStatus: '[DRAFT]',
+          newStatus: '[PROPOSED]',
+        }),
+      );
+    });
+
+    it('defers chain-progress when execution is queued', () => {
+      const oldExec = mockDeps.getExecution();
+      const newExec = { status: 'queued' };
+      mockDeps.getExecution.mockImplementation((id) => (id === 'new-exec-id' ? newExec : oldExec));
+
+      chainExecutor.handleStatusChanged('100', '[DRAFT]', '[PROPOSED]');
+
+      expect(mockDeps.broadcastAll).not.toHaveBeenCalled();
+      expect(newExec._pendingChainProgress).toEqual(
+        expect.objectContaining({
           featureId: '100',
           previousCommand: 'fc',
           nextCommand: 'fl',

@@ -289,12 +289,20 @@ export class EmailService {
   }
 
   async sendStatusChangeNotification(worst, components) {
-    const subject =
-      worst === 'operational' ? 'Claude Status: recovered' : `Claude Status: ${worst}`;
+    const statusJa = {
+      operational: '正常',
+      under_maintenance: 'メンテナンス中',
+      degraded_performance: 'パフォーマンス低下',
+      partial_outage: '部分障害',
+      major_outage: '大規模障害',
+    };
+
+    const worstJa = statusJa[worst] || worst;
+    const subject = worst === 'operational' ? 'Claude 状態: 復旧' : `Claude 状態: ${worstJa}`;
 
     const textLines = [];
     for (const c of components) {
-      textLines.push(`${c.name}: ${c.status}`);
+      textLines.push(`${c.name}: ${statusJa[c.status] || c.status}`);
     }
     textLines.push('');
     textLines.push(nowJST());

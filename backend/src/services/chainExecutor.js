@@ -164,15 +164,26 @@ export class ChainExecutor {
           chainHistory: updatedHistory,
         });
 
-        this._broadcastChainProgress({
-          featureId: execution.featureId,
-          previousCommand: execution.command,
-          nextCommand,
-          oldStatus: null,
-          newStatus: currentStatus,
-          oldExecutionId: execution.id,
-          newExecutionId: newExecId,
-        });
+        // Defer broadcast until the new execution actually starts (not just queued)
+        const newExec = this.deps.getExecution(newExecId);
+        if (newExec) {
+          const progressData = {
+            featureId: execution.featureId,
+            previousCommand: execution.command,
+            nextCommand,
+            oldStatus: null,
+            newStatus: currentStatus,
+            oldExecutionId: execution.id,
+            newExecutionId: newExecId,
+          };
+          if (newExec.status === 'running') {
+            // Started immediately — broadcast now
+            this._broadcastChainProgress(progressData);
+          } else {
+            // Queued — defer broadcast until _startExecution picks it up
+            newExec._pendingChainProgress = progressData;
+          }
+        }
 
         return true; // Don't register waiter, already triggered
       }
@@ -248,15 +259,26 @@ export class ChainExecutor {
       chainHistory: updatedHistory,
     });
 
-    this._broadcastChainProgress({
-      featureId,
-      previousCommand: execution.command,
-      nextCommand,
-      oldStatus,
-      newStatus,
-      oldExecutionId: execution.id,
-      newExecutionId: newExecId,
-    });
+    // Defer broadcast until the new execution actually starts (not just queued)
+    const newExec = this.deps.getExecution(newExecId);
+    if (newExec) {
+      const progressData = {
+        featureId,
+        previousCommand: execution.command,
+        nextCommand,
+        oldStatus,
+        newStatus,
+        oldExecutionId: execution.id,
+        newExecutionId: newExecId,
+      };
+      if (newExec.status === 'running') {
+        // Started immediately — broadcast now
+        this._broadcastChainProgress(progressData);
+      } else {
+        // Queued — defer broadcast until _startExecution picks it up
+        newExec._pendingChainProgress = progressData;
+      }
+    }
   }
 
   /**
