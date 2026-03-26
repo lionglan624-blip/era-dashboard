@@ -137,6 +137,11 @@ export class StatusMailService {
         this._onDisconnect();
       });
 
+      client.on('error', (err) => {
+        this.logger.error(`IMAP error: ${err.message}`);
+        this._onDisconnect();
+      });
+
       await client.connect();
       this._lock = await client.getMailboxLock('INBOX');
       this._client = client;

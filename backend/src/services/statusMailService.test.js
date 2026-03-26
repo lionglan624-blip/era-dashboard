@@ -672,7 +672,7 @@ describe('StatusMailService', () => {
   });
 
   describe('_connect', () => {
-    it('registers exists and close event handlers', async () => {
+    it('registers exists, close, and error event handlers', async () => {
       const mockClient = makeMockImapClient();
       const factory = vi.fn().mockReturnValue(mockClient);
       const service = new StatusMailService({
@@ -687,6 +687,7 @@ describe('StatusMailService', () => {
 
       expect(mockClient.on).toHaveBeenCalledWith('exists', expect.any(Function));
       expect(mockClient.on).toHaveBeenCalledWith('close', expect.any(Function));
+      expect(mockClient.on).toHaveBeenCalledWith('error', expect.any(Function));
     });
 
     it('connects and opens INBOX lock', async () => {
@@ -749,6 +750,52 @@ describe('StatusMailService', () => {
       await service._connect();
 
       expect(mockClient.connect).not.toHaveBeenCalled();
+    });
+
+    it('error event triggers _onDisconnect for reconnection', async () => {
+      vi.useFakeTimers();
+      const mockClient = makeMockImapClient();
+      const factory = vi.fn().mockReturnValue(mockClient);
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: factory,
+        ...makeMockServices(),
+      });
+
+      vi.spyOn(service, '_checkMessages').mockResolvedValue();
+      await service._connect();
+
+      const connectSpy = vi.spyOn(service, '_connect').mockResolvedValue();
+
+      mockClient._handlers.error(new Error('writeSocket is null'));
+
+      expect(service._client).toBeNull();
+      vi.advanceTimersByTime(10000);
+      expect(connectSpy).toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('error followed by close fires only one reconnect', async () => {
+      vi.useFakeTimers();
+      const mockClient = makeMockImapClient();
+      const factory = vi.fn().mockReturnValue(mockClient);
+      const service = new StatusMailService({
+        configLoader: () => makeConfig(),
+        imapClientFactory: factory,
+        ...makeMockServices(),
+      });
+
+      vi.spyOn(service, '_checkMessages').mockResolvedValue();
+      await service._connect();
+
+      const connectSpy = vi.spyOn(service, '_connect').mockResolvedValue();
+
+      mockClient._handlers.error(new Error('writeSocket is null'));
+      mockClient._handlers.close();
+
+      vi.advanceTimersByTime(10000);
+      expect(connectSpy).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
     });
   });
 
