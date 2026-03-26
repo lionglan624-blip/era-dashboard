@@ -122,6 +122,22 @@ y/n text is saved to session JSONL (`result` event confirms this). AskUserQuesti
 
 To restore the old immediate-handoff behavior, add `this.handoffToTerminal(execution, 'AskUserQuestion requires user input')` in the AskUserQuestion handler in `streamParser.js` (after `broadcastInputRequired`).
 
+### Remote Control Auto-Answer (PTY Mode)
+
+When `HANDOFF_MODE=remote`, the PTY worker (`remoteCapture.js`) continues monitoring after URL capture (Phase 3). Detects y/n and AskUserQuestion prompts via `INPUT_WAIT_PATTERNS` + TUI selector pattern matching on `stripAnsi(rawBuffer)`.
+
+**Flow**: URL captured → Phase 3 active → input detected → 2s delay → re-check buffer → auto-type if prompt still present.
+
+- **y/n**: `pty.write("y\r")` after 2s re-check
+- **AskUserQuestion**: Two-stage detection (`?` question line + `>` / `❯` selector within 5 lines) → `pty.write("1\r")` (first option)
+- **Human coexistence**: Remote URL and auto-answer share the same PTY stdin. Human answers first → prompt disappears → re-check skips auto-type. No mutex needed.
+- **Disable**: Parent sends `{ type: 'disable-auto-answer' }` IPC to stop Phase 3.
+
+**Chain continuation after PTY exit**:
+- IPC `exit` (normal): chain-enabled execs keep `terminalActive=true` → fileWatcher detects `[DONE]` → `_resolveTerminalActive` → `registerWaiter` → chain continues to `/imp`
+- `worker.on('exit')` (crash fallback): immediate cleanup (`terminalActive=false`, `releaseChainSlot`)
+- `exitHandled` flag prevents double-fire between IPC exit and worker process exit
+
 ---
 
 ## Design Decisions

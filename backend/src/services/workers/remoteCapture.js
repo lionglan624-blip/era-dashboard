@@ -7,13 +7,16 @@
  * IPC Protocol:
  *   Receive: { type: 'start', sessionId, env, cols, rows }
  *            { type: 'kill' }
+ *            { type: 'disable-auto-answer' }
  *   Send:    { type: 'url', url }
  *            { type: 'exit', exitCode }
  *            { type: 'started' }
  *            { type: 'error', message }
+ *            { type: 'auto-answer', pattern, text }
  */
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
+import { INPUT_WAIT_PATTERNS } from '../inputPatterns.js';
 
 const require = createRequire(import.meta.url);
 
@@ -40,6 +43,8 @@ let ptyProcess = null;
 let urlFound = false;
 // Accumulate raw data for URL detection (ANSI may split URL across chunks)
 let rawBuffer = '';
+let autoAnswerCooldown = false;
+let autoAnswerDisabled = false;
 
 function startCapture({ sessionId, env, cols, rows, cwd }) {
   let nodePty;
@@ -134,9 +139,59 @@ function startCapture({ sessionId, env, cols, rows, cwd }) {
       }
     }
 
-    // Prevent unbounded growth: keep last 4KB only
+    // Phase 3: Monitor for input prompts and auto-answer
+    if (urlFound && !autoAnswerCooldown && !autoAnswerDisabled) {
+      const stripped = stripAnsi(rawBuffer);
+
+      // Check y/n and input wait patterns
+      let ynMatched = false;
+      for (const { pattern } of INPUT_WAIT_PATTERNS) {
+        if (pattern.test(stripped)) {
+          ynMatched = true;
+          autoAnswerCooldown = true;
+          process.send({ type: 'auto-answer', pattern: 'y/n', text: stripped.slice(-200) });
+          setTimeout(() => {
+            // Re-check: confirm prompt is still present (human may have answered)
+            const current = stripAnsi(rawBuffer);
+            if (pattern.test(current)) {
+              ptyProcess.write('y\r');
+            }
+            rawBuffer = '';
+            autoAnswerCooldown = false;
+          }, 2000);
+          break;
+        }
+      }
+
+      // Check AskUserQuestion pattern (two-stage: ? line + selector line within 5 lines)
+      if (!ynMatched) {
+        const lines = stripped.split('\n');
+        const qLineIdx = lines.findIndex((l) => /^\?\s+\S/.test(l.trim()));
+        if (qLineIdx >= 0) {
+          const nearby = lines.slice(qLineIdx + 1, qLineIdx + 6);
+          const hasSelector = nearby.some((l) => /^\s*[>❯]\s+\S/.test(l));
+          if (hasSelector) {
+            autoAnswerCooldown = true;
+            process.send({ type: 'auto-answer', pattern: 'ask-user', text: stripped.slice(-200) });
+            setTimeout(() => {
+              // Re-check: confirm prompt still present
+              const currentLines = stripAnsi(rawBuffer).split('\n');
+              const stillHasQ = currentLines.findIndex((l) => /^\?\s+\S/.test(l.trim()));
+              if (stillHasQ >= 0) {
+                ptyProcess.write('1\r');
+              }
+              rawBuffer = '';
+              autoAnswerCooldown = false;
+            }, 2000);
+          }
+        }
+      }
+    }
+
+    // Prevent unbounded growth: keep last 4KB only (newline-boundary aligned)
     if (rawBuffer.length > 4096) {
-      rawBuffer = rawBuffer.slice(-2048);
+      const nlIdx = rawBuffer.indexOf('\n', rawBuffer.length - 2048);
+      rawBuffer = nlIdx >= 0 ? rawBuffer.slice(nlIdx + 1) : rawBuffer.slice(-2048);
     }
   });
 
@@ -155,5 +210,7 @@ process.on('message', (msg) => {
     } else {
       process.exit(0);
     }
+  } else if (msg.type === 'disable-auto-answer') {
+    autoAnswerDisabled = true;
   }
 });

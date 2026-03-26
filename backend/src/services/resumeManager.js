@@ -502,6 +502,7 @@ export class ResumeManager {
     let urlCaptured = false;
     let urlTimeout = null;
     let sessionTimeout = null;
+    let exitHandled = false;
 
     // Mark execution as remote-control active
     if (exec) {
@@ -549,17 +550,26 @@ export class ResumeManager {
           );
           worker.send({ type: 'kill' });
         }, REMOTE_CONTROL_TIMEOUT_MS);
+      } else if (msg.type === 'auto-answer') {
+        claudeLog.info(
+          `[RemoteControl] Auto-answered ${msg.pattern} for F${featureId}: ${msg.text?.substring(0, 100)}`,
+        );
       } else if (msg.type === 'exit') {
+        if (exitHandled) return;
+        exitHandled = true;
         claudeLog.info(
           `[RemoteControl] Worker exited for F${featureId} (exitCode: ${msg.exitCode})`,
         );
         clearTimeout(urlTimeout);
         clearTimeout(sessionTimeout);
-        // Clean up execution state
         if (exec) {
           exec.remoteControlActive = false;
-          exec.terminalActive = false;
-          this.deps.releaseChainSlot(exec);
+          // Chain-enabled: keep terminalActive=true so fileWatcher resolves via _resolveTerminalActive
+          // Non-chain: immediate cleanup
+          if (!exec.chain?.enabled) {
+            exec.terminalActive = false;
+            this.deps.releaseChainSlot(exec);
+          }
         }
       } else if (msg.type === 'error') {
         claudeLog.error(`[RemoteControl] Worker error for F${featureId}: ${msg.message}`);
@@ -575,17 +585,20 @@ export class ResumeManager {
       claudeLog.error(`[RemoteControl] Worker process error for F${featureId}: ${err.message}`);
       clearTimeout(urlTimeout);
       clearTimeout(sessionTimeout);
-      if (exec) {
+      if (!exitHandled && exec) {
         exec.remoteControlActive = false;
       }
       this.resumeInTerminal(executionId);
     });
 
     worker.on('exit', (code) => {
+      if (exitHandled) return;
+      exitHandled = true;
       clearTimeout(urlTimeout);
       clearTimeout(sessionTimeout);
       if (exec) {
         exec.remoteControlActive = false;
+        // Crash fallback: [DONE] unlikely written, immediate cleanup
         exec.terminalActive = false;
         this.deps.releaseChainSlot(exec);
       }

@@ -174,7 +174,7 @@ User action → App.jsx handler → useExecution API call
 | UI component | `frontend/src/components/` → `App.jsx` import |
 | WebSocket event | `claudeService.js` broadcast → `App.jsx` wsHandlers |
 | Feature parsing | `featureParser.js` → `featureService.js` |
-| Input detection pattern | `inputPatterns.js` INPUT_WAIT_PATTERNS |
+| Input detection pattern | `inputPatterns.js` INPUT_WAIT_PATTERNS (also used by `remoteCapture.js` Phase 3) |
 | Styling | `frontend/src/styles/main.css` |
 
 ### File Structure
