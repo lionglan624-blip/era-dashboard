@@ -316,7 +316,39 @@ Root cause: v2.1.0 fixed "files and skills not being properly discovered when re
 
 ## Execution Behavior Details
 
-Detailed retry logic, detection mechanisms, and slot management for behaviors summarized in [HANDOFF.md Key Timeouts & Behaviors](HANDOFF.md#key-timeouts--behaviors).
+Detailed retry logic, detection mechanisms, and slot management.
+
+### Key Timeouts & Behaviors
+
+| Setting | Value | Purpose |
+|---------|------:|---------|
+| Rate limit cache | dynamic | Profile-level usage cache (weekly/session/sonnet) |
+| Rate limit polling | 5min | Background capture interval |
+| Rate limit capture | 20s | node-pty capture timeout (typical: 7-10s) |
+| Stall check interval | 30s | Stall polling (worst-case ≤90s) |
+| Stall detection | 60s | Mark execution as stalled |
+| Execution TTL | 24h | In-memory execution retention |
+| Stuck cleanup | 2h | Force-terminate unresponsive executions |
+| Pending handoff (y/n) | 10s | Fallback if result event never arrives |
+| Input email delay | 2min | Email delay; cancelled on browser answer |
+| AskUserQuestion | kill+resume | Kill on detection, resume via `--resume` |
+| Account limit (429) | queue-based | Profile switch or timed retry |
+| Server error (500/529) | 5x exp backoff | 1m→5m→30m→1h→2h retry |
+| Safe profile filter | allocation | Skip profiles ≥80% usage |
+| Context retry | 3x (5s) | Retry on context exhaustion |
+| FL auto-retry | 3x (5s) | Retry FL on non-context failure |
+| Incomplete termination | terminal handoff | Status didn't advance → `--resume` |
+| Run-lock | acquire/release | Single `/run` exclusion |
+| Terminal-active (run) | lock-hold | Hold run-lock until resolution |
+| Chain slot | per-chain | Slot reserved for chain lifecycle |
+| Dep-aware dequeue | event-driven | Skip features with pending deps |
+| Stale waiter → Auto-DR | 5min+10min | Clean chain waiters, trigger DR |
+| Tmp cleanup | 6h | Purge old debug/daily logs |
+| Insights capture | ~2min | `/insights` ConPTY + email |
+| Dependency updater | daily/weekly/monthly | Auto-update CLI tools and packages |
+| Update analysis | execution | Claude Code release impact analysis |
+
+Full config: `backend/src/config.js`
 
 ### Server Error Retry (500/529)
 
@@ -372,6 +404,14 @@ Reserves execution slot for entire chain lifecycle (fc→fl→run→imp).
 - **Config**: `MAX_CONCURRENT_EXECUTIONS` (env: `MAX_CONCURRENT`, default 4)
 - **Exempt**: Slash commands (`commit`, `sync-deps`) bypass queue limit (`SLOT_EXEMPT_COMMANDS`)
 
+### Chain Execution Flow
+
+```
+[DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE] → imp → [DONE]
+```
+
+**Stop conditions**: Error, Handoff, [BLOCKED], [DRAFT] after FL (fc_rerun), User kill, Chain-cut
+
 ### Dep-Aware Dequeue
 
 Features with unresolved dependencies (`pendingDeps`) or dependencies with active `/imp` executions stay in queue but are skipped by `_dequeueNext()` and `_canStartNow()`.
@@ -421,6 +461,97 @@ Claude Code release detection and impact analysis.
 - **Analysis**: 3 dimensions — Dashboard impact, Project impact (workflow/settings/env), new feature adoption opportunities
 - **Completion**: `_onComplete` callback → HTML email with dual impact badges (D:/P:) + changelog
 - **API**: `GET /api/update/status`
+
+---
+
+## Testing Requirements
+
+After code changes:
+
+```bash
+# Run tests (from dashboard root)
+npm test                                                  # both via workspaces
+npx vitest run                                            # both (via vitest.config.js projects)
+npm test --workspace=backend                              # backend only
+npm test --workspace=frontend                             # frontend only
+
+# Check coverage (output: _out/coverage/)
+npx vitest run --coverage
+
+# Mutation testing (after adding new tests)
+npm run test:mutation
+```
+
+**Test levels** (prefer higher levels when feasible):
+
+| Level | What | Pattern | Example |
+|-------|------|---------|---------|
+| **Route/Behavior** | HTTP request→response through Express | `execution.test.js` — `request(app, method, url, body)` | `GET /history` returns entries, `DELETE /history` then `GET` returns empty |
+| **Service unit** | Single method with mocked deps | `cleanupService.test.js` — `svc._pruneHistoryJsonl(path, days)` | History pruning removes old entries |
+| **Component** | React component rendering | `ExecutionPanel.test.jsx` — `render(<Component {...props} />)` | History button renders in tab bar |
+
+**Prefer behavior tests over unit tests**: When adding a new API endpoint, always write route-level tests in `execution.test.js` (or the relevant route test file) that exercise the full request→service→response path. Unit tests on the service alone are insufficient — they miss routing bugs, param validation, error handling at the HTTP layer, and UUID validator interference.
+
+**Test support APIs**: Endpoints for test setup/teardown (e.g., `DELETE /api/execution/history` for clearing state). These enable multi-step behavior tests that verify state transitions across API calls.
+
+**Mutation testing interpretation**:
+- **Killed**: Mutant detected by tests → good test
+- **Survived**: Mutant escaped tests → test gap
+- Target: 60%+ mutation score (covered scope)
+
+---
+
+## Diagnostics
+
+Use **`ddiag`** (devkit alias for `dashboard_diag.py`) for dashboard troubleshooting. Manual `grep`/`tail`/`cat` is forbidden — ddiag reduces grep usage by 87% (backtest proven).
+
+```bash
+ddiag
+```
+
+### Scenario-Based Quick Reference
+
+| Scenario | Run first | If more detail needed |
+|----------|-----------|----------------------|
+| **Execution failed** | `--exec {ID}` (auto VERDICT) | `--exec {ID} --verbose` for all events |
+| **Execution timeline** | `--exec-timeline {ID}` | Shows key events chronologically |
+| **Feature full history** | `--feature {ID} --after DATE` | — (single command) |
+| **429/Rate Limit investigation** | `--exec {ID}` (auto 429 detection) | `--debug-grep {ID} "rate_limit"` |
+| **Queue status** | `--queue` (live) | `--queue --after DATE` with log history |
+| **Queue state timeline** | `--queue-state --after DATE` | Periodic `[Queue] STATE` log snapshots |
+| **Queue/Slot contention** | `--search "." --type queue --after DATE` | `--feature {ID}` for specific feature tracking |
+| **Chain retry trends** | `--events context-retry,handoff --after DATE` | `--events ... --by-feature` |
+| **Unknown Exec ID** | `--resolve {ID}` | `--list-debug` for debug log list |
+| **PM2 crash** | `--pm2 --pm2-type crash` | `--pm2 "ACCESS_VIOLATION"` |
+| **Search debug log** | `--debug-grep {ID} "pattern"` | `-i -C 3` for context |
+| **Cross-log search** | `--search "pattern" -i -C 3` | Searches all 4 log sources. `--after DATE` to narrow |
+| **Multi-pattern search** | `--search "F932" --or "F935"` | OR-join for multi-feature search |
+| **Category filter** | `--search "." --type claude` | claude/server/watcher/websocket/queue/chain |
+
+### Log Sources (4 types, all auto-detected)
+
+| Log | Path | Content |
+|-----|------|---------|
+| App log | `~/.pm2/logs/dashboard-backend-out.log` | spawn, broadcast, chain, status changes |
+| Error log | `~/.pm2/logs/dashboard-backend-error.log` | stderr (uncaught exceptions) |
+| PM2 system log | `~/.pm2/pm2.log` | Process restart/crash/exit code |
+| Debug log | `C:\Era\devkit\_out\tmp\dashboard\debug-{execId}.log` | 429 detection, CLI internal errors |
+
+### Tips
+
+- **`--resolve {ID}`**: Exec ID → Feature/Command resolution. Still searchable from app log after API evict (TTL 1h)
+- **`--list-debug --after DATE`**: Debug log list (size, timestamp, auto-resolved feature)
+- **`--verbose`**: Combined with `--exec` shows all log events. With `--search` removes max_matches=20 limit
+- **`--width 0`**: Disable output truncation
+- **`-C N`**: Show context lines with `--search` / `--debug-grep`
+- **`--raw-log`**: Disable VT escape / `[assistant]` changelog line auto-exclusion
+- **`--type TYPE`**: Log category filter (claude/server/watcher/websocket/queue/chain)
+- **`--or PATTERN`**: OR-join for `--search`. Multiple allowed
+- **VERDICT**: `--exec` auto-classifies as RATE_LIMITED / CONTEXT_LIMIT / USER_KILLED / NORMAL / INCOMPLETE / ERROR / UNKNOWN
+- **Queue logging**: `claudeLog.info('[Queue] Queued/Dequeued ...')` outputs to app log. Filter with `--type queue`
+- **Queue STATE**: `[Queue] STATE {...}` outputs every 10min (`_cleanupOldExecutions`). Records running/queued/chainSlots/waitingInput/inputIds. View as table with `--queue-state`
+- **Queue COMPLETION**: `[Queue] COMPLETION {...}` outputs on execution completion in waitingForInput/inputRequired/chain state
+- **History JSONL fields**: ccsProfile, resultSubtype, killedByUser, tokenUsage recorded (backward compatible)
 
 ---
 
