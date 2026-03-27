@@ -184,7 +184,7 @@ export class ShellExecutor {
   /** Execute slash command via -p mode (no featureId) */
   executeSlashCommand(slashCommand) {
     // Validate: only allow specific slash commands
-    const allowed = ['commit', 'sync-deps'];
+    const allowed = ['commit', 'sync-deps', 'patch-cc'];
     if (!allowed.includes(slashCommand)) {
       throw new Error(
         `Invalid slash command: ${slashCommand}. Must be one of: ${allowed.join(', ')}`,

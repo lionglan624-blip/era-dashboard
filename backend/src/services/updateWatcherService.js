@@ -58,6 +58,8 @@ export class UpdateWatcherService {
           this.logger.error(`Smoke test failed: ${err.message}`);
         });
       }
+      // Auto-trigger /patch-cc to generate binary patch script
+      this._triggerPatchCc(version);
     });
 
     this._lastExecutionId = executionId;
@@ -220,6 +222,8 @@ ${changelog}
         this.logger.error(`Smoke test failed: ${err.message}`);
       });
     }
+    // Auto-trigger /patch-cc regardless of changelog availability
+    this._triggerPatchCc(version);
   }
 
   _sendEmail(version, changelog, analysis) {
@@ -300,6 +304,30 @@ ${changelog}
     parts.push(`<p style="color:#999;font-size:12px">${nowJST()}</p>`);
 
     return parts.join('\n');
+  }
+
+  /** Auto-trigger /patch-cc after Claude Code update detection */
+  _triggerPatchCc(version) {
+    if (!this.claudeService) {
+      this.logger.warn('claudeService not available, cannot trigger patch-cc');
+      return;
+    }
+
+    try {
+      const executionId = this.claudeService.executeSlashCommand('patch-cc');
+      this.logger.info(`patch-cc triggered for ${version}: ${executionId}`);
+
+      if (this.logStreamer) {
+        this.logStreamer.broadcastAll({
+          type: 'patch-cc-triggered',
+          version,
+          executionId,
+          timestamp: nowJSTISO(),
+        });
+      }
+    } catch (err) {
+      this.logger.error(`patch-cc trigger failed: ${err.message}`);
+    }
   }
 
   getLastUpdate() {

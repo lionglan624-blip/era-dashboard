@@ -62,7 +62,7 @@ const DEBUG = process.env.DASHBOARD_DEBUG === '1';
 const debugLog = DEBUG ? claudeLog.info.bind(claudeLog) : () => {};
 
 // Commands that bypass queue slot limit (lightweight, non-feature operations)
-const SLOT_EXEMPT_COMMANDS = new Set(['commit', 'sync-deps', 'update-analysis']);
+const SLOT_EXEMPT_COMMANDS = new Set(['commit', 'sync-deps', 'update-analysis', 'patch-cc']);
 
 // Maps feature status to the first command to run in the workflow
 const STATUS_TO_FIRST_COMMAND = {
