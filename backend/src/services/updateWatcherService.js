@@ -1,5 +1,11 @@
+import { exec } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+
 import { createLogger } from '../utils/logger.js';
 import { nowJST, nowJSTISO } from '../utils/timeUtils.js';
+
+const DEVKIT_ROOT = process.env.DEVKIT_ROOT || 'C:\\Era\\devkit';
 
 export class UpdateWatcherService {
   constructor({ emailService, logStreamer, claudeService, smokeTestService } = {}) {
@@ -11,6 +17,8 @@ export class UpdateWatcherService {
 
     this._lastVersion = null;
     this._analyzing = false;
+    this._patching = false;
+    this._patchingTimeout = null;
     this._lastExecutionId = null;
   }
 
@@ -59,7 +67,7 @@ export class UpdateWatcherService {
         });
       }
       // Auto-trigger /patch-cc to generate binary patch script
-      this._triggerPatchCc(version);
+      this._triggerAndApplyPatch(version);
     });
 
     this._lastExecutionId = executionId;
@@ -223,7 +231,7 @@ ${changelog}
       });
     }
     // Auto-trigger /patch-cc regardless of changelog availability
-    this._triggerPatchCc(version);
+    this._triggerAndApplyPatch(version);
   }
 
   _sendEmail(version, changelog, analysis) {
@@ -306,17 +314,85 @@ ${changelog}
     return parts.join('\n');
   }
 
-  /** Auto-trigger /patch-cc after Claude Code update detection */
-  _triggerPatchCc(version) {
+  /** Auto-trigger /patch-cc and apply the generated script */
+  _triggerAndApplyPatch(version) {
     if (!this.claudeService) {
       this.logger.warn('claudeService not available, cannot trigger patch-cc');
       return;
     }
+    if (this._patching) {
+      this.logger.warn(`Already patching, skipping patch for ${version}`);
+      return;
+    }
+    this._patching = true;
+    this._patchingTimeout = setTimeout(
+      () => {
+        if (this._patching) {
+          this.logger.warn('_patching safety timeout reached (10m), resetting');
+          this._patching = false;
+        }
+      },
+      10 * 60 * 1000,
+    );
 
     try {
-      const executionId = this.claudeService.executeSlashCommand('patch-cc');
-      this.logger.info(`patch-cc triggered for ${version}: ${executionId}`);
+      const executionId = this.claudeService.executeSlashCommand(
+        'patch-cc',
+        (execution, exitCode) => {
+          this._patching = false;
+          clearTimeout(this._patchingTimeout);
 
+          if (exitCode !== 0) {
+            this.logger.warn(`patch-cc exited ${exitCode} for ${version}, skipping apply`);
+            return;
+          }
+
+          const scriptPath = path.join(DEVKIT_ROOT, '_out', 'tmp', `patch-claude-${version}.py`);
+          if (!fs.existsSync(scriptPath)) {
+            this.logger.warn(`Patch script not found: ${scriptPath}`);
+            return;
+          }
+
+          // Dry-run first
+          exec(
+            `python "${scriptPath}" --dry-run`,
+            { timeout: 60000, cwd: DEVKIT_ROOT },
+            (err, stdout, stderr) => {
+              if (err) {
+                this.logger.error(`patch dry-run failed for ${version}: ${stderr || err.message}`);
+                return;
+              }
+              this.logger.info(`patch dry-run OK for ${version}: ${stdout.trim()}`);
+
+              // Apply
+              exec(
+                `python "${scriptPath}"`,
+                { timeout: 60000, cwd: DEVKIT_ROOT },
+                (applyErr, applyOut, applyStderr) => {
+                  if (applyErr) {
+                    this.logger.error(
+                      `patch apply failed for ${version}: ${applyStderr || applyErr.message}`,
+                    );
+                    return;
+                  }
+                  this.logger.info(`patch applied for ${version}: ${applyOut.trim()}`);
+
+                  if (this.logStreamer) {
+                    this.logStreamer.broadcastAll({
+                      type: 'patch-applied',
+                      version,
+                      executionId,
+                      timestamp: nowJSTISO(),
+                    });
+                  }
+                },
+              );
+            },
+          );
+        },
+      );
+
+      this.logger.info(`patch-cc triggered for ${version}: ${executionId}`);
       if (this.logStreamer) {
         this.logStreamer.broadcastAll({
           type: 'patch-cc-triggered',
@@ -326,6 +402,8 @@ ${changelog}
         });
       }
     } catch (err) {
+      this._patching = false;
+      clearTimeout(this._patchingTimeout);
       this.logger.error(`patch-cc trigger failed: ${err.message}`);
     }
   }

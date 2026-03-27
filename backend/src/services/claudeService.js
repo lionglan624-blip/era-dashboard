@@ -3594,8 +3594,8 @@ export class ClaudeService {
   getShellStates() {
     return this.shellExecutor.getShellStates();
   }
-  executeSlashCommand(slashCommand) {
-    return this.shellExecutor.executeSlashCommand(slashCommand);
+  executeSlashCommand(slashCommand, onComplete = null) {
+    return this.shellExecutor.executeSlashCommand(slashCommand, onComplete);
   }
   executeDebugPrompt(prompt) {
     return this.shellExecutor.executeDebugPrompt(prompt);

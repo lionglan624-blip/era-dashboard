@@ -182,7 +182,7 @@ export class ShellExecutor {
   }
 
   /** Execute slash command via -p mode (no featureId) */
-  executeSlashCommand(slashCommand) {
+  executeSlashCommand(slashCommand, onComplete = null) {
     // Validate: only allow specific slash commands
     const allowed = ['commit', 'sync-deps', 'patch-cc'];
     if (!allowed.includes(slashCommand)) {
@@ -193,6 +193,8 @@ export class ShellExecutor {
 
     const execution = this.deps.createExecution({ command: slashCommand });
     const executionId = execution.id;
+
+    if (onComplete) execution._onComplete = onComplete;
 
     this.deps.executions.set(executionId, execution);
 

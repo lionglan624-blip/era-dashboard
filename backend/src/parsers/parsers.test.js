@@ -373,6 +373,28 @@ describe('FeatureParser', () => {
     it('returns empty array for missing Dependencies section', () => {
       expect(parser.parseDependencyTable({})).toEqual([]);
     });
+
+    it('parses dependency table with HTML comment before actual table', () => {
+      const sections = {
+        Dependencies: [
+          '<!-- Dependency Types (SSOT):',
+          '| Type | Direction | Effect | Usage |',
+          '|------|-----------|--------|-------|',
+          '| Predecessor | F{ID} → This | BLOCKING | ... |',
+          '-->',
+          '',
+          '| Type | Feature | Status | Description |',
+          '|------|---------|--------|-------------|',
+          '| Predecessor | F994 | [DONE] | Phase 28 Planning |',
+          '| Predecessor | F1091 | [DONE] | Dispatch loop |',
+        ],
+      };
+      const result = parser.parseDependencyTable(sections);
+      expect(result).toHaveLength(2);
+      expect(result[0].type).toBe('Predecessor');
+      expect(result[0].id).toBe('F994');
+      expect(result[1].id).toBe('F1091');
+    });
   });
 
   describe('parseExecutionLog', () => {

@@ -165,10 +165,42 @@ export class FeatureParser {
     };
   }
 
+  stripHtmlComments(lines) {
+    const result = [];
+    let inComment = false;
+    for (const line of lines) {
+      if (inComment) {
+        if (line.includes('-->')) {
+          inComment = false;
+          const after = line.substring(line.indexOf('-->') + 3);
+          if (after.trim()) result.push(after);
+        }
+        continue;
+      }
+      if (line.includes('<!--')) {
+        const openIdx = line.indexOf('<!--');
+        const closeIdx = line.indexOf('-->', openIdx + 4);
+        if (closeIdx !== -1) {
+          const before = line.substring(0, openIdx);
+          const after = line.substring(closeIdx + 3);
+          const combined = before + after;
+          if (combined.trim()) result.push(combined);
+        } else {
+          inComment = true;
+          const before = line.substring(0, openIdx);
+          if (before.trim()) result.push(before);
+        }
+        continue;
+      }
+      result.push(line);
+    }
+    return result;
+  }
+
   parseDependencyTable(sections) {
     const lines = this.findSection(sections, 'Dependencies');
     if (!lines) return [];
-    return this.parseTable(lines, (cols) => {
+    return this.parseTable(this.stripHtmlComments(lines), (cols) => {
       if (!cols[0] || cols[0].match(/^\d+$/)) return null;
       return {
         type: cols[0],
