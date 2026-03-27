@@ -40,7 +40,7 @@ import {
 } from '../config.js';
 
 // Import extracted modules
-import { validateFeatureId, validateCommand } from './validation.js';
+import { validateFeatureId, validateCommand, validateSessionId } from './validation.js';
 import { INPUT_WAIT_PATTERNS } from './inputPatterns.js';
 import { getCcsDefaultProfile, getCcsProfiles } from './ccsUtils.js';
 import { getTotalPhases } from './phaseUtils.js';
@@ -510,6 +510,7 @@ export class ClaudeService {
       serverErrorHit: false,
       authError: false,
       avoidProfile,
+      origin: 'dashboard',
     };
   }
 
@@ -1003,6 +1004,238 @@ export class ClaudeService {
     return executionId;
   }
 
+  /**
+   * Adopt an external terminal session into dashboard management.
+   * Bypasses executeCommand() entirely — status validation, duplicate guard,
+   * and dep-gating are incompatible with mid-flight session adoption.
+   * Pattern: modeled after retryManager._startRateLimitRetry().
+   */
+  adoptSession({ sessionId, featureId, originalCommand }) {
+    const validatedFeatureId = validateFeatureId(featureId);
+    const validatedCommand = validateCommand(originalCommand);
+    const validatedSessionId = validateSessionId(sessionId);
+
+    // Conflict check: reject if feature has any running/queued execution
+    for (const exec of this.executions.values()) {
+      if (
+        String(exec.featureId) === String(validatedFeatureId) &&
+        (exec.status === 'running' || exec.status === 'queued')
+      ) {
+        const err = new Error(
+          `F${validatedFeatureId} already has a ${exec.status} execution (${exec.command})`,
+        );
+        err.status = 409;
+        throw err;
+      }
+    }
+
+    // Run-lock check
+    if (
+      validatedCommand === 'run' &&
+      this.runLockFeatureId &&
+      this.runLockFeatureId !== validatedFeatureId
+    ) {
+      const err = new Error(`Run-lock held by F${this.runLockFeatureId}`);
+      err.status = 409;
+      throw err;
+    }
+
+    // Create execution with origin: 'adopted'
+    const execution = this._createExecution({
+      featureId: validatedFeatureId,
+      command: validatedCommand,
+    });
+    execution.origin = 'adopted';
+    execution.adoptedSessionId = validatedSessionId;
+
+    this.executions.set(execution.id, execution);
+
+    // Slot check (same as executeCommand but without dep-gating)
+    const maxConcurrent = getMaxConcurrentExecutions();
+    if (this.runningCount < maxConcurrent) {
+      this._startAdoptedExecution(execution);
+    } else {
+      execution.status = 'queued';
+      this.queue.push(execution.id);
+      this._pushLog(execution, {
+        line: `Queued (position ${this.queue.length}). Waiting for slot...`,
+        timestamp: nowJSTISO(),
+        level: 'info',
+      });
+      claudeLog.info(
+        `[Adopt] Queued F${execution.featureId} ${execution.command} (exec: ${execution.id})`,
+      );
+      this._broadcastQueueUpdate();
+      return { id: execution.id, status: 'queued', featureId: validatedFeatureId };
+    }
+
+    return { id: execution.id, status: execution.status, featureId: validatedFeatureId };
+  }
+
+  /**
+   * Start an adopted session execution.
+   * Spawns claude --resume with attempt-and-retry for session release.
+   */
+  _startAdoptedExecution(execution, retryAttempt = 0) {
+    const MAX_ADOPT_RETRIES = 6;
+    const ADOPT_RETRY_DELAY_MS = 5000;
+
+    execution.status = 'running';
+    execution.startedAt = nowJSTISO();
+    execution.lastOutputTime = Date.now();
+    execution.ccsProfile = this._allocateProfile();
+
+    // Acquire run-lock for /run
+    if (execution.command === 'run') {
+      this.runLockFeatureId = execution.featureId;
+      claudeLog.info(`[Adopt] Run-lock acquired: F${execution.featureId}`);
+    }
+
+    this._pushLog(execution, {
+      line: `Adopting session ${execution.adoptedSessionId} (${execution.command})...`,
+      timestamp: execution.startedAt,
+      level: 'info',
+    });
+
+    const claudePath = process.env.CLAUDE_PATH || 'claude';
+    const debugLogPath = path.join(this.tmpDir, `debug-${execution.id}.log`);
+    execution.debugLogPath = debugLogPath;
+
+    const args = [
+      '-p',
+      'continue',
+      '--resume',
+      execution.adoptedSessionId,
+      '--verbose',
+      '--debug-file',
+      debugLogPath,
+      '--output-format',
+      'stream-json',
+    ];
+
+    claudeLog.info(
+      `[Adopt] Spawning: claude --resume ${execution.adoptedSessionId} (profile: ${execution.ccsProfile || 'default'})`,
+    );
+
+    const proc = spawn(claudePath, args, {
+      cwd: this.projectRoot,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+      env: this._buildClaudeEnv(execution),
+    });
+
+    execution.process = proc;
+    execution.stdin = proc.stdin;
+    proc.stdin.on('error', () => {}); // Suppress EPIPE
+    proc.stdin.end(); // Close stdin — -p provides prompt
+
+    this._attachStdoutHandler(execution, proc);
+    this._attachStderrHandler(execution, proc);
+
+    proc.on('error', (err) => {
+      claudeLog.error(`[Adopt] Process error: ${err.message}`);
+      // If session is still locked, retry
+      if (retryAttempt < MAX_ADOPT_RETRIES && err.message.includes('session')) {
+        claudeLog.info(
+          `[Adopt] Retry ${retryAttempt + 1}/${MAX_ADOPT_RETRIES} in ${ADOPT_RETRY_DELAY_MS}ms...`,
+        );
+        this._pushLog(execution, {
+          line: `Session may still be locked. Retrying (${retryAttempt + 1}/${MAX_ADOPT_RETRIES})...`,
+          timestamp: nowJSTISO(),
+          level: 'warn',
+        });
+        setTimeout(
+          () => this._startAdoptedExecution(execution, retryAttempt + 1),
+          ADOPT_RETRY_DELAY_MS,
+        );
+        return;
+      }
+      this._handleAdoptFailure(execution, `Process error: ${err.message}`);
+    });
+
+    proc.on('close', (code) => {
+      claudeLog.info(`[Adopt] Process exited with code ${code}`);
+      if (execution.process !== proc) {
+        claudeLog.info(`[Adopt] Ignoring stale close event`);
+        return;
+      }
+      // If exit code indicates session lock failure and we have retries left
+      if (code !== 0 && retryAttempt < MAX_ADOPT_RETRIES && !execution.sessionId) {
+        claudeLog.info(
+          `[Adopt] Session not available, retry ${retryAttempt + 1}/${MAX_ADOPT_RETRIES}`,
+        );
+        this._pushLog(execution, {
+          line: `Session not yet available. Retrying (${retryAttempt + 1}/${MAX_ADOPT_RETRIES})...`,
+          timestamp: nowJSTISO(),
+          level: 'warn',
+        });
+        execution.process = null;
+        setTimeout(
+          () => this._startAdoptedExecution(execution, retryAttempt + 1),
+          ADOPT_RETRY_DELAY_MS,
+        );
+        return;
+      }
+      if (execution.status === 'running') {
+        const exitCode = execution.resultExitCode ?? code ?? 1;
+        this._handleCompletion(execution, exitCode);
+      } else if (execution.status === 'handed-off') {
+        if (execution.stallCheckInterval) {
+          clearInterval(execution.stallCheckInterval);
+          execution.stallCheckInterval = null;
+        }
+        execution.process = null;
+        this._dequeueNext();
+      }
+    });
+
+    // Stall detection
+    execution.stallCheckInterval = setInterval(() => {
+      this._checkStall(execution);
+    }, STALL_CHECK_INTERVAL_MS);
+
+    // Notify frontend
+    this.logStreamer?.broadcastAll({
+      type: 'execution-started',
+      executionId: execution.id,
+      featureId: execution.featureId,
+      command: execution.command,
+      origin: 'adopted',
+      timestamp: nowJSTISO(),
+    });
+
+    this._broadcastState(execution);
+    this._broadcastQueueUpdate();
+
+    if (this.rateLimitService) {
+      this.rateLimitService.recomputeRefreshTimes();
+    }
+  }
+
+  /** Handle adoption failure — clean up locks and mark failed */
+  _handleAdoptFailure(execution, reason) {
+    execution.status = 'failed';
+    execution.completedAt = nowJSTISO();
+    execution.exitCode = 1;
+    execution.process = null;
+
+    // Release run-lock if held by this adoption
+    if (execution.command === 'run' && this.runLockFeatureId === execution.featureId) {
+      this._releaseRunLock(execution.featureId, 'adopt-failure');
+    }
+
+    this._pushLog(execution, {
+      line: `Adoption failed: ${reason}`,
+      timestamp: nowJSTISO(),
+      level: 'error',
+    });
+
+    this._saveHistoryEntry(execution);
+    this._broadcastState(execution);
+    this._dequeueNext();
+  }
+
   _startExecution(execution) {
     const { id: executionId, featureId, command } = execution;
     const cliPrompt =
@@ -1010,22 +1243,25 @@ export class ClaudeService {
 
     // Defense-in-depth: final dep check before starting
     // (SLOT_EXEMPT commands have no featureId, _getPendingDeps returns [] for them)
-    const pendingDeps = this._getPendingDeps(featureId);
-    if (pendingDeps === null || pendingDeps.length > 0) {
-      const depList = pendingDeps ? pendingDeps.map((d) => `F${d}`).join(', ') : 'unknown';
-      claudeLog.warn(
-        `[DepGuard] F${featureId} ${command} blocked at _startExecution: deps [${depList}]`,
-      );
-      this._pushLog(execution, {
-        line: `Blocked: waiting for dependencies [${depList}]`,
-        timestamp: nowJSTISO(),
-        level: 'warn',
-      });
-      // Re-queue — _dequeueNext() uses priority-aware sorting, position doesn't matter
-      this.queue.push(executionId);
-      this._releaseChainSlot(execution);
-      this._broadcastQueueUpdate();
-      return;
+    // Bypass dep-gating for adopted sessions (already ran externally)
+    if (execution.origin !== 'adopted') {
+      const pendingDeps = this._getPendingDeps(featureId);
+      if (pendingDeps === null || pendingDeps.length > 0) {
+        const depList = pendingDeps ? pendingDeps.map((d) => `F${d}`).join(', ') : 'unknown';
+        claudeLog.warn(
+          `[DepGuard] F${featureId} ${command} blocked at _startExecution: deps [${depList}]`,
+        );
+        this._pushLog(execution, {
+          line: `Blocked: waiting for dependencies [${depList}]`,
+          timestamp: nowJSTISO(),
+          level: 'warn',
+        });
+        // Re-queue — _dequeueNext() uses priority-aware sorting, position doesn't matter
+        this.queue.push(executionId);
+        this._releaseChainSlot(execution);
+        this._broadcastQueueUpdate();
+        return;
+      }
     }
 
     execution.status = 'running';
@@ -1437,6 +1673,7 @@ export class ClaudeService {
         ccsProfile: execution.ccsProfile ?? null,
         resultSubtype: execution.resultSubtype ?? null,
         killedByUser: execution.killedByUser ?? false,
+        origin: execution.origin ?? 'dashboard',
         tokenUsage: execution.tokenUsage
           ? {
               input: execution.tokenUsage.input,
@@ -1801,7 +2038,12 @@ export class ClaudeService {
 
     // Server error (500/529) retry — before context retry to avoid consuming context retries
     // on server-side issues. Profile switch won't help; use exponential backoff.
-    if (execution.serverErrorHit && !execution.killedByUser && !execution.accountLimitHit) {
+    if (
+      execution.serverErrorHit &&
+      !execution.killedByUser &&
+      !execution.accountLimitHit &&
+      execution.origin !== 'adopted'
+    ) {
       const retryCount = execution.chain?.serverErrorRetryCount || 0;
       if (retryCount < MAX_SERVER_ERROR_RETRIES) {
         execution.status = 'failed';
@@ -2339,6 +2581,16 @@ export class ClaudeService {
         .catch(() => {});
     }
 
+    // Release run-lock for adopted session failures (no fileWatcher status-change to trigger release)
+    if (
+      execution.origin === 'adopted' &&
+      execution.command === 'run' &&
+      exitCode !== 0 &&
+      this.runLockFeatureId === execution.featureId
+    ) {
+      this._releaseRunLock(execution.featureId, 'adopt-completion-failure');
+    }
+
     // Sync active imp IDs — execution status changed, update featureService promotion state
     this._syncActiveImpIds();
 
@@ -2678,9 +2930,12 @@ export class ClaudeService {
         const exec = this.executions.get(this.queue[i]);
         if (this._isRunBlocked(exec.command, exec.featureId)) continue;
 
-        // Skip if dep check fails (null = fail-closed) or has pending deps
-        const pendingDeps = this._getPendingDeps(exec.featureId, cachedFeatures);
-        if (pendingDeps === null || pendingDeps.length > 0) continue;
+        // Bypass dep-gating for adopted sessions (already ran externally)
+        if (exec.origin !== 'adopted') {
+          // Skip if dep check fails (null = fail-closed) or has pending deps
+          const pendingDeps = this._getPendingDeps(exec.featureId, cachedFeatures);
+          if (pendingDeps === null || pendingDeps.length > 0) continue;
+        }
 
         const belongsToChain = this._belongsToActiveChain(exec);
         const limit = belongsToChain ? this.maxConcurrent : this.maxConcurrent - idleChainSlots;

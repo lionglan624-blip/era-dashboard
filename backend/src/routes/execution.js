@@ -180,6 +180,26 @@ export function createExecutionRouter(claudeService, featureService) {
     }
   });
 
+  // POST /api/execution/adopt - Adopt a terminal session into dashboard management
+  router.post('/adopt', (req, res) => {
+    const { sessionId, featureId, originalCommand } = req.body;
+    if (!sessionId || !featureId || !originalCommand) {
+      return res
+        .status(400)
+        .json({ error: 'sessionId, featureId, and originalCommand are required' });
+    }
+
+    try {
+      const result = claudeService.adoptSession({ sessionId, featureId, originalCommand });
+      // 202 if queued, 200 if started
+      const status = result.status === 'queued' ? 202 : 200;
+      res.status(status).json(result);
+    } catch (err) {
+      const status = err.status || 500;
+      res.status(status).json({ error: err.message });
+    }
+  });
+
   // GET /api/execution/queue - Queue status
   router.get('/queue', (req, res) => {
     res.json(claudeService.getQueueStatus());

@@ -32,3 +32,17 @@ export function validateCommand(command) {
   }
   return cmd;
 }
+
+/**
+ * Validate sessionId to ensure UUID format
+ * @param {string} sessionId - The session ID to validate
+ * @returns {string} - The validated session ID as string
+ * @throws {Error} - If sessionId is not UUID format
+ */
+export function validateSessionId(sessionId) {
+  const id = String(sessionId);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error(`Invalid sessionId: ${sessionId}. Must be UUID format.`);
+  }
+  return id;
+}
