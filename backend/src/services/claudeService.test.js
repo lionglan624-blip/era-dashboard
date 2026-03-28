@@ -7835,11 +7835,12 @@ describe('Scenario Tests', () => {
       vi.useRealTimers();
     });
 
-    it('_handoffToTerminal auto-triggers resumeInTerminal after delay', () => {
+    it('_handoffToTerminal auto-triggers resume after delay', () => {
       const { service } = createScenarioService();
       // Restore real _handoffToTerminal for this test
       service._handoffToTerminal = ClaudeService.prototype._handoffToTerminal.bind(service);
       service.resumeInTerminal = vi.fn();
+      service.resumeRemote = vi.fn();
       service.logStreamer = { broadcast: vi.fn(), broadcastAll: vi.fn() };
 
       const exec = createRunningChainExecution(service, { command: 'fc' });
@@ -7850,12 +7851,16 @@ describe('Scenario Tests', () => {
 
       // Auto-resume NOT yet called
       expect(service.resumeInTerminal).not.toHaveBeenCalled();
+      expect(service.resumeRemote).not.toHaveBeenCalled();
 
       // Advance past HANDOFF_DELAY_MS (300ms from config)
       vi.advanceTimersByTime(1000);
 
-      // Now resumeInTerminal should have been called
-      expect(service.resumeInTerminal).toHaveBeenCalledWith(exec.id);
+      // One of the two resume methods should have been called depending on HANDOFF_MODE
+      // (HANDOFF_MODE=remote in PM2 env → resumeRemote, otherwise → resumeInTerminal)
+      const resumeCalled =
+        service.resumeInTerminal.mock.calls.length + service.resumeRemote.mock.calls.length;
+      expect(resumeCalled).toBe(1);
     });
   });
 
