@@ -11,10 +11,10 @@
     "dev:backend": "npm run dev --workspace=backend",
     "dev:frontend": "npm run dev --workspace=frontend",
     "build": "npm run build --workspace=frontend",
-    "test": "npm run test --workspace=backend && npm run test --workspace=frontend",
+    "test": "npm run lint && npm run test --workspace=backend && npm run test --workspace=frontend",
     "test:watch": "vitest",
-    "lint": "eslint backend/src frontend/src",
-    "lint:fix": "eslint --fix backend/src frontend/src",
+    "lint": "eslint backend/src backend/server.js frontend/src",
+    "lint:fix": "eslint --fix backend/src backend/server.js frontend/src",
     "format": "prettier --write backend/src frontend/src",
     "format:check": "prettier --check backend/src frontend/src"
   },

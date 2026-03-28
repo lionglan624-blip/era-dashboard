@@ -11,6 +11,7 @@ import { detectPhase, detectIteration, getTotalPhases, getDefaultPhaseName } fro
 import { claudeLog } from '../utils/logger.js';
 import { nowJSTISO } from '../utils/timeUtils.js';
 import { appendFileSync } from 'fs';
+import { getCcsProfiles } from './ccsUtils.js';
 
 // Mock fs.appendFileSync to capture history writes without touching the filesystem
 vi.mock('fs', async (importOriginal) => {
@@ -20,6 +21,20 @@ vi.mock('fs', async (importOriginal) => {
     appendFileSync: vi.fn(),
   };
 });
+
+// Mock exitHelpers to prevent process.exit calls during tests
+vi.mock('../utils/exitHelpers.js', () => ({
+  exitWithPm2Update: vi.fn(),
+  setPm2UpdatePending: vi.fn(),
+  readExitMarker: vi.fn().mockReturnValue(null),
+  writeExitMarker: vi.fn(),
+}));
+
+// Mock ccsUtils to control profile lists in tests
+vi.mock('./ccsUtils.js', () => ({
+  getCcsDefaultProfile: vi.fn().mockReturnValue(null),
+  getCcsProfiles: vi.fn().mockReturnValue([]),
+}));
 
 // Mock child_process.spawn to prevent actual process spawning during tests
 vi.mock('child_process', async (importOriginal) => {
@@ -8336,5 +8351,129 @@ describe('bulkQueue terminal-active exclusion', () => {
 
     expect(result.skipped).toHaveLength(0);
     expect(result.queued).toHaveLength(3);
+  });
+});
+
+// =============================================================================
+// _allocateProfile unit tests
+// =============================================================================
+
+describe('_allocateProfile', () => {
+  beforeEach(() => {
+    vi.mocked(getCcsProfiles).mockReset();
+  });
+
+  it('round-robins across profiles', () => {
+    const { service } = createService();
+    vi.mocked(getCcsProfiles).mockReturnValue(['alpha', 'bravo', 'charlie']);
+    service.rateLimitService = { getCached: () => null };
+    service._profileRoundRobinIndex = 0;
+
+    const results = [];
+    for (let i = 0; i < 6; i++) {
+      results.push(service._allocateProfile());
+    }
+    expect(results).toEqual(['alpha', 'bravo', 'charlie', 'alpha', 'bravo', 'charlie']);
+  });
+
+  it('skips profiles above AUTO_SWITCH_THRESHOLD', () => {
+    const { service } = createService();
+    vi.mocked(getCcsProfiles).mockReturnValue(['safe', 'hot']);
+    service.rateLimitService = {
+      getCached: () => ({
+        safe: { weekly: { percent: 50 }, session: { percent: 30 } },
+        hot: { weekly: { percent: 96 }, session: { percent: 80 } },
+      }),
+    };
+    service._profileRoundRobinIndex = 0;
+
+    // Should prefer 'safe' (96% > 95 threshold causes 'hot' to be skipped in safe-filter pass)
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+      results.push(service._allocateProfile());
+    }
+    expect(results.filter((p) => p === 'safe').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('skips avoidProfile', () => {
+    const { service } = createService();
+    vi.mocked(getCcsProfiles).mockReturnValue(['alpha', 'bravo']);
+    service.rateLimitService = { getCached: () => null };
+    service._profileRoundRobinIndex = 0;
+
+    const result = service._allocateProfile('alpha');
+    expect(result).toBe('bravo');
+  });
+
+  it('falls back when all profiles are avoided', () => {
+    const { service } = createService();
+    vi.mocked(getCcsProfiles).mockReturnValue(['only']);
+    service.rateLimitService = { getCached: () => null };
+    service._profileRoundRobinIndex = 0;
+
+    // avoidProfile = 'only', but it's the only profile
+    const result = service._allocateProfile('only');
+    expect(result).toBe('only');
+  });
+
+  it('falls back to getCcsProfile when no profiles configured', () => {
+    const { service } = createService();
+    vi.mocked(getCcsProfiles).mockReturnValue([]);
+    service.getCcsProfile = vi.fn().mockReturnValue('default-profile');
+
+    const result = service._allocateProfile();
+    expect(result).toBe('default-profile');
+  });
+});
+
+// =============================================================================
+// executeCommand -> _startExecution integration (shallow)
+// =============================================================================
+
+describe('executeCommand -> _startExecution integration', () => {
+  let createdIntervals;
+
+  beforeEach(() => {
+    vi.mocked(getCcsProfiles).mockReset();
+    createdIntervals = [];
+    // Intercept setInterval to track and neutralize stall-check timers
+    vi.spyOn(globalThis, 'setInterval').mockImplementation((fn, delay) => {
+      const id = setTimeout(() => {}, 9999999);
+      createdIntervals.push(id);
+      return id;
+    });
+  });
+
+  afterEach(() => {
+    for (const id of createdIntervals) {
+      clearTimeout(id);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('exercises full path without _startExecution stub', () => {
+    const { service } = createService({ maxConcurrent: 99 });
+
+    // Prevent process.exit from cleanup/DR triggers
+    service._exitForRestart = vi.fn();
+
+    vi.mocked(getCcsProfiles).mockReturnValue(['test-profile']);
+    service.rateLimitService = {
+      getCached: () => null,
+      recomputeRefreshTimes: vi.fn(),
+    };
+    service.fileWatcher = { statusCache: new Map() };
+    service.featureService = null; // _getPendingDeps returns [] when null
+
+    const execId = service.executeCommand('100', 'fl');
+    const exec = service.executions.get(execId);
+
+    expect(exec).toBeDefined();
+    expect(exec.status).toBe('running');
+    expect(exec.ccsProfile).toBe('test-profile');
+    expect(exec.process).toBeTruthy();
+
+    // Clean up constructor intervals
+    if (service._cleanupInterval) clearInterval(service._cleanupInterval);
   });
 });

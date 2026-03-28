@@ -4,7 +4,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn as _spawn } from 'child_process';
 import chokidar from 'chokidar';
 
 import { FeatureService } from './src/services/featureService.js';
@@ -28,6 +28,12 @@ import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
 import { nowJSTISO } from './src/utils/timeUtils.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
 import { exitWithPm2Update } from './src/utils/exitHelpers.js';
+import {
+  shouldDeferDuringCooldown,
+  saveAutoDRSnapshot,
+  compareAutoDRSnapshot,
+} from './src/utils/autoDR.js';
+export { shouldDeferDuringCooldown, saveAutoDRSnapshot, compareAutoDRSnapshot };
 import {
   RATE_LIMIT_POLL_INTERVAL_MS,
   AUTO_DR_DEBOUNCE_MS,
@@ -243,6 +249,32 @@ function triggerAutoDR() {
     // orphan detached processes survive parent death and keep issuing restart commands.
     // process.exit() is clean — PM2 waits restart_delay, port releases, no race conditions.
     serverLog.info('[Auto-DR] Exiting for PM2 autorestart (restart_delay: 5s)');
+    // Defense-in-depth: lint check before restart
+    try {
+      execSync(
+        path.join('node_modules', '.bin', 'eslint') + ' --quiet backend/src backend/server.js',
+        {
+          cwd: path.join(__dirname, '..'),
+          timeout: 15000,
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: 'pipe',
+        },
+      );
+      serverLog.info('[Auto-DR] Lint passed');
+    } catch (lintErr) {
+      serverLog.warn(
+        `[Auto-DR] Lint failed (restarting anyway): ${(lintErr.stdout || lintErr.message || '').substring(0, 500)}`,
+      );
+    }
+    // Save mtime snapshot for post-restart comparison
+    const snapshotPath = path.join(LOG_DIR, 'auto-dr-snapshot.json');
+    saveAutoDRSnapshot(
+      path.join(__dirname, 'src'),
+      path.join(__dirname, 'server.js'),
+      snapshotPath,
+    );
+    serverLog.info('[Auto-DR] Mtime snapshot saved');
     exitWithPm2Update(0);
   } else {
     if (!pendingRestart) {
@@ -273,12 +305,27 @@ const autoDRWatcher = chokidar.watch(
 
 const startupTime = Date.now();
 
+// Post-cooldown: check if files changed during restart gap
+setTimeout(() => {
+  const snapshotPath = path.join(LOG_DIR, 'auto-dr-snapshot.json');
+  if (compareAutoDRSnapshot(snapshotPath)) {
+    serverLog.info('[Auto-DR] Files changed since last DR snapshot, triggering DR');
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(triggerAutoDR, AUTO_DR_DEBOUNCE_MS);
+  } else {
+    serverLog.info('[Auto-DR] Snapshot matches — no missed changes');
+  }
+}, AUTO_DR_STARTUP_COOLDOWN_MS);
+
 autoDRWatcher.on('change', (filePath) => {
   if (!filePath.endsWith('.js')) return;
   if (Date.now() - startupTime < AUTO_DR_STARTUP_COOLDOWN_MS) {
+    const remaining = AUTO_DR_STARTUP_COOLDOWN_MS - (Date.now() - startupTime);
     serverLog.info(
-      `[Auto-DR] File changed during cooldown, ignoring: ${path.relative(__dirname, filePath)}`,
+      `[Auto-DR] File changed during cooldown, scheduling in ${remaining}ms: ${path.relative(__dirname, filePath)}`,
     );
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(triggerAutoDR, Math.max(0, remaining) + AUTO_DR_DEBOUNCE_MS);
     return;
   }
   const relative = path.relative(__dirname, filePath);

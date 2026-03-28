@@ -51,6 +51,23 @@ export default [
     },
   },
 
+  // backend/server.js (Node.js ES module, root level)
+  {
+    files: ['backend/server.js'],
+    ...js.configs.recommended,
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-console': 'off',
+    },
+  },
+
   // Frontend (React JSX)
   {
     files: ['frontend/src/**/*.{js,jsx}'],
