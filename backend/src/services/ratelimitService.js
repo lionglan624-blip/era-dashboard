@@ -13,8 +13,7 @@ import {
   SESSION_WINDOW_MS,
   SESSION_BURN_RATE_MIN_ELAPSED_MS,
   SESSION_BURN_RATE_MIN_PERCENT,
-  getAutoSwitchThreshold,
-  isPromoActive,
+  AUTO_SWITCH_THRESHOLD,
 } from '../config.js';
 
 /**
@@ -683,10 +682,8 @@ export class RateLimitService {
     const sonnetPercent = data.sonnet?.percent || 0;
 
     // Predictive: if session burn rate projects to exceed limit, boost effective percent
-    // Skip during 2x promo — doubled capacity makes projections unreliable
     let effectiveSessionPercent = sessionPercent;
     if (
-      !isPromoActive() &&
       sessionPercent >= SESSION_BURN_RATE_MIN_PERCENT &&
       sessionPercent < 100 &&
       data.session?.resetsAt
@@ -807,7 +804,7 @@ export class RateLimitService {
           data.session?.percent || 0,
           data.sonnet?.percent || 0,
         );
-        return maxPercent < getAutoSwitchThreshold();
+        return maxPercent < AUTO_SWITCH_THRESHOLD;
       }) || null
     );
   }

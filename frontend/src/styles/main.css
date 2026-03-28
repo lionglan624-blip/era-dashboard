@@ -1844,15 +1844,6 @@ body {
   color: var(--accent);
 }
 
-.status-item.promo-double {
-  color: #22c55e;
-  font-weight: 600;
-}
-
-.status-item.promo-single {
-  color: var(--text-muted);
-}
-
 /* =============================================================================
    Execution Panel - Tabs Enhancement
    ============================================================================= */

@@ -50,11 +50,7 @@ export const STUCK_RUNNING_TIMEOUT_MS = 7200000; // 2 hours
 export const CLEANUP_INTERVAL_MS = 600000; // 10 minutes
 
 /** Maximum concurrent executions (chain slots reserved within this limit) */
-const _BASE_MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || '2');
-export const MAX_CONCURRENT_EXECUTIONS = _BASE_MAX_CONCURRENT;
-export function getMaxConcurrentExecutions(nowMs = Date.now()) {
-  return _BASE_MAX_CONCURRENT * getPromoMultiplier(nowMs);
-}
+export const MAX_CONCURRENT_EXECUTIONS = parseInt(process.env.MAX_CONCURRENT || '3');
 
 /** TTL for shell command button states (cs/dr/upd) */
 export const SHELL_STATE_TTL_MS = 300000; // 5 minutes
@@ -144,10 +140,7 @@ export const RATE_LIMIT_RETRY_BUFFER_MS = 60000; // 1 minute
 export const RATE_LIMIT_SAFE_THRESHOLD = 95;
 
 /** Threshold (percent) for safe profile filter (allocation and retry evaluation) */
-export const AUTO_SWITCH_THRESHOLD = 80;
-export function getAutoSwitchThreshold(nowMs = Date.now()) {
-  return isPromoActive(nowMs) ? 95 : AUTO_SWITCH_THRESHOLD;
-}
+export const AUTO_SWITCH_THRESHOLD = 95;
 
 /** Maximum number of profile switches allowed per execution chain (prevents ping-pong loops) */
 export const MAX_PROFILE_SWITCHES = 2;
@@ -285,37 +278,3 @@ export const UPDATE_MONTHLY_DAY = 1;
 
 /** Monthly schedule: hour in JST */
 export const UPDATE_MONTHLY_HOUR_JST = 6;
-
-// =============================================================================
-// March 2026 Usage Promotion (temporary — remove after 2026-03-28)
-// =============================================================================
-const PROMO_START = new Date('2026-03-13T00:00:00-07:00').getTime();
-const PROMO_END = new Date('2026-03-28T07:00:00Z').getTime(); // Mar 27 11:59PM PT
-
-/**
- * Returns 2 during 2x promo periods, 1 otherwise.
- * - Weekdays outside 4AM-11AM PT: 2x (4AM not 5AM = 1h buffer before actual peak)
- * - Weekends (Sat/Sun in PT): 2x all day
- * - Outside promo window: always 1x
- * @param {number} [nowMs=Date.now()] - Current time for testing
- */
-export function getPromoMultiplier(nowMs = Date.now()) {
-  if (nowMs < PROMO_START || nowMs >= PROMO_END) return 1;
-
-  // March 2026 is in PDT (UTC-7, DST started Mar 8)
-  const ptMs = nowMs - 7 * 60 * 60 * 1000;
-  const ptDate = new Date(ptMs);
-  const dayOfWeek = ptDate.getUTCDay(); // 0=Sun, 6=Sat
-
-  // Weekends: always 2x
-  if (dayOfWeek === 0 || dayOfWeek === 6) return 2;
-
-  // Weekday: peak = 4AM-11AM PT (4AM = 1h buffer before actual 5AM peak)
-  const ptHour = ptDate.getUTCHours();
-  if (ptHour >= 4 && ptHour < 11) return 1;
-  return 2;
-}
-
-export function isPromoActive(nowMs = Date.now()) {
-  return getPromoMultiplier(nowMs) === 2;
-}

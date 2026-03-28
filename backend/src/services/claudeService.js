@@ -34,9 +34,8 @@ import {
   INPUT_EMAIL_DELAY_MS,
   HANDOFF_MODE,
   REMOTE_CONTROL_TIMEOUT_MS,
-  getMaxConcurrentExecutions,
-  getAutoSwitchThreshold,
-  getPromoMultiplier,
+  MAX_CONCURRENT_EXECUTIONS,
+  AUTO_SWITCH_THRESHOLD,
 } from '../config.js';
 
 // Import extracted modules
@@ -176,8 +175,6 @@ export class ClaudeService {
     this.emailService = new EmailService();
 
     this._cleanupInterval = setInterval(() => this._cleanupOldExecutions(), CLEANUP_INTERVAL_MS);
-    this._lastPromoMultiplier = getPromoMultiplier();
-    this._promoCheckInterval = setInterval(() => this._checkPromoTransition(), 60000);
 
     // Initialize RetryManager with dependencies
     this.retryManager = new RetryManager({
@@ -257,10 +254,10 @@ export class ClaudeService {
   // SECTION: Facade — Retry/Resume/Shell
   // ═══════════════════════════════════════
 
-  /** Dynamic max concurrent: promo-aware unless overridden by test DI */
+  /** Max concurrent executions (overridable for tests) */
   get maxConcurrent() {
     if (this._maxConcurrentOverride !== undefined) return this._maxConcurrentOverride;
-    return getMaxConcurrentExecutions();
+    return MAX_CONCURRENT_EXECUTIONS;
   }
 
   // Scan/retry methods delegated to RetryManager
@@ -407,7 +404,7 @@ export class ClaudeService {
 
     // Build a safe-profile set from rate-limit cache (excludes profiles at/above threshold)
     const cached = this.rateLimitService?.getCached();
-    const threshold = getAutoSwitchThreshold();
+    const threshold = AUTO_SWITCH_THRESHOLD;
     const isSafe = (p) => {
       if (!cached) return true; // No cache yet — treat all as safe
       const data = cached[p];
@@ -652,145 +649,6 @@ export class ClaudeService {
     if (staleFeatureIds.length > 0) {
       this.onExecutionComplete?.();
     }
-  }
-
-  /**
-   * Check for promo multiplier transitions and auto-queue/clear.
-   * Called every 60 seconds.
-   * - 1x → 2x: bulk queue all eligible features
-   * - 2x → 1x: clear the queue
-   */
-  _checkPromoTransition() {
-    const current = getPromoMultiplier();
-    const previous = this._lastPromoMultiplier;
-    this._lastPromoMultiplier = current;
-
-    if (previous === current) return;
-
-    if (current === 2) {
-      // 1x → 2x: queue all eligible features
-      claudeLog.info('[Promo] Transition 1x → 2x detected, bulk queuing all eligible features');
-      const featureIds = this._getQueueableFeatureIds();
-      if (featureIds.length > 0) {
-        const result = this.bulkQueue(featureIds);
-        claudeLog.info(
-          `[Promo] Bulk queued: ${result.queued.length} features, skipped: ${result.skipped.length}`,
-        );
-      } else {
-        claudeLog.info('[Promo] No queueable features found');
-      }
-    } else {
-      // 2x → 1x: clear queue
-      claudeLog.info('[Promo] Transition 2x → 1x detected, clearing queue');
-      const cleared = this.clearQueue();
-      claudeLog.info(`[Promo] Cleared ${cleared.length} queued items`);
-    }
-  }
-
-  /**
-   * Get all feature IDs that are eligible for bulk queue.
-   * Mirrors the frontend Queue All button logic (TreeView.jsx queueableAllIds):
-   * - Only features from index (featureService.getAllFeatures), not fileWatcher.statusCache
-   * - Excludes orphans (circular-dep features not reachable from tree roots)
-   * - Must have a valid status-to-command mapping
-   * - Excludes already running or queued features
-   * @returns {string[]} Array of feature IDs
-   */
-  _getQueueableFeatureIds() {
-    if (!this.featureService) return [];
-    const { features } = this.featureService.getAllFeatures();
-
-    // Filter to active (not DONE/CANCELLED) — mirrors FE buildTree filter
-    const active = features.filter((f) => {
-      if (f.status === '[CANCELLED]') return false;
-      if (f.status === '[DONE]') return false;
-      return true;
-    });
-
-    // Build orphan set — mirrors FE buildTree orphan detection
-    const orphanIds = this._findOrphanIds(active);
-
-    // Build sets of running and queued feature IDs (mirrors FE's runningFeatures / featureQueueWaiters)
-    const runningFeatureIds = new Set();
-    const queuedFeatureIds = new Set();
-    for (const exec of this.executions.values()) {
-      if (exec.status === 'running' && exec.featureId) {
-        runningFeatureIds.add(String(exec.featureId));
-      }
-      if (exec.status === 'queued' && exec.featureId) {
-        queuedFeatureIds.add(String(exec.featureId));
-      }
-    }
-
-    const ids = [];
-    for (const f of active) {
-      const featureIdStr = String(f.id);
-      if (
-        STATUS_TO_FIRST_COMMAND[f.status] &&
-        !orphanIds.has(featureIdStr) &&
-        !runningFeatureIds.has(featureIdStr) &&
-        !queuedFeatureIds.has(featureIdStr)
-      ) {
-        ids.push(featureIdStr);
-      }
-    }
-    return ids;
-  }
-
-  /**
-   * Find orphan feature IDs — features not reachable from tree roots.
-   * Mirrors frontend TreeView.jsx buildTree orphan detection.
-   * @param {Array} active - Active features (not DONE/CANCELLED)
-   * @returns {Set<string>} Set of orphan feature ID strings
-   */
-  _findOrphanIds(active) {
-    const activeIds = new Set(active.map((f) => String(f.id)));
-
-    // Build parent map: childId -> [parentIds within active set]
-    const parentMap = new Map();
-    for (const f of active) {
-      const fId = String(f.id);
-      const deps = (f.dependsOn || '')
-        .split(',')
-        .map((d) => d.trim().replace(/\D/g, ''))
-        .filter((d) => d && activeIds.has(d));
-      parentMap.set(fId, deps);
-    }
-
-    // Roots: features with no active parents
-    const roots = active.filter((f) => {
-      const parents = parentMap.get(String(f.id)) || [];
-      return parents.length === 0;
-    });
-
-    // Build children map for DFS
-    const childrenMap = new Map();
-    for (const f of active) childrenMap.set(String(f.id), []);
-    for (const [childId, parentIds] of parentMap) {
-      for (const pid of parentIds) {
-        if (childrenMap.has(pid)) childrenMap.get(pid).push(childId);
-      }
-    }
-
-    // DFS from roots to find reachable features
-    const visited = new Set();
-    const stack = roots.map((r) => String(r.id));
-    while (stack.length > 0) {
-      const id = stack.pop();
-      if (visited.has(id)) continue;
-      visited.add(id);
-      for (const childId of childrenMap.get(id) || []) {
-        if (!visited.has(childId)) stack.push(childId);
-      }
-    }
-
-    // Orphans: active features not visited
-    const orphans = new Set();
-    for (const f of active) {
-      const fId = String(f.id);
-      if (!visited.has(fId)) orphans.add(fId);
-    }
-    return orphans;
   }
 
   /** Build environment variables for claude child processes */
@@ -1051,7 +909,7 @@ export class ClaudeService {
     this.executions.set(execution.id, execution);
 
     // Slot check (same as executeCommand but without dep-gating)
-    const maxConcurrent = getMaxConcurrentExecutions();
+    const maxConcurrent = MAX_CONCURRENT_EXECUTIONS;
     if (this.runningCount < maxConcurrent) {
       this._startAdoptedExecution(execution);
     } else {
@@ -3584,6 +3442,18 @@ export class ClaudeService {
         : null,
       isStalled: e.isStalled || false,
       ccsProfile: e.ccsProfile || null,
+      chain: e.chain
+        ? {
+            enabled: e.chain.enabled,
+            retryCount: e.chain.retryCount,
+            contextRetryCount: e.chain.contextRetryCount,
+            incompleteRetryCount: e.chain.incompleteRetryCount,
+            serverErrorRetryCount: e.chain.serverErrorRetryCount,
+            history: e.chain.history,
+          }
+        : null,
+      chainParentId: e.chainParentId || null,
+      chainCutRequested: e.chainCutRequested || false,
     }));
   }
 
