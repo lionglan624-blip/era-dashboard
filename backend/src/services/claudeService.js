@@ -1784,6 +1784,46 @@ export class ClaudeService {
       return;
     }
 
+    // Resume-answer spawn failed (e.g., CLI arg parsing error).
+    // Restore inputRequired so user can retry from browser UI.
+    if (execution._resumedAnswer && exitCode !== 0 && !execution.killedByUser) {
+      const retryCount = (execution._resumeFailCount || 0) + 1;
+      const MAX_RESUME_RETRIES = 3;
+
+      if (retryCount <= MAX_RESUME_RETRIES) {
+        claudeLog.warn(
+          `[ClaudeService] answerInBrowser resume failed (exit=${exitCode}) — restoring inputRequired for retry (${retryCount}/${MAX_RESUME_RETRIES}) (exec ${execution.id})`,
+        );
+        execution._resumeFailCount = retryCount;
+        execution._resumedAnswer = false;
+        execution.process = null;
+        execution.stdin = null;
+
+        if (execution._lastInputRequired) {
+          execution.inputRequired = execution._lastInputRequired;
+        } else {
+          execution.inputRequired = {
+            type: 'question',
+            question: '(Previous answer failed to send. Please retry or use Terminal.)',
+            options: [],
+          };
+        }
+
+        if (execution.stallCheckInterval) {
+          clearInterval(execution.stallCheckInterval);
+          execution.stallCheckInterval = null;
+        }
+
+        this._broadcastState(execution);
+        return; // Hold slot, keep status 'running'
+      }
+
+      // Exhausted — fall through to normal completion (terminal handoff or failed)
+      claudeLog.error(
+        `[ClaudeService] answerInBrowser retry exhausted (${MAX_RESUME_RETRIES}) — falling through (exec ${execution.id})`,
+      );
+    }
+
     const executionId = execution.id;
     claudeLog.info(
       `[ClaudeService] Execution ${executionId} completed with code ${exitCode}, subtype=${execution.resultSubtype}`,

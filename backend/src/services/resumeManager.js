@@ -237,6 +237,12 @@ export class ResumeManager {
     execution.lastOutputTime = Date.now();
     // Clear stale input state from the original session — the resumed process
     // starts fresh and will set these again if new input prompts appear.
+    // Save inputRequired for potential retry on resume failure
+    execution._lastInputRequired = execution.inputRequired
+      ? structuredClone(execution.inputRequired)
+      : null;
+    execution._resumeFailCount = 0; // Reset on new answer attempt
+
     execution.waitingForInput = false;
     execution.waitingInputPattern = null;
     execution.inputRequired = null;
@@ -249,7 +255,6 @@ export class ResumeManager {
     const claudePath = process.env.CLAUDE_PATH || 'claude';
     const args = [
       '-p',
-      answer,
       '--resume',
       sessionId,
       '--verbose',
@@ -257,6 +262,8 @@ export class ResumeManager {
       execution.debugLogPath,
       '--output-format',
       'stream-json',
+      '--',
+      answer,
     ];
 
     claudeLog.info(
@@ -337,6 +344,7 @@ export class ResumeManager {
     this.deps.executions.set(execution.id, execution);
 
     const claudePath = process.env.CLAUDE_PATH || 'claude';
+    // Note: no '--' separator needed — prompt is 'continue' or internally generated, never user-controlled
     const args = [
       '-p',
       prompt,

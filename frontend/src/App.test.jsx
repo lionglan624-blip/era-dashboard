@@ -182,11 +182,10 @@ describe('App', () => {
       expect(screen.getByText('dr')).toBeInTheDocument();
     });
 
-    it('renders slash command buttons (/commit, /sync-deps)', () => {
+    it('renders slash command button (/commit)', () => {
       render(<App />);
 
       expect(screen.getByText('/commit')).toBeInTheDocument();
-      expect(screen.getByText('/sync-deps')).toBeInTheDocument();
     });
   });
 
