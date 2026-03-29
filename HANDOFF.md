@@ -223,7 +223,7 @@ backend/
 │   │   └── logStreamer.js       # WebSocket broadcast (sub/all)
 │   └── utils/
 │       ├── exitCodes.js         # Windows NTSTATUS exit code decoder
-│       ├── logger.js            # Logging (daily rotation, JST)
+│       ├── logger.js            # Logging (stdout/stderr, JST timestamps)
 │       └── timeUtils.js         # Shared time utilities (nowJST)
 
 frontend/

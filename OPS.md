@@ -98,6 +98,22 @@ CCS sync runs on `claude` launch (NOT on `ccs auth default`). On first launch af
 
 `127.0.0.1:8888` - Auto-injected via `_buildClaudeEnv()` as `HTTPS_PROXY`/`HTTP_PROXY`.
 
+### PM2 Log Rotation
+
+Installed via `pm2 install pm2-logrotate`. Runs automatically.
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| max_size | 50M | Rotate when file exceeds 50MB |
+| retain | 30 | Keep 30 rotated files |
+| compress | true | Gzip rotated files |
+| dateFormat | YYYY-MM-DD | Date suffix for rotated files |
+| workerInterval | 3600 | Check interval (seconds) |
+
+Verify: `pm2 conf pm2-logrotate`
+
+**Note**: `ddiag --search` reads only the current PM2 log file. To search rotated files, use `--app-log <path>` explicitly.
+
 ## Debugging
 
 ```bash

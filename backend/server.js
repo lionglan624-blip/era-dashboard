@@ -24,7 +24,7 @@ import { getCcsProfiles } from './src/services/ccsUtils.js';
 import { createFeaturesRouter } from './src/routes/features.js';
 import { createExecutionRouter } from './src/routes/execution.js';
 import { createDepsRouter } from './src/routes/deps.js';
-import { serverLog, LOG_DIR, flushAll } from './src/utils/logger.js';
+import { serverLog, flushAll } from './src/utils/logger.js';
 import { nowJSTISO } from './src/utils/timeUtils.js';
 import { decodeExitCode } from './src/utils/exitCodes.js';
 import { exitWithPm2Update } from './src/utils/exitHelpers.js';
@@ -44,8 +44,9 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(__dirname, '..', '..', '..');
+const DASHBOARD_TMP = path.join(PROJECT_ROOT, '_out', 'tmp', 'dashboard');
 const PORT = parseInt(process.env.PORT || '3001');
-const EXIT_MARKER_PATH = path.join(LOG_DIR, '..', 'last-exit.json');
+const EXIT_MARKER_PATH = path.join(DASHBOARD_TMP, 'last-exit.json');
 
 function writeExitMarker(reason, extra = {}) {
   try {
@@ -105,7 +106,7 @@ if (!process.env.CLAUDE_PATH) {
 
 serverLog.info(`=== Dashboard Backend Starting ===`);
 serverLog.info(`Project root: ${PROJECT_ROOT}`);
-serverLog.info(`Log directory: ${LOG_DIR}`);
+serverLog.info(`Dashboard tmp: ${DASHBOARD_TMP}`);
 serverLog.info(`Node version: ${process.version}`);
 serverLog.info(`PID: ${process.pid}`);
 
@@ -272,7 +273,7 @@ function triggerAutoDR() {
       );
     }
     // Save mtime snapshot for post-restart comparison
-    const snapshotPath = path.join(LOG_DIR, 'auto-dr-snapshot.json');
+    const snapshotPath = path.join(DASHBOARD_TMP, 'auto-dr-snapshot.json');
     saveAutoDRSnapshot(
       path.join(__dirname, 'src'),
       path.join(__dirname, 'server.js'),
@@ -311,7 +312,7 @@ const startupTime = Date.now();
 
 // Post-cooldown: check if files changed during restart gap
 setTimeout(() => {
-  const snapshotPath = path.join(LOG_DIR, 'auto-dr-snapshot.json');
+  const snapshotPath = path.join(DASHBOARD_TMP, 'auto-dr-snapshot.json');
   if (compareAutoDRSnapshot(snapshotPath)) {
     serverLog.info('[Auto-DR] Files changed since last DR snapshot, triggering DR');
     clearTimeout(debounceTimer);
@@ -441,7 +442,7 @@ app.get('/api/health', async (req, res) => {
     ccsProfile: claudeService.getCcsProfile(), // Current CCS profile name
     ccsProfiles: getCcsProfiles(),
     uptime: process.uptime(),
-    logDir: LOG_DIR,
+    logDir: DASHBOARD_TMP,
     rateLimit: rateLimitService.getCached(),
     git: { dirty: totalCount > 0, changedCount: totalCount, ...counts },
     pendingRestart,

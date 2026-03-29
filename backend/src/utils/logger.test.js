@@ -1,27 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock modules before importing
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    mkdirSync: vi.fn(),
-    createWriteStream: vi.fn(() => ({
-      write: vi.fn(),
-    })),
-  };
-});
-
 // Mock Date for consistent timestamps
 const mockDate = new Date('2026-02-04T21:34:56.789+09:00');
 vi.useFakeTimers();
 vi.setSystemTime(mockDate);
 
-// Import mocked fs
-import { mkdirSync, createWriteStream } from 'fs';
-
 // Import after mocking
-import { createLogger, LOG_DIR, serverLog, wsLog, claudeLog, watcherLog } from './logger.js';
+import { createLogger, serverLog, wsLog, claudeLog, watcherLog } from './logger.js';
 
 describe('logger', () => {
   let originalStdout;
@@ -45,12 +30,6 @@ describe('logger', () => {
     process.stderr.write = originalStderr;
   });
 
-  describe('LOG_DIR constant', () => {
-    it('points to _out/tmp/dashboard/logs', () => {
-      expect(LOG_DIR).toMatch(/_out[/\\]tmp[/\\]dashboard[/\\]logs$/);
-    });
-  });
-
   describe('createLogger', () => {
     it('returns logger with required methods', () => {
       const logger = createLogger('test');
@@ -59,28 +38,10 @@ describe('logger', () => {
       expect(logger).toHaveProperty('warn');
       expect(logger).toHaveProperty('error');
       expect(logger).toHaveProperty('debug');
-      expect(logger).toHaveProperty('getLogPath');
       expect(typeof logger.info).toBe('function');
       expect(typeof logger.warn).toBe('function');
       expect(typeof logger.error).toBe('function');
       expect(typeof logger.debug).toBe('function');
-      expect(typeof logger.getLogPath).toBe('function');
-    });
-  });
-
-  describe('getLogPath', () => {
-    it('returns correct path with date-based filename', () => {
-      const logger = createLogger('test');
-      const logPath = logger.getLogPath();
-
-      expect(logPath).toMatch(/_out[/\\]tmp[/\\]dashboard[/\\]logs[/\\]test-2026-02-04\.log$/);
-    });
-
-    it('returns path with logger name', () => {
-      const logger = createLogger('custom-name');
-      const logPath = logger.getLogPath();
-
-      expect(logPath).toContain('custom-name-2026-02-04.log');
     });
   });
 
@@ -251,24 +212,20 @@ describe('logger', () => {
   });
 
   describe('pre-created loggers', () => {
-    it('serverLog exists and has correct name', () => {
+    it('serverLog exists and is defined', () => {
       expect(serverLog).toBeDefined();
-      expect(serverLog.getLogPath()).toContain('server-2026-02-04.log');
     });
 
-    it('wsLog exists and has correct name', () => {
+    it('wsLog exists and is defined', () => {
       expect(wsLog).toBeDefined();
-      expect(wsLog.getLogPath()).toContain('websocket-2026-02-04.log');
     });
 
-    it('claudeLog exists and has correct name', () => {
+    it('claudeLog exists and is defined', () => {
       expect(claudeLog).toBeDefined();
-      expect(claudeLog.getLogPath()).toContain('claude-2026-02-04.log');
     });
 
-    it('watcherLog exists and has correct name', () => {
+    it('watcherLog exists and is defined', () => {
       expect(watcherLog).toBeDefined();
-      expect(watcherLog.getLogPath()).toContain('watcher-2026-02-04.log');
     });
 
     it('all pre-created loggers have required methods', () => {
@@ -277,7 +234,6 @@ describe('logger', () => {
         expect(logger).toHaveProperty('warn');
         expect(logger).toHaveProperty('error');
         expect(logger).toHaveProperty('debug');
-        expect(logger).toHaveProperty('getLogPath');
       });
     });
   });
@@ -346,10 +302,6 @@ describe('logger', () => {
     it('loggers with same name are independent', () => {
       const logger1 = createLogger('samename');
       const logger2 = createLogger('samename');
-
-      // Both are valid loggers
-      expect(logger1.getLogPath()).toContain('samename-2026-02-04.log');
-      expect(logger2.getLogPath()).toContain('samename-2026-02-04.log');
 
       // Both can log independently
       logger1.info('from logger1');
