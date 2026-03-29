@@ -8,6 +8,7 @@ export function useWebSocket(onMessage) {
   const reconnectTimer = useRef(null);
   const reconnectAttempts = useRef(0);
   const onMessageRef = useRef(onMessage);
+  const connectRef = useRef(null);
 
   // Keep onMessage ref updated without triggering reconnect
   useEffect(() => {
@@ -52,7 +53,7 @@ export function useWebSocket(onMessage) {
         // Exponential backoff: 1s, 2s, 4s, 8s, max 10s
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
         reconnectAttempts.current++;
-        reconnectTimer.current = setTimeout(connect, delay);
+        reconnectTimer.current = setTimeout(() => connectRef.current?.(), delay);
       }
     };
 
@@ -60,6 +61,10 @@ export function useWebSocket(onMessage) {
       ws.close();
     };
   }, []);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     closingRef.current = false; // Reset on mount (StrictMode re-mount)
