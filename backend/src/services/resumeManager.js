@@ -139,7 +139,7 @@ export class ResumeManager {
    * @param {string} reason - Reason for logging
    * @param {number} [delayMs=2000] - Delay before auto-answering
    */
-  schedulePromoAutoAnswer(execution, answer, reason, delayMs = 2000) {
+  schedulePromoAutoAnswer(execution, answer, reason, delayMs = 2000, { isRetry = false } = {}) {
     if (execution._promoAutoAnswerTimeout) clearTimeout(execution._promoAutoAnswerTimeout);
     execution._promoAutoAnswerTimeout = setTimeout(() => {
       execution._promoAutoAnswerTimeout = null;
@@ -147,7 +147,7 @@ export class ResumeManager {
         claudeLog.info(
           `[ClaudeService] Promo auto-answer: ${reason}, answer="${answer}" (exec ${execution.id})`,
         );
-        this.answerInBrowser(execution.id, answer);
+        this.answerInBrowser(execution.id, answer, { isRetry });
       }
     }, delayMs);
   }
@@ -158,7 +158,7 @@ export class ResumeManager {
    * @param {string} answer - User's answer (e.g., 'y', 'n', or selected option text)
    * @returns {{ executionId: string, sessionId: string } | { error: string }}
    */
-  answerInBrowser(executionId, answer) {
+  answerInBrowser(executionId, answer, { isRetry = false } = {}) {
     const execution = this.deps.executions.get(executionId);
     if (!execution) {
       return { error: 'Execution not found' };
@@ -195,6 +195,17 @@ export class ResumeManager {
 
     // Persist sessionId
     this.saveSessionId(execution.id, execution.sessionId, execution.featureId, execution.command);
+
+    // Save input state for potential retry BEFORE clearing
+    execution._lastInputRequired = execution.inputRequired
+      ? structuredClone(execution.inputRequired)
+      : null;
+    execution._lastWaitingForInput = execution.waitingForInput;
+    execution._lastWaitingInputPattern = execution.waitingInputPattern;
+    execution._lastWaitingAnswer = answer;
+    if (!isRetry) {
+      execution._resumeFailCount = 0;
+    }
 
     // Clear input state
     execution.waitingForInput = false;
@@ -235,18 +246,7 @@ export class ResumeManager {
     execution.resultExitCode = null;
     execution.lastAssistantText = null;
     execution.lastOutputTime = Date.now();
-    // Clear stale input state from the original session — the resumed process
-    // starts fresh and will set these again if new input prompts appear.
-    // Save inputRequired for potential retry on resume failure
-    execution._lastInputRequired = execution.inputRequired
-      ? structuredClone(execution.inputRequired)
-      : null;
-    execution._resumeFailCount = 0; // Reset on new answer attempt
-
-    execution.waitingForInput = false;
-    execution.waitingInputPattern = null;
-    execution.inputRequired = null;
-    execution._killedForAskUser = false;
+    // Input state already saved and cleared above (before the clear block).
     // Mark as resumed-answer: allows chain waiter registration on completion
     // (input-wait exit skips registration; _resumedAnswer re-enables it).
     execution._resumedAnswer = true;

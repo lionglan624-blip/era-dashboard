@@ -5069,6 +5069,161 @@ describe('ClaudeService', () => {
     });
   });
 
+  describe('resume-answer retry', () => {
+    it('Resume fail restores inputRequired from _lastInputRequired', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._schedulePromoAutoAnswer = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec._resumedAnswer = true;
+      exec._resumeFailCount = 0;
+      exec._lastInputRequired = { type: 'question', questions: [{ question: 'Continue?' }] };
+      exec._lastWaitingForInput = false;
+      exec._lastWaitingInputPattern = null;
+      exec._lastWaitingAnswer = 'yes';
+      exec.process = { pid: 123 };
+      exec.stdin = {};
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 1);
+
+      expect(exec.inputRequired).toEqual({
+        type: 'question',
+        questions: [{ question: 'Continue?' }],
+      });
+      expect(exec.status).toBe('running');
+    });
+
+    it('_lastInputRequired saved before clear in answerInBrowser', () => {
+      const { service } = createService();
+      service._killProcess = vi.fn();
+      service._attachStdoutHandler = vi.fn();
+      service._attachStderrHandler = vi.fn();
+      service._broadcastState = vi.fn();
+      service._checkStall = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'running';
+      exec.sessionId = 'sess-save-test';
+      const originalInputRequired = { type: 'question', questions: [{ question: 'Do it?' }] };
+      exec.inputRequired = originalInputRequired;
+      exec.waitingForInput = true;
+      exec.process = null;
+      service.executions.set(exec.id, exec);
+
+      service.answerInBrowser(exec.id, 'yes');
+
+      expect(exec._lastInputRequired).toEqual(originalInputRequired);
+      expect(exec._lastInputRequired).not.toBe(originalInputRequired); // deep clone
+    });
+
+    it('Auto-retry scheduled after resume fail', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      const scheduleSpy = vi.spyOn(service, '_schedulePromoAutoAnswer');
+
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec._resumedAnswer = true;
+      exec._resumeFailCount = 0;
+      exec._lastInputRequired = null;
+      exec._lastWaitingForInput = false;
+      exec._lastWaitingInputPattern = null;
+      exec._lastWaitingAnswer = 'yes';
+      exec.process = { pid: 123 };
+      exec.stdin = {};
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 1);
+
+      expect(scheduleSpy).toHaveBeenCalledWith(
+        exec,
+        'yes',
+        expect.stringContaining('resume-fail auto-retry'),
+        expect.any(Number),
+        { isRetry: true },
+      );
+    });
+
+    it('isRetry=true preserves _resumeFailCount (does not reset to 0)', () => {
+      const { service } = createService();
+      service._killProcess = vi.fn();
+      service._attachStdoutHandler = vi.fn();
+      service._attachStderrHandler = vi.fn();
+      service._broadcastState = vi.fn();
+      service._checkStall = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'running';
+      exec.sessionId = 'sess-retry-test';
+      exec.inputRequired = { type: 'question', questions: [] };
+      exec.waitingForInput = true;
+      exec._resumeFailCount = 2;
+      exec.process = null;
+      service.executions.set(exec.id, exec);
+
+      service.answerInBrowser(exec.id, 'yes', { isRetry: true });
+
+      expect(exec._resumeFailCount).toBe(2);
+    });
+
+    it('Retry exhaustion falls through to completion', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._schedulePromoAutoAnswer = vi.fn();
+      service._dequeueNext = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec._resumedAnswer = true;
+      exec._resumeFailCount = 3; // MAX_RESUME_RETRIES = 3, so retryCount = 4 > MAX
+      exec._lastInputRequired = null;
+      exec._lastWaitingForInput = false;
+      exec._lastWaitingInputPattern = null;
+      exec._lastWaitingAnswer = 'yes';
+      exec.process = { pid: 123 };
+      exec.stdin = {};
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 1);
+
+      expect(exec.status).not.toBe('running');
+    });
+
+    it('y/n waitingForInput and waitingInputPattern restored on resume fail', () => {
+      const { service } = createService();
+      service._broadcastState = vi.fn();
+      service._schedulePromoAutoAnswer = vi.fn();
+
+      const exec = service._createExecution({ featureId: '100', command: 'run' });
+      exec.status = 'running';
+      exec.startedAt = new Date().toISOString();
+      exec.lastOutputTime = Date.now();
+      exec._resumedAnswer = true;
+      exec._resumeFailCount = 0;
+      exec._lastInputRequired = null;
+      exec._lastWaitingForInput = true;
+      exec._lastWaitingInputPattern = 'y/n prompt';
+      exec._lastWaitingAnswer = 'y';
+      exec.process = { pid: 123 };
+      exec.stdin = {};
+      service.executions.set(exec.id, exec);
+
+      service._handleCompletion(exec, 1);
+
+      expect(exec.waitingForInput).toBe(true);
+      expect(exec.waitingInputPattern).toBe('y/n prompt');
+    });
+  });
+
   describe('answerInBrowser — slot race prevention', () => {
     it('Fix B: _handleCompletion holds slot when process exits while waitingForInput', () => {
       const { service } = createService({ maxConcurrent: 2 });

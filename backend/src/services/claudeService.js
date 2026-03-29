@@ -1792,13 +1792,14 @@ export class ClaudeService {
 
       if (retryCount <= MAX_RESUME_RETRIES) {
         claudeLog.warn(
-          `[ClaudeService] answerInBrowser resume failed (exit=${exitCode}) — restoring inputRequired for retry (${retryCount}/${MAX_RESUME_RETRIES}) (exec ${execution.id})`,
+          `[ClaudeService] answerInBrowser resume failed (exit=${exitCode}) — restoring input for retry (${retryCount}/${MAX_RESUME_RETRIES}) (exec ${execution.id}, lastInputRequired=${!!execution._lastInputRequired}, lastWaitingForInput=${!!execution._lastWaitingForInput}, answer="${execution._lastWaitingAnswer}")`,
         );
         execution._resumeFailCount = retryCount;
         execution._resumedAnswer = false;
         execution.process = null;
         execution.stdin = null;
 
+        // Restore input state (AskUserQuestion or y/n)
         if (execution._lastInputRequired) {
           execution.inputRequired = execution._lastInputRequired;
         } else {
@@ -1808,6 +1809,8 @@ export class ClaudeService {
             options: [],
           };
         }
+        execution.waitingForInput = execution._lastWaitingForInput || false;
+        execution.waitingInputPattern = execution._lastWaitingInputPattern || null;
 
         if (execution.stallCheckInterval) {
           clearInterval(execution.stallCheckInterval);
@@ -1815,6 +1818,23 @@ export class ClaudeService {
         }
 
         this._broadcastState(execution);
+
+        // Re-schedule auto-answer with exponential backoff
+        const retryDelayMs = 2000 * Math.pow(2, retryCount - 1); // 2s, 4s, 8s
+        const savedAnswer = execution._lastWaitingAnswer;
+        if (savedAnswer && ['fc', 'fl', 'run', 'imp'].includes(execution.command)) {
+          this._schedulePromoAutoAnswer(
+            execution,
+            savedAnswer,
+            `${execution.command} resume-fail auto-retry ${retryCount}/${MAX_RESUME_RETRIES}`,
+            retryDelayMs,
+            { isRetry: true },
+          );
+          claudeLog.info(
+            `[ClaudeService] Scheduled auto-retry ${retryCount}/${MAX_RESUME_RETRIES} in ${retryDelayMs}ms (exec ${execution.id})`,
+          );
+        }
+
         return; // Hold slot, keep status 'running'
       }
 
@@ -3534,8 +3554,8 @@ export class ClaudeService {
   resumeInBrowser(executionId, prompt) {
     return this.resumeManager.resumeInBrowser(executionId, prompt);
   }
-  answerInBrowser(executionId, answer) {
-    return this.resumeManager.answerInBrowser(executionId, answer);
+  answerInBrowser(executionId, answer, options) {
+    return this.resumeManager.answerInBrowser(executionId, answer, options);
   }
   resumeInTerminal(executionId) {
     return this.resumeManager.resumeInTerminal(executionId);
@@ -3543,8 +3563,8 @@ export class ClaudeService {
   resumeRemote(executionId, reason) {
     return this.resumeManager.resumeRemote(executionId, reason);
   }
-  _schedulePromoAutoAnswer(execution, answer, reason, delayMs) {
-    return this.resumeManager.schedulePromoAutoAnswer(execution, answer, reason, delayMs);
+  _schedulePromoAutoAnswer(execution, answer, reason, delayMs, options) {
+    return this.resumeManager.schedulePromoAutoAnswer(execution, answer, reason, delayMs, options);
   }
   _writeResumeContext(exec) {
     return this.resumeManager._writeResumeContext(exec);
