@@ -138,6 +138,7 @@ export class ClaudeService {
     this._profileRoundRobinIndex = 0; // Round-robin counter for per-session profile allocation
     this.runLockFeatureId = null; // Feature ID holding /run exclusion lock
     this.fileWatcher = null; // Set by server.js after construction for chain race condition fix
+    this._previousDepsMap = new Map(); // featureId -> dependsOn string (for auto-queue detection)
     this.tmpDir = path.join(projectRoot, '_out', 'tmp', 'dashboard');
     mkdir(this.tmpDir, { recursive: true }).catch((err) =>
       claudeLog.debug(`Failed to create tmp dir: ${err.message}`),
@@ -2864,6 +2865,86 @@ export class ClaudeService {
         });
         this.killExecution(executionId);
       }
+    }
+  }
+
+  /**
+   * Initialize dependency tracking map from current feature state.
+   * Must be called after featureService is wired to prevent false positives on startup.
+   */
+  initializeDepsMap() {
+    try {
+      const { features } = this.featureService?.getAllFeatures() || { features: [] };
+      for (const f of features) {
+        this._previousDepsMap.set(String(f.id), f.dependsOn || '');
+      }
+      claudeLog.info(
+        `[AutoQueue] Initialized deps tracking for ${this._previousDepsMap.size} features`,
+      );
+    } catch (err) {
+      claudeLog.error(`[AutoQueue] Failed to initialize deps map: ${err.message}`);
+    }
+  }
+
+  /**
+   * Auto-queue [DRAFT] features that gained dependencies.
+   * Called on features-updated to detect fdep add → auto-queue pattern.
+   * Only triggers for [DRAFT] features whose dependsOn changed from empty to non-empty.
+   * @returns {string[]} Array of queued execution IDs
+   */
+  _autoQueueDraftsWithDeps() {
+    if (!this.featureService) return [];
+    try {
+      const { features } = this.featureService.getAllFeatures();
+      const autoQueued = [];
+
+      for (const f of features) {
+        const featureId = String(f.id);
+        const currentDeps = f.dependsOn || '';
+        const previousDeps = this._previousDepsMap.get(featureId) || '';
+
+        // Always update tracking map
+        this._previousDepsMap.set(featureId, currentDeps);
+
+        // Only auto-queue [DRAFT] features that gained dependencies (empty → non-empty)
+        if (f.status !== '[DRAFT]') continue;
+        if (!currentDeps) continue;
+        if (previousDeps) continue;
+
+        // Check not already running or queued
+        let alreadyActive = false;
+        for (const exec of this.executions.values()) {
+          if (
+            String(exec.featureId) === featureId &&
+            (exec.status === 'running' || exec.status === 'queued')
+          ) {
+            alreadyActive = true;
+            break;
+          }
+        }
+        if (alreadyActive) continue;
+
+        try {
+          const executionId = this.executeCommand(featureId, 'fc', { chain: true });
+          autoQueued.push(executionId);
+          claudeLog.info(`[AutoQueue] F${featureId} auto-queued (deps added: ${currentDeps})`);
+          this.logStreamer?.broadcastAll({
+            type: 'auto-queued',
+            featureId,
+            executionId,
+            reason: 'deps-added',
+            dependsOn: currentDeps,
+            timestamp: nowJSTISO(),
+          });
+        } catch (err) {
+          claudeLog.warn(`[AutoQueue] F${featureId} failed to auto-queue: ${err.message}`);
+        }
+      }
+
+      return autoQueued;
+    } catch (err) {
+      claudeLog.error(`[AutoQueue] Failed: ${err.message}`);
+      return [];
     }
   }
 

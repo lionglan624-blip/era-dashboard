@@ -177,9 +177,13 @@ claudeService.rateLimitService = rateLimitService;
 // Provide featureService to claudeService for email notifications
 claudeService.featureService = featureService;
 
+// Initialize auto-queue deps tracking (must be after featureService is wired)
+claudeService.initializeDepsMap();
+
 // Wire fileWatcher features-updated to claudeService for dep-aware dequeue
 fileWatcher.onFeaturesUpdated = () => {
   claudeService._checkRunningDepViolations();
+  claudeService._autoQueueDraftsWithDeps();
   claudeService._dequeueNext();
 };
 

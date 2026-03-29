@@ -8355,6 +8355,173 @@ describe('bulkQueue terminal-active exclusion', () => {
 });
 
 // =============================================================================
+// _autoQueueDraftsWithDeps unit tests
+// =============================================================================
+
+describe('_autoQueueDraftsWithDeps', () => {
+  function setupAutoQueueService(features) {
+    const { service, logStreamer } = createService();
+    service.fileWatcher = {
+      statusCache: new Map(features.map((f) => [String(f.id), f.status])),
+    };
+    service.featureService = {
+      getAllFeatures: () => ({ features }),
+    };
+    service.executeCommand = vi.fn((fid) => `exec-${fid}`);
+    service.logStreamer = logStreamer;
+    return { service, logStreamer };
+  }
+
+  it('auto-queues [DRAFT] with empty-to-non-empty deps', () => {
+    const { service, logStreamer } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    // previousDepsMap is empty (simulates first detection after fdep add)
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual(['exec-100']);
+    expect(service.executeCommand).toHaveBeenCalledWith('100', 'fc', { chain: true });
+    expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'auto-queued',
+        featureId: '100',
+        executionId: 'exec-100',
+        reason: 'deps-added',
+        dependsOn: 'F200',
+      }),
+    );
+  });
+
+  it('does NOT auto-queue [DRAFT] with already-non-empty deps', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200, F300' },
+    ]);
+    // Simulate previously known deps
+    service._previousDepsMap.set('100', 'F200');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue [DRAFT] with no deps', () => {
+    const { service } = setupAutoQueueService([{ id: '100', status: '[DRAFT]', dependsOn: '' }]);
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue [DRAFT] with dependsOn undefined', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: undefined },
+    ]);
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue non-DRAFT statuses with new deps', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[PROPOSED]', dependsOn: 'F200' },
+      { id: '101', status: '[WIP]', dependsOn: 'F200' },
+      { id: '102', status: '[REVIEWED]', dependsOn: 'F200' },
+    ]);
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue already running/queued feature', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    // Simulate existing running execution
+    const exec = service._createExecution({ featureId: '100', command: 'fc' });
+    exec.status = 'running';
+    service.executions.set(exec.id, exec);
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue after initializeDepsMap (startup)', () => {
+    const features = [
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+      { id: '101', status: '[DRAFT]', dependsOn: 'F300' },
+    ];
+    const { service } = setupAutoQueueService(features);
+    // Simulate startup initialization
+    service.initializeDepsMap();
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('handles featureService error gracefully', () => {
+    const { service } = createService();
+    service.featureService = {
+      getAllFeatures: () => {
+        throw new Error('file read error');
+      },
+    };
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+  });
+
+  it('handles executeCommand throw gracefully', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+      { id: '101', status: '[DRAFT]', dependsOn: 'F300' },
+    ]);
+    service.executeCommand = vi.fn((fid) => {
+      if (fid === '100') throw new Error('status mismatch');
+      return `exec-${fid}`;
+    });
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    // F100 failed but F101 still queued
+    expect(result).toEqual(['exec-101']);
+    expect(service.executeCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns empty array when featureService is null', () => {
+    const { service } = createService();
+    service.featureService = null;
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+  });
+
+  it('updates _previousDepsMap for all features regardless of status', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DONE]', dependsOn: 'F50' },
+      { id: '101', status: '[DRAFT]', dependsOn: '' },
+    ]);
+
+    service._autoQueueDraftsWithDeps();
+
+    expect(service._previousDepsMap.get('100')).toBe('F50');
+    expect(service._previousDepsMap.get('101')).toBe('');
+  });
+});
+
+// =============================================================================
 // _allocateProfile unit tests
 // =============================================================================
 
