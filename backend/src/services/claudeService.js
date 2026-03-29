@@ -2927,9 +2927,9 @@ export class ClaudeService {
   }
 
   /**
-   * Auto-queue [DRAFT] features that gained dependencies.
+   * Auto-queue [DRAFT] features that gained new dependencies.
    * Called on features-updated to detect fdep add → auto-queue pattern.
-   * Only triggers for [DRAFT] features whose dependsOn changed from empty to non-empty.
+   * Triggers when dependency ID set grows (compares normalized IDs, ignoring bold markers).
    * @returns {string[]} Array of queued execution IDs
    */
   _autoQueueDraftsWithDeps() {
@@ -2937,6 +2937,14 @@ export class ClaudeService {
     try {
       const { features } = this.featureService.getAllFeatures();
       const autoQueued = [];
+      const extractDepIds = (deps) =>
+        (deps || '').replace(/\*\*/g, '').match(/F\d+/g)?.sort().join(',') || '';
+      const hasNewDeps = (currentIds, previousIds) => {
+        if (!currentIds) return false;
+        if (!previousIds) return true;
+        const prevSet = new Set(previousIds.split(','));
+        return currentIds.split(',').some((id) => !prevSet.has(id));
+      };
 
       for (const f of features) {
         const featureId = String(f.id);
@@ -2946,10 +2954,12 @@ export class ClaudeService {
         // Always update tracking map
         this._previousDepsMap.set(featureId, currentDeps);
 
-        // Only auto-queue [DRAFT] features that gained dependencies (empty → non-empty)
+        // Auto-queue [DRAFT] features that gained new dependencies
         if (f.status !== '[DRAFT]') continue;
         if (!currentDeps) continue;
-        if (previousDeps) continue;
+        const currentIds = extractDepIds(currentDeps);
+        const previousIds = extractDepIds(previousDeps);
+        if (!hasNewDeps(currentIds, previousIds)) continue;
 
         // Check not already running or queued
         let alreadyActive = false;
@@ -2967,12 +2977,13 @@ export class ClaudeService {
         try {
           const executionId = this.executeCommand(featureId, 'fc', { chain: true });
           autoQueued.push(executionId);
-          claudeLog.info(`[AutoQueue] F${featureId} auto-queued (deps added: ${currentDeps})`);
+          const reason = previousIds ? 'deps-changed' : 'deps-added';
+          claudeLog.info(`[AutoQueue] F${featureId} auto-queued (${reason}: ${currentDeps})`);
           this.logStreamer?.broadcastAll({
             type: 'auto-queued',
             featureId,
             executionId,
-            reason: 'deps-added',
+            reason,
             dependsOn: currentDeps,
             timestamp: nowJSTISO(),
           });

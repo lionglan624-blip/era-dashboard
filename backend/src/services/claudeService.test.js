@@ -8393,12 +8393,62 @@ describe('_autoQueueDraftsWithDeps', () => {
     );
   });
 
-  it('does NOT auto-queue [DRAFT] with already-non-empty deps', () => {
+  it('does NOT auto-queue [DRAFT] with unchanged deps', () => {
     const { service } = setupAutoQueueService([
       { id: '100', status: '[DRAFT]', dependsOn: 'F200, F300' },
     ]);
-    // Simulate previously known deps
+    service._previousDepsMap.set('100', 'F200, F300');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('auto-queues [DRAFT] when new dep added to existing deps', () => {
+    const { service, logStreamer } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200, F300' },
+    ]);
     service._previousDepsMap.set('100', 'F200');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual(['exec-100']);
+    expect(service.executeCommand).toHaveBeenCalledWith('100', 'fc', { chain: true });
+    expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'auto-queued', reason: 'deps-changed' }),
+    );
+  });
+
+  it('does NOT auto-queue when deps unchanged (single dep)', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    service._previousDepsMap.set('100', 'F200');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue when only bold markers changed (dep satisfied)', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    service._previousDepsMap.set('100', '**F200**');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-queue when dep removed', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    service._previousDepsMap.set('100', 'F200, F300');
 
     const result = service._autoQueueDraftsWithDeps();
 
