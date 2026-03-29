@@ -37,9 +37,9 @@ body {
 
 .app-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 12px 12px 12px;
+  gap: 12px;
+  padding: 8px 12px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -58,8 +58,8 @@ body {
   text-decoration: none;
   display: flex;
   align-items: center;
-  padding: 12px 8px;
-  margin: -12px -8px;
+  padding: 24px 8px;
+  margin: -24px -8px;
 }
 
 .header-info {
@@ -1652,10 +1652,13 @@ body {
 /* =============================================================================
    Header Layout
    ============================================================================= */
-.header-left {
+.header-right {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 .header-commands {
@@ -1718,6 +1721,9 @@ body {
 }
 
 .btn-slash {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 4px 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -1728,6 +1734,7 @@ body {
   cursor: pointer;
   transition: all 0.15s;
   min-height: 36px;
+  white-space: nowrap;
 }
 
 .btn-slash:hover {
@@ -1816,11 +1823,9 @@ body {
 
 .status-indicators {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
-  border-right: 1px solid var(--border);
 }
 
 .status-item {
@@ -2181,15 +2186,17 @@ body {
    Rate Limit / Profile Switcher
    ============================================================================= */
 .rate-limit-group {
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  align-items: center;
   gap: 0;
-  padding: 4px 0;
-  background: transparent;
-  border: none;
+  padding: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: inherit;
   font-family: inherit;
   font-size: 12px;
+  overflow: hidden;
 }
 
 .rate-limit-entry {
@@ -2197,9 +2204,13 @@ body {
   align-items: center;
   gap: 4px;
   white-space: nowrap;
-  padding: 2px 8px;
-  border-radius: 3px;
-  border: 1px solid transparent;
+  padding: 6px 8px;
+  border-radius: 0;
+  border: none;
+}
+
+.rate-limit-entry + .rate-limit-entry {
+  border-left: 1px solid var(--border);
   transition:
     background 0.15s,
     border-color 0.15s;

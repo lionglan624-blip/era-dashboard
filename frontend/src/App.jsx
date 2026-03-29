@@ -1299,18 +1299,18 @@ export default function App() {
       )}
 
       <header className="app-header" ref={headerRef}>
-        <div className="header-left">
-          <h1>
-            <a
-              href="/"
-              onClick={(e) => {
-                e.preventDefault();
-                window.location.reload();
-              }}
-            >
-              Feature Dashboard
-            </a>
-          </h1>
+        <h1>
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              window.location.reload();
+            }}
+          >
+            Feature Dashboard
+          </a>
+        </h1>
+        <div className="header-right">
           <div className="header-commands">
             <button
               className={shellBtnClass('cs')}
@@ -1327,13 +1327,6 @@ export default function App() {
               dr
             </button>
             <button
-              className={shellBtnClass('upd')}
-              onClick={() => handleShellCommand('upd')}
-              title="Update CCS"
-            >
-              upd
-            </button>
-            <button
               className={slashBtnClass('commit')}
               onClick={() => handleSlashCommand('commit')}
               title="Run /commit"
@@ -1342,13 +1335,6 @@ export default function App() {
               {healthStatus.gitDirty && healthStatus.gitChangedCount > 0 && (
                 <span className="commit-badge">{healthStatus.gitChangedCount}</span>
               )}
-            </button>
-            <button
-              className={slashBtnClass('sync-deps')}
-              onClick={() => handleSlashCommand('sync-deps')}
-              title="Run /sync-deps"
-            >
-              /sync-deps
             </button>
             <div
               className={`system-status ${!healthStatus.backend || !connected ? 'has-error' : ''}`}
@@ -1402,72 +1388,70 @@ export default function App() {
                   );
                 })()}
               </div>
-              <div className="rate-limit-group">
-                {(healthStatus.ccsProfiles?.length > 0
-                  ? healthStatus.ccsProfiles
-                  : ccsProfile
-                    ? [ccsProfile]
-                    : []
-                ).map((profile) => {
-                  const data = healthStatus.rateLimit?.[profile];
-                  const isActive = profile === ccsProfile;
-                  const rateClass =
-                    data?.weekly?.percent >= 90 || data?.session?.percent >= 90
-                      ? 'rate-critical'
-                      : data?.weekly?.percent >= 70 || data?.session?.percent >= 70
-                        ? 'rate-warning'
-                        : '';
-                  const weeklyReset =
-                    data?.weekly?.percent > 75
-                      ? formatResetTime(data?.weekly?.resetsAt || null)
-                      : null;
-                  const sessionReset =
-                    data?.session?.percent > 75
-                      ? formatResetTime(data?.session?.resetsAt || null)
-                      : null;
-                  const tooltip = [
-                    isActive ? '● Active' : 'Click to switch',
-                    data?.weekly
-                      ? `W: ${data.weekly.percent}% (resets ${data.weekly.resetsAt || '?'})`
-                      : null,
-                    data?.session
-                      ? `S: ${data.session.percent}% (resets ${data.session.resetsAt || '?'})`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join('\n');
-                  const handleProfileClick = () => {
-                    if (isActive) return;
-                    handleShellCommand('cs', profile);
-                  };
-                  return (
-                    <div
-                      key={profile}
-                      className={`rate-limit-entry ${rateClass} ${isActive ? 'rate-active' : ''} ${!isActive ? 'rate-clickable' : ''}`}
-                      title={tooltip}
-                      onClick={handleProfileClick}
-                      style={{
-                        cursor: isActive ? 'default' : 'pointer',
-                      }}
-                    >
-                      <span className="rate-profile-name">{profile}</span>
-                      <span className="rate-values">
-                        W:{data?.weekly ? `${data.weekly.percent}%` : '-'} S:
-                        {data?.session ? `${data.session.percent}%` : '-'}
-                      </span>
-                      <span className="rate-reset">
-                        {weeklyReset && <>↻W:{weeklyReset}</>}
-                        {sessionReset && (
-                          <>
-                            {weeklyReset ? ' ' : ''}↻S:{sessionReset}
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
+          </div>
+          <div className="rate-limit-group">
+            {(healthStatus.ccsProfiles?.length > 0
+              ? healthStatus.ccsProfiles
+              : ccsProfile
+                ? [ccsProfile]
+                : []
+            ).map((profile) => {
+              const data = healthStatus.rateLimit?.[profile];
+              const isActive = profile === ccsProfile;
+              const rateClass =
+                data?.weekly?.percent >= 90 || data?.session?.percent >= 90
+                  ? 'rate-critical'
+                  : data?.weekly?.percent >= 70 || data?.session?.percent >= 70
+                    ? 'rate-warning'
+                    : '';
+              const weeklyReset =
+                data?.weekly?.percent > 75 ? formatResetTime(data?.weekly?.resetsAt || null) : null;
+              const sessionReset =
+                data?.session?.percent > 75
+                  ? formatResetTime(data?.session?.resetsAt || null)
+                  : null;
+              const tooltip = [
+                isActive ? '● Active' : 'Click to switch',
+                data?.weekly
+                  ? `W: ${data.weekly.percent}% (resets ${data.weekly.resetsAt || '?'})`
+                  : null,
+                data?.session
+                  ? `S: ${data.session.percent}% (resets ${data.session.resetsAt || '?'})`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join('\n');
+              const handleProfileClick = () => {
+                if (isActive) return;
+                handleShellCommand('cs', profile);
+              };
+              return (
+                <div
+                  key={profile}
+                  className={`rate-limit-entry ${rateClass} ${isActive ? 'rate-active' : ''} ${!isActive ? 'rate-clickable' : ''}`}
+                  title={tooltip}
+                  onClick={handleProfileClick}
+                  style={{
+                    cursor: isActive ? 'default' : 'pointer',
+                  }}
+                >
+                  <span className="rate-profile-name">{profile}</span>
+                  <span className="rate-values">
+                    W:{data?.weekly ? `${data.weekly.percent}%` : '-'} S:
+                    {data?.session ? `${data.session.percent}%` : '-'}
+                  </span>
+                  <span className="rate-reset">
+                    {weeklyReset && <>↻W:{weeklyReset}</>}
+                    {sessionReset && (
+                      <>
+                        {weeklyReset ? ' ' : ''}↻S:{sessionReset}
+                      </>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </header>
