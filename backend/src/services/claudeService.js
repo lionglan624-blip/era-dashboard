@@ -2515,6 +2515,10 @@ export class ClaudeService {
 
     this._dequeueNext();
 
+    // Re-check auto-queue: a draft may have had deps added while active
+    // (deferred by _autoQueueDraftsWithDeps when alreadyActive)
+    this._autoQueueDraftsWithDeps();
+
     // Continue draining rate limit retry queue after successful retry completion
     if (execution._rateLimitQueueContinue && !execution.accountLimitHit) {
       this.retryManager.continueQueueDrain(execution);
@@ -2971,15 +2975,17 @@ export class ClaudeService {
         const currentDeps = f.dependsOn || '';
         const previousDeps = this._previousDepsMap.get(featureId) || '';
 
-        // Always update tracking map
-        this._previousDepsMap.set(featureId, currentDeps);
-
         // Auto-queue [DRAFT] features that gained new dependencies
-        if (f.status !== '[DRAFT]') continue;
-        if (!currentDeps) continue;
+        if (f.status !== '[DRAFT]' || !currentDeps) {
+          this._previousDepsMap.set(featureId, currentDeps);
+          continue;
+        }
         const currentIds = extractDepIds(currentDeps);
         const previousIds = extractDepIds(previousDeps);
-        if (!hasNewDeps(currentIds, previousIds)) continue;
+        if (!hasNewDeps(currentIds, previousIds)) {
+          this._previousDepsMap.set(featureId, currentDeps);
+          continue;
+        }
 
         // Check not already running or queued
         let alreadyActive = false;
@@ -2992,7 +2998,9 @@ export class ClaudeService {
             break;
           }
         }
-        if (alreadyActive) continue;
+        if (alreadyActive) continue; // DO NOT update map — preserve for re-detection after kill
+
+        this._previousDepsMap.set(featureId, currentDeps);
 
         try {
           const executionId = this.executeCommand(featureId, 'fc', { chain: true });
@@ -3442,6 +3450,7 @@ export class ClaudeService {
         status: 'cancelled',
       });
       this._dequeueNext();
+      this._autoQueueDraftsWithDeps();
       return true;
     }
 

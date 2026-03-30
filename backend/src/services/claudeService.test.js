@@ -8724,6 +8724,60 @@ describe('_autoQueueDraftsWithDeps', () => {
     expect(service._previousDepsMap.get('100')).toBe('F50');
     expect(service._previousDepsMap.get('101')).toBe('');
   });
+
+  it('does not update _previousDepsMap when feature is already active', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    // Initialize previousDepsMap with empty string (simulates pre-dep state)
+    service._previousDepsMap.set('100', '');
+    // Add a running execution for the feature
+    const exec = service._createExecution({ featureId: '100', command: 'fc' });
+    exec.status = 'running';
+    service.executions.set(exec.id, exec);
+
+    service._autoQueueDraftsWithDeps();
+
+    // Map must NOT be updated while execution is active (preserves deferred detection)
+    expect(service._previousDepsMap.get('100')).toBe('');
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('queues draft after active execution completes (deferred detection)', () => {
+    const { service } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: 'F200' },
+    ]);
+    // Initialize previousDepsMap with empty string (simulates pre-dep state)
+    service._previousDepsMap.set('100', '');
+    // Add a running execution
+    const exec = service._createExecution({ featureId: '100', command: 'fc' });
+    exec.status = 'running';
+    service.executions.set(exec.id, exec);
+
+    // First call: feature is active, should skip and preserve map
+    service._autoQueueDraftsWithDeps();
+    expect(service.executeCommand).not.toHaveBeenCalled();
+    expect(service._previousDepsMap.get('100')).toBe('');
+
+    // Execution completes (failed)
+    exec.status = 'failed';
+
+    // Second call: execution no longer active, deferred dep change detected
+    service._autoQueueDraftsWithDeps();
+    expect(service.executeCommand).toHaveBeenCalledWith('100', 'fc', { chain: true });
+  });
+
+  it('updates _previousDepsMap for non-DRAFT features even with new deps', () => {
+    const { service } = setupAutoQueueService([{ id: '100', status: '[WIP]', dependsOn: 'F200' }]);
+    // Initialize previousDepsMap with empty string
+    service._previousDepsMap.set('100', '');
+
+    service._autoQueueDraftsWithDeps();
+
+    // Non-DRAFT: map updated normally, no queue attempt
+    expect(service._previousDepsMap.get('100')).toBe('F200');
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
 });
 
 // =============================================================================
