@@ -439,6 +439,38 @@ Features with unresolved dependencies (`pendingDeps`) or dependencies with activ
 - **FE**: "Queue All" button queues all tree features including dep-blocked ones
 - **WS**: `queue-updated` event includes `depBlocked` and `pendingDeps` fields
 
+### DepViolation (Running Dep Kill)
+
+Kills running executions that gained unresolved dependencies after they started.
+
+- **Method**: `_checkRunningDepViolations()` (`claudeService.js`)
+- **Trigger**: `features-updated` event (`server.js:186`)
+- **Logic**: For each running execution (excluding `SLOT_EXEMPT_COMMANDS`), calls `_getPendingDeps(featureId, null, { skipImpBlocking: true })`. If pending deps exist → kill
+- **WS**: `dep-violation` with `{ executionId, featureId, command, pendingDeps, timestamp }`
+- **After kill**: Process terminated (non-zero exit), chain slot released. Feature must be re-queued manually or via auto-queue
+
+### Auto-Queue on Dep Addition
+
+Auto-queues `[DRAFT]` features when their dependency set grows.
+
+- **Method**: `_autoQueueDraftsWithDeps()` (`claudeService.js`)
+- **Init**: `initializeDepsMap()` seeds `_previousDepsMap` from current features at startup (`server.js:182`)
+- **Trigger**: `features-updated` event (`server.js:187`)
+- **Logic**: Compares current dep IDs (bold stripped) against `_previousDepsMap`. If IDs grew + `[DRAFT]` + not running/queued → `executeCommand(featureId, 'fc', { chain: true })`
+- **WS**: `auto-queued` with `{ featureId, executionId, reason, dependsOn, timestamp }`
+- **Known gap**: `_previousDepsMap` updated before `alreadyActive` check → dep change "consumed" even when skipped. Fail after dep addition won't trigger re-queue
+
+### Call Chain (`fileWatcher.onFeaturesUpdated`)
+
+```
+feature file change → chokidar → onFeaturesUpdated()
+  → _checkRunningDepViolations()  // kill running with new unresolved deps
+  → _autoQueueDraftsWithDeps()    // auto-queue DRAFTs with new deps
+  → _dequeueNext()                // start next eligible
+```
+
+Ref: `server.js:185-189`
+
 ### Safe Profile Filter
 
 `_allocateProfile` filters profiles ≥80% usage. Per-execution 429 Strategy 1 switches profile on rate limit hit. Global auto-switch removed (round-robin makes global default meaningless).

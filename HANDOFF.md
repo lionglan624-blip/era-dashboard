@@ -110,6 +110,7 @@ dr button                                   # process.exit(0) → PM2 autorestar
 | `account-limit` | S→C (all) | Anthropic account rate limit hit (429 detected) |
 | `chain-cut` | S→C (all) | Chain-cut requested (featureId, command, executionId) |
 | `chain-blocked` | S→C (all) | Chain blocked by pending deps (emitted from `bulkQueue()` for dep-blocked items) |
+| `dep-violation` | S→C (all) | Running execution killed due to new unresolved deps (featureId, pendingDeps) |
 | `auto-queued` | S→C (all) | [DRAFT] feature auto-queued on dependency addition (featureId, executionId, dependsOn) |
 | `features-updated` | S→C (all) | Feature file changed |
 | `status-changed` | S→C (all) | Feature status changed (e.g., [DRAFT]→[PROPOSED]) |
