@@ -34,7 +34,7 @@ export default function FeatureTile({ feature, onRunCommand, onSelect, isRunning
         </div>
       )}
 
-      {dependsOn && (
+      {dependsOn && dependsOn.trim() !== '-' && (
         <div className="dependency-chips">
           {dependsOn
             .split(',')

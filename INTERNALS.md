@@ -456,9 +456,10 @@ Auto-queues `[DRAFT]` features when their dependency set grows.
 - **Method**: `_autoQueueDraftsWithDeps()` (`claudeService.js`)
 - **Init**: `initializeDepsMap()` seeds `_previousDepsMap` from current features at startup (`server.js:182`)
 - **Trigger**: `features-updated` event (`server.js:187`)
-- **Logic**: Compares current dep IDs (bold stripped) against `_previousDepsMap`. If IDs grew + `[DRAFT]` + not running/queued → `executeCommand(featureId, 'fc', { chain: true })`
+- **Logic**: Compares current dep IDs (bold stripped) against `_previousDepsMap`. If IDs grew OR Depends On changed from empty to `-` (explicit no-deps marker) + `[DRAFT]` + not running/queued → `executeCommand(featureId, 'fc', { chain: true })`
+- **Reasons**: `deps-added` (empty→FIDs), `deps-changed` (FIDs grew), `deps-cleared` (empty→`-`)
 - **WS**: `auto-queued` with `{ featureId, executionId, reason, dependsOn, timestamp }`
-- **Known gap**: `_previousDepsMap` updated before `alreadyActive` check → dep change "consumed" even when skipped. Fail after dep addition won't trigger re-queue
+- **Deferred detection**: `_previousDepsMap` is NOT updated when feature is `alreadyActive` — preserves dep change for re-detection after DepViolation kill. `_handleCompletion()` and `killExecution()` (dead-process path) call `_autoQueueDraftsWithDeps()` for re-evaluation
 
 ### Call Chain (`fileWatcher.onFeaturesUpdated`)
 

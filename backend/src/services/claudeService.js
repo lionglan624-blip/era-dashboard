@@ -580,6 +580,8 @@ export class ClaudeService {
         exec.completedAt = nowJSTISO();
         exec.process = null;
         this._releaseChainSlot(exec);
+        this._dequeueNext();
+        this.onExecutionComplete?.();
       }
     }
     // Queue state snapshot (periodic, for diagnostic log analysis)
@@ -1093,6 +1095,7 @@ export class ClaudeService {
     this._saveHistoryEntry(execution);
     this._broadcastState(execution);
     this._dequeueNext();
+    this.onExecutionComplete?.();
   }
 
   _startExecution(execution) {
@@ -2980,11 +2983,18 @@ export class ClaudeService {
           this._previousDepsMap.set(featureId, currentDeps);
           continue;
         }
-        const currentIds = extractDepIds(currentDeps);
-        const previousIds = extractDepIds(previousDeps);
-        if (!hasNewDeps(currentIds, previousIds)) {
-          this._previousDepsMap.set(featureId, currentDeps);
-          continue;
+        let reason;
+        if (currentDeps === '-' && previousDeps !== '-') {
+          // "-" = explicitly no deps. Treat as auto-queue trigger.
+          reason = 'deps-cleared';
+        } else {
+          const currentIds = extractDepIds(currentDeps);
+          const previousIds = extractDepIds(previousDeps);
+          if (!hasNewDeps(currentIds, previousIds)) {
+            this._previousDepsMap.set(featureId, currentDeps);
+            continue;
+          }
+          reason = previousIds ? 'deps-changed' : 'deps-added';
         }
 
         // Check not already running or queued
@@ -3005,7 +3015,6 @@ export class ClaudeService {
         try {
           const executionId = this.executeCommand(featureId, 'fc', { chain: true });
           autoQueued.push(executionId);
-          const reason = previousIds ? 'deps-changed' : 'deps-added';
           claudeLog.info(`[AutoQueue] F${featureId} auto-queued (${reason}: ${currentDeps})`);
           this.logStreamer?.broadcastAll({
             type: 'auto-queued',
@@ -3141,6 +3150,10 @@ export class ClaudeService {
       }
     }
     this._broadcastQueueUpdate();
+    if (cleared.length > 0) {
+      this._autoQueueDraftsWithDeps();
+      this.onExecutionComplete?.();
+    }
     return cleared;
   }
 
@@ -3160,6 +3173,8 @@ export class ClaudeService {
       });
     }
     this._broadcastQueueUpdate();
+    this._autoQueueDraftsWithDeps();
+    this.onExecutionComplete?.();
     return true;
   }
 
@@ -3422,6 +3437,7 @@ export class ClaudeService {
       });
       this._broadcastQueueUpdate();
       this._dequeueNext();
+      this.onExecutionComplete?.();
       return true;
     }
 
@@ -3451,6 +3467,7 @@ export class ClaudeService {
       });
       this._dequeueNext();
       this._autoQueueDraftsWithDeps();
+      this.onExecutionComplete?.();
       return true;
     }
 

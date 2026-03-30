@@ -8778,6 +8778,49 @@ describe('_autoQueueDraftsWithDeps', () => {
     expect(service._previousDepsMap.get('100')).toBe('F200');
     expect(service.executeCommand).not.toHaveBeenCalled();
   });
+
+  it('queues DRAFT when dependsOn changes from empty to "-"', () => {
+    const { service, logStreamer } = setupAutoQueueService([
+      { id: '100', status: '[DRAFT]', dependsOn: '-' },
+    ]);
+    // previousDepsMap has empty string (simulates pre-dash state)
+    service._previousDepsMap.set('100', '');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual(['exec-100']);
+    expect(service.executeCommand).toHaveBeenCalledWith('100', 'fc', { chain: true });
+    expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'auto-queued',
+        featureId: '100',
+        executionId: 'exec-100',
+        reason: 'deps-cleared',
+        dependsOn: '-',
+      }),
+    );
+  });
+
+  it('does not queue when dependsOn is already "-" (no change)', () => {
+    const { service } = setupAutoQueueService([{ id: '100', status: '[DRAFT]', dependsOn: '-' }]);
+    // previousDepsMap already has "-" (no change)
+    service._previousDepsMap.set('100', '-');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not queue non-DRAFT with "-"', () => {
+    const { service } = setupAutoQueueService([{ id: '100', status: '[WIP]', dependsOn: '-' }]);
+    service._previousDepsMap.set('100', '');
+
+    const result = service._autoQueueDraftsWithDeps();
+
+    expect(result).toEqual([]);
+    expect(service.executeCommand).not.toHaveBeenCalled();
+  });
 });
 
 // =============================================================================

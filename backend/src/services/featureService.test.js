@@ -946,6 +946,48 @@ describe('FeatureService', () => {
       expect(f100.pendingDeps).toBe('');
     });
 
+    it('treats dependsOn "-" as no dependencies (pendingDeps is empty)', () => {
+      const mockIndexData = {
+        phases: [
+          {
+            number: 1,
+            name: 'Phase 1',
+            layers: [
+              {
+                name: 'Layer 1',
+                features: [
+                  {
+                    id: '100',
+                    status: '[DRAFT]',
+                    name: 'F100',
+                    dependsOn: '-',
+                    link: '',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        recentlyCompleted: [],
+      };
+
+      mockIndexParser.parse.mockReturnValue(mockIndexData);
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      mockFeatureParser.parse.mockReturnValue({
+        id: '100',
+        type: 'engine',
+        acceptanceCriteria: [],
+        tasks: [],
+        dependencies: [],
+      });
+
+      const result = service.getAllFeatures();
+
+      const f100 = result.features.find((f) => f.id === '100');
+      // "-" means explicitly no dependencies → pendingDeps must be empty
+      expect(f100.pendingDeps).toBe('');
+    });
+
     it('checks recentlyCompleted for dependency status', () => {
       const mockIndexData = {
         phases: [
