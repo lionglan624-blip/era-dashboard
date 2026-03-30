@@ -2462,6 +2462,61 @@ describe('ClaudeService', () => {
       // 2 status broadcasts (one per cancelled exec) + 1 queue-updated = 3
       expect(logStreamer.broadcastAll).toHaveBeenCalledTimes(3);
     });
+
+    it('calls onExecutionComplete after clearing queue', () => {
+      const { service } = createService();
+
+      const exec1 = service._createExecution({ featureId: '100', command: 'fl' });
+      exec1.status = 'queued';
+      service.executions.set(exec1.id, exec1);
+      service.queue.push(exec1.id);
+
+      service.onExecutionComplete = vi.fn();
+      service.clearQueue();
+
+      expect(service.onExecutionComplete).toHaveBeenCalled();
+    });
+
+    it('does not call onExecutionComplete when queue is empty', () => {
+      const { service } = createService();
+
+      service.onExecutionComplete = vi.fn();
+      service.clearQueue();
+
+      expect(service.onExecutionComplete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelQueueItem - onExecutionComplete', () => {
+    it('calls onExecutionComplete after cancelling queue item', () => {
+      const { service } = createService();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'queued';
+      service.executions.set(exec.id, exec);
+      service.queue.push(exec.id);
+
+      service.onExecutionComplete = vi.fn();
+      service.cancelQueueItem(exec.id);
+
+      expect(service.onExecutionComplete).toHaveBeenCalled();
+    });
+  });
+
+  describe('killExecution - queued execution - onExecutionComplete', () => {
+    it('calls onExecutionComplete when killing queued execution', () => {
+      const { service } = createService();
+
+      const exec = service._createExecution({ featureId: '100', command: 'fl' });
+      exec.status = 'queued';
+      service.executions.set(exec.id, exec);
+      service.queue.push(exec.id);
+
+      service.onExecutionComplete = vi.fn();
+      service.killExecution(exec.id);
+
+      expect(service.onExecutionComplete).toHaveBeenCalled();
+    });
   });
 
   describe('getExecutionLogs', () => {
