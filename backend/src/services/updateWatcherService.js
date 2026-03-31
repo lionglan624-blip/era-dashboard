@@ -347,7 +347,13 @@ ${changelog}
             return;
           }
 
-          const scriptPath = path.join(DEVKIT_ROOT, '_out', 'tmp', `patch-claude-${version}.py`);
+          const bareVersion = version.replace(/^v/, '');
+          const scriptPath = path.join(
+            DEVKIT_ROOT,
+            '_out',
+            'tmp',
+            `patch-claude-${bareVersion}.py`,
+          );
           if (!fs.existsSync(scriptPath)) {
             this.logger.warn(`Patch script not found: ${scriptPath}`);
             return;
