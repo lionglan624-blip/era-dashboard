@@ -1,4 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    exec: vi.fn(),
+  };
+});
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    default: {
+      ...actual.default,
+      existsSync: vi.fn(actual.existsSync ?? actual.default?.existsSync),
+    },
+    existsSync: vi.fn(actual.existsSync),
+  };
+});
+
+import { exec } from 'child_process';
+import fs from 'fs';
 import { UpdateWatcherService } from './updateWatcherService.js';
 
 function makeMockEmailService() {
@@ -242,6 +265,7 @@ describe('UpdateWatcherService', () => {
 
       expect(service.getLastUpdate()).toEqual({
         version: null,
+        binaryVersion: null,
         analyzing: false,
         executionId: null,
       });
@@ -353,6 +377,163 @@ describe('UpdateWatcherService', () => {
 
       expect(prompt).toContain('活用機会');
       expect(prompt).toContain('活用提案');
+    });
+  });
+
+  describe('start() / stop()', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('start() creates interval and stop() clears it', () => {
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._pollBinaryVersion = vi.fn();
+
+      service.start();
+
+      expect(service._versionPollInterval).not.toBeNull();
+      expect(service._pollBinaryVersion).toHaveBeenCalledWith(true);
+
+      vi.advanceTimersByTime(300000);
+      expect(service._pollBinaryVersion).toHaveBeenCalledWith(false);
+
+      service.stop();
+      expect(service._versionPollInterval).toBeNull();
+    });
+
+    it('stop() clears _patchingTimeout if set', () => {
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._pollBinaryVersion = vi.fn();
+      service.start();
+
+      service._patchingTimeout = setTimeout(() => {}, 999999);
+
+      service.stop();
+      expect(service._versionPollInterval).toBeNull();
+      expect(service._patchingTimeout).toBeNull();
+    });
+  });
+
+  describe('_pollBinaryVersion', () => {
+    beforeEach(() => {
+      vi.mocked(exec).mockReset();
+    });
+
+    it('on version change: broadcasts event and calls _applyExistingPatch', async () => {
+      vi.mocked(exec).mockImplementation((cmd, opts, cb) => {
+        cb(null, '2.1.88 (Claude Code)', '');
+      });
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._cachedBinaryVersion = '2.1.87';
+      service._applyExistingPatch = vi.fn().mockReturnValue(true);
+
+      await new Promise((resolve) => {
+        service._pollBinaryVersion(false);
+        process.nextTick(resolve);
+      });
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'binary-version-changed',
+          previous: '2.1.87',
+          current: '2.1.88',
+        }),
+      );
+      expect(service._cachedBinaryVersion).toBe('2.1.88');
+      expect(service._applyExistingPatch).toHaveBeenCalledWith('2.1.88');
+    });
+
+    it('initial run caches version without triggering patch', async () => {
+      vi.mocked(exec).mockImplementation((cmd, opts, cb) => {
+        cb(null, '2.1.87 (Claude Code)', '');
+      });
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._applyExistingPatch = vi.fn();
+      service._triggerAndApplyPatch = vi.fn();
+
+      await new Promise((resolve) => {
+        service._pollBinaryVersion(true);
+        process.nextTick(resolve);
+      });
+
+      expect(service._cachedBinaryVersion).toBe('2.1.87');
+      expect(service._applyExistingPatch).not.toHaveBeenCalled();
+      expect(service._triggerAndApplyPatch).not.toHaveBeenCalled();
+      expect(logStreamer.broadcastAll).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_applyExistingPatch', () => {
+    beforeEach(() => {
+      vi.mocked(exec).mockReset();
+      vi.mocked(fs.existsSync).mockReset();
+    });
+
+    it('returns false when patch script does not exist', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      const result = service._applyExistingPatch('2.1.87');
+
+      expect(result).toBe(false);
+    });
+
+    it('returns true and applies patch when script exists (dry-run OK)', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(exec).mockImplementation((cmd, opts, cb) => {
+        cb(null, 'dry-run OK', '');
+      });
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+
+      const result = service._applyExistingPatch('2.1.87');
+      expect(result).toBe(true);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(logStreamer.broadcastAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'patch-applied',
+          version: 'v2.1.87',
+          executionId: null,
+          source: 'binary-poll',
+        }),
+      );
+    });
+
+    it('falls back to _triggerAndApplyPatch when dry-run fails', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(exec).mockImplementation((cmd, opts, cb) => {
+        cb(new Error('patch mismatch'), '', 'pattern not found');
+      });
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._triggerAndApplyPatch = vi.fn();
+
+      service._applyExistingPatch('2.1.87');
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(service._triggerAndApplyPatch).toHaveBeenCalledWith('v2.1.87');
+      expect(service._patching).toBe(false);
+    });
+
+    it('_patching guard prevents concurrent apply, returns true', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+
+      const service = new UpdateWatcherService({ emailService, logStreamer });
+      service._patching = true;
+
+      const result = service._applyExistingPatch('2.1.87');
+
+      expect(result).toBe(true);
+      expect(service._patching).toBe(true);
     });
   });
 });

@@ -227,6 +227,9 @@ export const HEALTH_METRICS_INTERVAL_MS = 300000;
 /** Polling interval for Claude platform status (5 minutes) */
 export const CLAUDE_STATUS_POLL_INTERVAL_MS = 300000;
 
+/** Polling interval for CC binary version check (5 minutes) */
+export const BINARY_VERSION_POLL_INTERVAL_MS = 300000;
+
 /** Atlassian Statuspage API URL for Claude */
 export const CLAUDE_STATUS_URL = 'https://status.claude.com/api/v2/components.json';
 

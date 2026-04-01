@@ -597,6 +597,7 @@ const onListening = () => {
   cleanupService.start();
   insightsService.startScheduler();
   claudeStatusService.start();
+  updateWatcherService.start();
   if (UPDATE_ENABLED) {
     depUpdaterService.start();
   } else {
@@ -673,6 +674,7 @@ async function shutdown(signal) {
   claudeStatusService.stop();
   depUpdaterService.stop();
   smokeTestService.stop();
+  updateWatcherService.stop();
   insightsService.stopScheduler();
   claudeService.killAllRunning();
   fileWatcher.stop();

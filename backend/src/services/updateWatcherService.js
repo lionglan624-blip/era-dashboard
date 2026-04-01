@@ -4,6 +4,7 @@ import path from 'path';
 
 import { createLogger } from '../utils/logger.js';
 import { nowJST, nowJSTISO } from '../utils/timeUtils.js';
+import { BINARY_VERSION_POLL_INTERVAL_MS } from '../config.js';
 
 const DEVKIT_ROOT = process.env.DEVKIT_ROOT || 'C:\\Era\\devkit';
 
@@ -20,6 +21,8 @@ export class UpdateWatcherService {
     this._patching = false;
     this._patchingTimeout = null;
     this._lastExecutionId = null;
+    this._cachedBinaryVersion = null;
+    this._versionPollInterval = null;
   }
 
   async handleRelease(version, releaseUrl, rawSource) {
@@ -414,9 +417,113 @@ ${changelog}
     }
   }
 
+  start() {
+    // Initial run: cache current version without triggering patch
+    this._pollBinaryVersion(true);
+    this._versionPollInterval = setInterval(
+      () => this._pollBinaryVersion(false),
+      BINARY_VERSION_POLL_INTERVAL_MS,
+    );
+    this.logger.info('Binary version polling started');
+  }
+
+  stop() {
+    if (this._versionPollInterval) {
+      clearInterval(this._versionPollInterval);
+      this._versionPollInterval = null;
+    }
+    if (this._patchingTimeout) {
+      clearTimeout(this._patchingTimeout);
+      this._patchingTimeout = null;
+    }
+  }
+
+  _pollBinaryVersion(initialRun = false) {
+    const cmd = process.env.CLAUDE_PATH || 'claude';
+    exec(`${cmd} --version`, { timeout: 10000 }, (err, stdout) => {
+      if (err) return;
+      const match = stdout.trim().match(/^(\d+\.\d+\.\d+)/);
+      if (!match) return;
+      const version = match[1];
+      if (initialRun) {
+        this._cachedBinaryVersion = version;
+        this.logger.info(`Initial binary version: ${version}`);
+        return;
+      }
+      if (version !== this._cachedBinaryVersion) {
+        const prev = this._cachedBinaryVersion;
+        this._cachedBinaryVersion = version;
+        this.logger.info(`Binary version changed: ${prev} -> ${version}`);
+        if (this.logStreamer) {
+          this.logStreamer.broadcastAll({
+            type: 'binary-version-changed',
+            previous: prev,
+            current: version,
+            timestamp: nowJSTISO(),
+          });
+        }
+        // Apply existing patch script if available, otherwise trigger /patch-cc
+        if (!this._applyExistingPatch(version)) {
+          this._triggerAndApplyPatch(`v${version}`);
+        }
+      }
+    });
+  }
+
+  _applyExistingPatch(bareVersion) {
+    const scriptPath = path.join(DEVKIT_ROOT, '_out', 'tmp', `patch-claude-${bareVersion}.py`);
+    if (!fs.existsSync(scriptPath)) return false;
+    if (this._patching) {
+      this.logger.warn(`Already patching, skipping direct apply for ${bareVersion}`);
+      return true; // true to suppress _triggerAndApplyPatch as well
+    }
+
+    this._patching = true;
+    this.logger.info(`Existing patch script found for ${bareVersion}, applying directly`);
+    exec(
+      `python "${scriptPath}" --dry-run`,
+      { timeout: 60000, cwd: DEVKIT_ROOT },
+      (err, stdout, stderr) => {
+        if (err) {
+          this.logger.error(`patch dry-run failed for ${bareVersion}: ${stderr || err.message}`);
+          // dry-run failure means pattern mismatch — regenerate via /patch-cc
+          this._patching = false;
+          this._triggerAndApplyPatch(`v${bareVersion}`);
+          return;
+        }
+        this.logger.info(`patch dry-run OK for ${bareVersion}: ${stdout.trim()}`);
+        exec(
+          `python "${scriptPath}"`,
+          { timeout: 60000, cwd: DEVKIT_ROOT },
+          (applyErr, applyOut, applyStderr) => {
+            this._patching = false;
+            if (applyErr) {
+              this.logger.error(
+                `patch apply failed for ${bareVersion}: ${applyStderr || applyErr.message}`,
+              );
+              return;
+            }
+            this.logger.info(`patch applied for ${bareVersion}: ${applyOut.trim()}`);
+            if (this.logStreamer) {
+              this.logStreamer.broadcastAll({
+                type: 'patch-applied',
+                version: `v${bareVersion}`,
+                executionId: null,
+                source: 'binary-poll',
+                timestamp: nowJSTISO(),
+              });
+            }
+          },
+        );
+      },
+    );
+    return true;
+  }
+
   getLastUpdate() {
     return {
       version: this._lastVersion,
+      binaryVersion: this._cachedBinaryVersion,
       analyzing: this._analyzing,
       executionId: this._lastExecutionId,
     };
