@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
@@ -56,15 +56,17 @@ export class DependencyUpdaterService {
     {
       name: 'NuGet',
       type: 'check-only',
-      cmd: "wsl -- bash -c 'cd /mnt/c/Era/devkit && /home/siihe/.dotnet/dotnet list package --outdated'",
+      cmd: 'cd /mnt/c/Era/devkit && /home/siihe/.dotnet/dotnet list package --outdated',
+      wsl: true,
       needsIdle: false,
     },
     {
       name: 'Go',
       type: 'repo',
       repoDir: 'C:\\Era\\devkit',
-      cmd: "wsl -- bash -c 'cd /mnt/c/Era/devkit/src/tools/go/com-validator && go get -u ./... && go mod tidy'",
-      testCmd: "wsl -- bash -c 'cd /mnt/c/Era/devkit/src/tools/go/com-validator && go test ./...'",
+      cmd: 'cd /mnt/c/Era/devkit/src/tools/go/com-validator && go get -u ./... && go mod tidy',
+      testCmd: 'cd /mnt/c/Era/devkit/src/tools/go/com-validator && go test ./...',
+      wsl: true,
       commitFiles: ['src/tools/go/com-validator/go.mod', 'src/tools/go/com-validator/go.sum'],
       commitMsg: 'chore(deps): update Go modules',
       needsIdle: false,
@@ -120,8 +122,11 @@ export class DependencyUpdaterService {
         { name: 'core', dir: 'C:\\Era\\core', propsPath: 'Directory.Build.props' },
         { name: 'devkit', dir: 'C:\\Era\\devkit', propsPath: 'Directory.Build.props' },
       ],
-      buildCmd: (dir, sln) =>
-        `wsl -- bash -c 'cd ${dir.replace(/\\/g, '/').replace('C:', '/mnt/c')} && /home/siihe/.dotnet/dotnet build ${sln} --nologo -v q'`,
+      buildCmd: (dir, sln) => {
+        const wslDir = dir.replace(/\\/g, '/').replace('C:', '/mnt/c');
+        return `cd ${wslDir} && /home/siihe/.dotnet/dotnet build ${sln} --nologo -v q`;
+      },
+      wslBuild: true,
       slnMap: { core: 'Era.Core.sln', devkit: 'devkit.sln' },
       commitMsg: 'chore(deps): sync SonarAnalyzer.CSharp to SonarQube plugin version',
       needsIdle: false,
@@ -364,6 +369,39 @@ export class DependencyUpdaterService {
     }
   }
 
+  // Note: _execWsl does NOT support cwd — WSL commands must embed `cd` in the bash command.
+  // This is intentional: Node cwd applies to the local process, not the WSL filesystem.
+  async _execWsl(bashCommand, { timeout = UPDATE_COMMAND_TIMEOUT_MS } = {}) {
+    log.info(`[ExecWSL] ${bashCommand}`);
+    return new Promise((resolve) => {
+      execFile(
+        'wsl',
+        ['-e', 'bash', '-c', bashCommand],
+        {
+          timeout,
+          encoding: 'utf8',
+          windowsHide: true,
+        },
+        (err, stdout, stderr) => {
+          if (err) {
+            if (err.killed || err.code === 'ETIMEDOUT') {
+              resolve({ success: true, stdout: '', stderr: '', timedOut: true });
+              return;
+            }
+            resolve({
+              success: false,
+              error: err.message,
+              stdout: stdout?.trim() || '',
+              stderr: stderr?.trim() || '',
+            });
+            return;
+          }
+          resolve({ success: true, stdout: stdout.trim(), stderr: stderr.trim() });
+        },
+      );
+    });
+  }
+
   async _runTier(tierName, commands, { skipIdleCheck = false } = {}) {
     if (this._running.get(tierName)) {
       log.warn(`[${tierName}] Already running, skipping`);
@@ -474,7 +512,7 @@ export class DependencyUpdaterService {
   async _runCheckOnly(item) {
     const result = { name: item.name, success: true, outdated: [] };
 
-    const check = await this._exec(item.cmd);
+    const check = item.wsl ? await this._execWsl(item.cmd) : await this._exec(item.cmd);
     if (!check.success) {
       return { ...result, success: false, error: check.error };
     }
@@ -505,7 +543,9 @@ export class DependencyUpdaterService {
     const result = { name: item.name, success: true };
 
     // Run update
-    const update = await this._exec(item.cmd, { cwd: item.repoDir });
+    const update = item.wsl
+      ? await this._execWsl(item.cmd)
+      : await this._exec(item.cmd, { cwd: item.repoDir });
     if (!update.success) {
       return { ...result, success: false, error: update.error };
     }
@@ -518,14 +558,19 @@ export class DependencyUpdaterService {
     result.changedFiles = diff;
 
     // Run tests
-    const test = await this._exec(item.testCmd, {
-      cwd: item.repoDir,
-      timeout: UPDATE_TEST_TIMEOUT_MS,
-    });
+    const test = item.wsl
+      ? await this._execWsl(item.testCmd, { timeout: UPDATE_TEST_TIMEOUT_MS })
+      : await this._exec(item.testCmd, { cwd: item.repoDir, timeout: UPDATE_TEST_TIMEOUT_MS });
     if (!test.success) {
       // Revert changes
       await this._gitStashRevert(item.repoDir);
-      return { ...result, success: false, reverted: true, testError: test.error || test.stderr };
+      return {
+        ...result,
+        success: false,
+        reverted: true,
+        testError: test.error || test.stderr,
+        testOutput: (test.stdout || '').slice(-2000),
+      };
     }
 
     // Commit
@@ -587,7 +632,13 @@ export class DependencyUpdaterService {
       const rollbackParts = Object.entries(versionsBefore).map(([pkg, ver]) => `${pkg}==${ver}`);
       const rollbackCmd = `python -m pip install ${rollbackParts.join(' ')}`;
       await this._exec(rollbackCmd);
-      return { ...result, success: false, rolledBack: true, testError: test.error || test.stderr };
+      return {
+        ...result,
+        success: false,
+        rolledBack: true,
+        testError: test.error || test.stderr,
+        testOutput: (test.stdout || '').slice(-2000),
+      };
     }
 
     return result;
@@ -737,6 +788,9 @@ export class DependencyUpdaterService {
     const result = { name: item.name, success: true, repos: {} };
 
     // Step 1: Query SonarQube for csharp plugin version
+    // Ensure Docker daemon is running (may have been stopped by prior SonarQube item's postCmd)
+    await this._exec('wsl -- sudo service docker start');
+
     // SonarQube must be running (started by preceding SonarQube docker-image step)
     const startResult = await this._exec('wsl -- docker start sonarqube');
     if (!startResult.success) {
@@ -827,9 +881,11 @@ export class DependencyUpdaterService {
 
         // Build verification
         const sln = item.slnMap[repo.name];
-        const buildResult = await this._exec(item.buildCmd(repo.dir, sln), {
-          timeout: UPDATE_COMMAND_TIMEOUT_MS,
-        });
+        const buildResult = item.wslBuild
+          ? await this._execWsl(item.buildCmd(repo.dir, sln), {
+              timeout: UPDATE_COMMAND_TIMEOUT_MS,
+            })
+          : await this._exec(item.buildCmd(repo.dir, sln), { timeout: UPDATE_COMMAND_TIMEOUT_MS });
 
         if (!buildResult.success) {
           // Revert on build failure
@@ -852,6 +908,8 @@ export class DependencyUpdaterService {
 
       result.repos[repo.name] = repoResult;
     }
+
+    await this._exec('wsl -- sudo service docker stop');
 
     return result;
   }
@@ -906,7 +964,11 @@ export class DependencyUpdaterService {
       }
       const lines = entry.results.map((r) => {
         if (r.skipped) return `  ✅ ${r.name}: ${r.skipped}`;
-        if (!r.success) return `  ❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
+        if (!r.success) {
+          let msg = `  ❌ ${r.name}: ${r.error || r.testError || 'failed'}`;
+          if (r.testOutput) msg += `\n    stdout(last 500): ${r.testOutput.slice(-500)}`;
+          return msg;
+        }
         if (r.recreated) {
           const hcStatus = r.healthCheckPassed
             ? ' ✅ HC'

@@ -10,6 +10,7 @@ vi.mock('child_process', () => ({
     }
     cb(null, { stdout: '', stderr: '' });
   }),
+  execFile: vi.fn((cmd, args, opts, cb) => cb(null, '', '')),
 }));
 
 // Mock exitHelpers
@@ -705,6 +706,63 @@ describe('DependencyUpdaterService', () => {
     it('falls back to first line when no semver match', () => {
       const service = createService();
       expect(service._extractVersion('some tool output\nmore lines')).toBe('some tool output');
+    });
+  });
+
+  // =========================================================================
+  // _execWsl
+  // =========================================================================
+
+  describe('_execWsl', () => {
+    it('calls execFile with wsl and correct bash arguments', async () => {
+      vi.useRealTimers();
+      const { execFile } = await import('child_process');
+      execFile.mockImplementationOnce((cmd, args, opts, cb) => {
+        cb(null, 'hello\n', '');
+      });
+
+      const service = createService();
+      const result = await service._execWsl('echo hello');
+
+      expect(execFile).toHaveBeenCalledWith(
+        'wsl',
+        ['-e', 'bash', '-c', 'echo hello'],
+        expect.objectContaining({ encoding: 'utf8' }),
+        expect.any(Function),
+      );
+      expect(result.success).toBe(true);
+      expect(result.stdout).toBe('hello');
+    });
+
+    it('returns success: false on non-timeout error', async () => {
+      vi.useRealTimers();
+      const { execFile } = await import('child_process');
+      execFile.mockImplementationOnce((cmd, args, opts, cb) => {
+        const err = new Error('command not found');
+        cb(err, '', 'command not found');
+      });
+
+      const service = createService();
+      const result = await service._execWsl('bad-command');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('command not found');
+    });
+
+    it('returns success: true with timedOut when killed', async () => {
+      vi.useRealTimers();
+      const { execFile } = await import('child_process');
+      execFile.mockImplementationOnce((cmd, args, opts, cb) => {
+        const err = new Error('timeout');
+        err.killed = true;
+        cb(err, '', '');
+      });
+
+      const service = createService();
+      const result = await service._execWsl('sleep 999');
+
+      expect(result.success).toBe(true);
+      expect(result.timedOut).toBe(true);
     });
   });
 
