@@ -213,7 +213,7 @@ Captures Claude Code's exact usage percentages via `/usage` slash command throug
 
 **FE display**: Header shows `{profile} W:XX% S:XX%` with reset times (`↻W:` / `↻S:`) when percent > 75% (yellow ≥70%, red pulse ≥90%). Sonnet data captured but not displayed (used for auto-switch and rate limit retry).
 
-**Helpers**: `getEarliestResetTime()` — earliest reset across all profiles (for timed retry). `getSafeProfile(excludeProfile)` — profile below 90% (for switch retry). Capture time: ~7-10s per profile.
+**Helpers**: `getEarliestResetTime()` — earliest reset across all profiles (for timed retry). `getSafeProfile(excludeProfile)` — profile below 90% (for switch retry). `getWeeklyResetTime(profile)` — weekly reset for specific profile. `getEarliestWeeklyResetIfAllExhausted()` — earliest weekly reset when ALL profiles weekly >= `RATE_LIMIT_SAFE_THRESHOLD` (95%) (for weekly-wait strategy). Capture time: ~7-10s per profile.
 
 **Auto-switch (removed)**: Global `_checkAutoSwitch` + `onAutoSwitch` removed — see [Auto-Switch Details (Removed)](#auto-switch-details-removed). Profile filtering now handled by `_allocateProfile()` and per-execution 429 Strategy 1.
 
@@ -225,10 +225,15 @@ When an execution hits 429, `_scheduleRateLimitRetry()` attempts recovery:
 - `rateLimitService.getSafeProfile(currentProfile)` finds alternative profile below 90%
 - If found: `_switchProfile(safeProfile)` (`ccs auth default` with validation) → retry after 5s
 
-**Strategy 2 (timed — wait for reset)**:
+**Strategy 2 (weekly-exhausted — wait for weekly reset)**:
+- `rateLimitService.getEarliestWeeklyResetIfAllExhausted()` checks if ALL profiles have weekly >= 100%
+- If all weekly-exhausted: schedule timer at earliest weekly reset + 1min buffer (skips pointless session-reset wait)
+- On timer: `_processRateLimitQueue()` re-captures, re-evaluates
+
+**Strategy 3 (timed — wait for session/other reset)**:
 - `rateLimitService.getEarliestResetTime()` → schedule timer at `resetTime + RATE_LIMIT_RETRY_BUFFER_MS` (1min)
 - Queue blocks `_dequeueNext()` via `_rateLimitPaused` getter (`queue.length > 0`)
-- On timer: `_processRateLimitQueue()` re-captures all profiles, evaluates per-entry by `execution.ccsProfile` (< `RATE_LIMIT_SAFE_THRESHOLD` 95%), discards exhausted entries and drains safe entries sequentially
+- On timer: `_processRateLimitQueue()` re-captures all profiles, evaluates per-entry by `execution.ccsProfile` (< `RATE_LIMIT_SAFE_THRESHOLD` 95%). If still exhausted and all weekly >= 100%, re-schedules to weekly reset. Otherwise discards exhausted entries and drains safe entries sequentially
 
 **Queue-based retry**: Multiple concurrent 429s are queued in `_rateLimitRetryQueue`. First entry triggers Strategy 1/2. Subsequent entries queue behind. After each retry completes, `_processNextInQueue()` starts next entry with 5s delay. Killed/cancelled entries are skipped.
 

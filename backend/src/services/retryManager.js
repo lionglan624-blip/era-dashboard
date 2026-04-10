@@ -271,7 +271,45 @@ export class RetryManager {
       }
     }
 
-    // Strategy 2: Schedule timed retry based on earliest reset time
+    // Check if all profiles have weekly >= 100% — skip session reset wait, go straight to weekly reset
+    const weeklyResetTime = this.rateLimitService?.getEarliestWeeklyResetIfAllExhausted?.();
+    if (weeklyResetTime) {
+      const retryAt = Math.max(weeklyResetTime + RATE_LIMIT_RETRY_BUFFER_MS, Date.now() + 60000);
+      const delayMs = retryAt - Date.now();
+
+      execution.rateLimitRetryAt = retryAt;
+      this._rateLimitRetryAt = toJSTISO(new Date(retryAt));
+
+      this._rateLimitRetryTimer = setTimeout(() => {
+        this._rateLimitRetryTimer = null;
+        this._processRateLimitQueue();
+      }, delayMs);
+
+      const retryAtStr = new Date(retryAt).toLocaleString('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      claudeLog.info(
+        `[RateLimit] All profiles weekly-exhausted — waiting until ${retryAtStr} (weekly reset + 1min buffer) for F${execution.featureId} ${execution.command}`,
+      );
+
+      this.deps.broadcastAll({
+        type: 'rate-limit-waiting',
+        featureId: execution.featureId,
+        command: execution.command,
+        retryAt: toJSTISO(new Date(retryAt)),
+        delayMs,
+        weeklyReset: msToJSTISO(weeklyResetTime),
+        timestamp: nowJSTISO(),
+      });
+
+      return { message: `All profiles weekly-exhausted. Retry at ${retryAtStr} (weekly reset).` };
+    }
+
+    // Strategy 2: Schedule timed retry based on earliest reset time (session/weekly/sonnet)
     const resetTime = this.rateLimitService?.getEarliestResetTime();
     if (!resetTime) {
       claudeLog.warn(`[RateLimit] No safe profile and no reset time known. Cannot retry.`);
@@ -347,7 +385,50 @@ export class RetryManager {
       }
     }
 
-    // Discard exhausted entries — release chain slots to prevent deadlock
+    // Exhausted entries: check if all profiles weekly-exhausted → wait for weekly reset
+    const weeklyResetTime = this.rateLimitService?.getEarliestWeeklyResetIfAllExhausted?.();
+    if (exhaustedEntries.length > 0 && weeklyResetTime) {
+      // All profiles weekly >= 100% — re-queue all exhausted entries until weekly reset
+      const retryAt = Math.max(weeklyResetTime + RATE_LIMIT_RETRY_BUFFER_MS, Date.now() + 60000);
+
+      this._rateLimitRetryQueue = [...safeEntries, ...exhaustedEntries];
+      this._rateLimitRetryAt = toJSTISO(new Date(retryAt));
+
+      this._rateLimitRetryTimer = setTimeout(() => {
+        this._rateLimitRetryTimer = null;
+        this._processRateLimitQueue();
+      }, retryAt - Date.now());
+
+      const retryAtStr = new Date(retryAt).toLocaleString('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const firstExec = exhaustedEntries[0].execution;
+      claudeLog.info(
+        `[RateLimit] All profiles weekly-exhausted — waiting until ${retryAtStr} for ${exhaustedEntries.length} entries.`,
+      );
+
+      this.deps.broadcastAll({
+        type: 'rate-limit-waiting',
+        featureId: firstExec.featureId,
+        command: firstExec.command,
+        retryAt: toJSTISO(new Date(retryAt)),
+        delayMs: retryAt - Date.now(),
+        weeklyReset: msToJSTISO(weeklyResetTime),
+        timestamp: nowJSTISO(),
+      });
+      // Process safe entries now if any, exhausted will retry at weekly reset
+      if (safeEntries.length > 0) {
+        this._rateLimitRetryQueue = safeEntries;
+        this._callProcessNextInQueue();
+      }
+      return;
+    }
+
+    // Truly exhausted (weekly not the bottleneck or no reset info) — discard
     for (const entry of exhaustedEntries) {
       this.deps.releaseChainSlot(entry.execution);
       this.deps.pushLog(entry.execution, {

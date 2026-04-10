@@ -14,6 +14,7 @@ import {
   SESSION_BURN_RATE_MIN_ELAPSED_MS,
   SESSION_BURN_RATE_MIN_PERCENT,
   AUTO_SWITCH_THRESHOLD,
+  RATE_LIMIT_SAFE_THRESHOLD,
 } from '../config.js';
 
 /**
@@ -782,6 +783,39 @@ export class RateLimitService {
     }
     if (resetTimes.length === 0) return null;
     return Math.min(...resetTimes);
+  }
+
+  /**
+   * Get the weekly reset time for a specific profile.
+   * @param {string} profile - Profile name
+   * @returns {number|null} Weekly reset timestamp (ms since epoch), or null if not available
+   */
+  getWeeklyResetTime(profile) {
+    const entry = this._cache.get(profile);
+    if (!entry?.data?.weekly?.resetsAt) return null;
+    const parsed = this._parseResetsAt(entry.data.weekly.resetsAt);
+    return parsed ? parsed.getTime() : null;
+  }
+
+  /**
+   * Check if ALL profiles have weekly >= RATE_LIMIT_SAFE_THRESHOLD. If so, return the earliest weekly reset time.
+   * Used to skip session-reset wait when weekly is the real bottleneck.
+   * @returns {number|null} Earliest weekly reset timestamp (ms), or null if any profile has weekly below threshold
+   */
+  getEarliestWeeklyResetIfAllExhausted() {
+    const profiles = this.getProfiles();
+    if (profiles.length === 0) return null;
+
+    const resetTimes = [];
+    for (const p of profiles) {
+      const entry = this._cache.get(p);
+      const weeklyPercent = entry?.data?.weekly?.percent || 0;
+      if (weeklyPercent < RATE_LIMIT_SAFE_THRESHOLD) return null;
+      const resetTime = this.getWeeklyResetTime(p);
+      if (resetTime) resetTimes.push(resetTime);
+    }
+
+    return resetTimes.length > 0 ? Math.min(...resetTimes) : null;
   }
 
   /**
