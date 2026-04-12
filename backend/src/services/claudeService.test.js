@@ -673,7 +673,7 @@ describe('ClaudeService', () => {
     });
 
     it('returns null for terminal statuses', () => {
-      expect(getNextChainCommand('[DONE]')).toBe('imp');
+      expect(getNextChainCommand('[DONE]')).toBeNull();
       expect(getNextChainCommand('[WIP]')).toBeNull();
       expect(getNextChainCommand('[BLOCKED]')).toBeNull();
     });
@@ -2399,8 +2399,8 @@ describe('ClaudeService', () => {
 
       service.handleFeatureStatusChanged('100', '[REVIEWED]', '[DONE]');
 
-      // [DONE] now triggers imp
-      expect(service.executeCommand).toHaveBeenCalledWith('100', 'imp', expect.any(Object));
+      // [DONE] is terminal — no next command (run is last chain step)
+      expect(service.executeCommand).not.toHaveBeenCalled();
       expect(service.chainExecutor.chainWaiters.has('100')).toBe(false);
     });
   });
@@ -2987,7 +2987,7 @@ describe('ClaudeService', () => {
       expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
     });
 
-    it('registers waiter on chain /run completion (not last step)', () => {
+    it('sends email on chain /run completion (last step)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
@@ -3012,27 +3012,32 @@ describe('ClaudeService', () => {
       service._handleCompletion(execution, 0);
 
       expect(execution.status).toBe('completed');
-      // run is no longer the last step — it registers a waiter for imp
-      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(execution);
-      expect(service.emailService.sendCompletionNotification).not.toHaveBeenCalled();
+      // run is the last chain step — email sent, no waiter registered
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
+      expect(service.emailService.sendCompletionNotification).toHaveBeenCalledWith(
+        execution,
+        'completed',
+        0,
+        [
+          { command: 'fc', result: 'ok' },
+          { command: 'fl', result: 'ok' },
+          { command: 'run', result: 'ok' },
+        ],
+        null,
+      );
     });
 
-    it('sends email on chain /imp completion (last step)', () => {
+    it('sends email on manual /imp completion (non-chain)', () => {
       const { service } = createService();
       service._broadcastState = vi.fn();
       service._dequeueNext = vi.fn();
       service.chainExecutor.registerWaiter = vi.fn();
       service.emailService = { sendCompletionNotification: vi.fn().mockResolvedValue() };
 
+      // imp is manually executed (not part of chain)
       const execution = service._createExecution({
         featureId: '100',
         command: 'imp',
-        chain: true,
-        chainHistory: [
-          { command: 'fc', result: 'ok' },
-          { command: 'fl', result: 'ok' },
-          { command: 'run', result: 'ok' },
-        ],
       });
       execution.status = 'running';
       execution.startedAt = new Date().toISOString();
@@ -3048,12 +3053,7 @@ describe('ClaudeService', () => {
         execution,
         'completed',
         0,
-        [
-          { command: 'fc', result: 'ok' },
-          { command: 'fl', result: 'ok' },
-          { command: 'run', result: 'ok' },
-          { command: 'imp', result: 'ok' },
-        ],
+        undefined,
         null,
       );
     });
@@ -6717,8 +6717,8 @@ describe('Scenario Tests', () => {
 
     it('auto-answer resume enables completion email', () => {
       const { service } = createScenarioService();
-      // Last chain step (imp) so chain doesn't continue — email should be sent
-      const exec = createRunningChainExecution(service, { command: 'imp' });
+      // Last chain step (run) so chain doesn't continue — email should be sent
+      const exec = createRunningChainExecution(service, { command: 'run' });
       exec._hadInputWait = true;
       exec._resumedAnswer = true;
       exec.resultSubtype = 'success';
@@ -7291,14 +7291,14 @@ describe('Scenario Tests', () => {
 
     it('non-update-analysis commands do not auto-handoff on success', () => {
       const { service } = createScenarioService();
-      const exec = createRunningChainExecution(service, { command: 'imp' });
+      const exec = createRunningChainExecution(service, { command: 'run' });
       exec.resultSubtype = 'success';
       exec.debugLogPath = null;
       exec.lastAssistantText = 'Analysis complete.';
 
       service._handleCompletion(exec, 0);
 
-      // imp is last chain step → email, NOT handoff
+      // run is last chain step → email, NOT handoff
       expect(exec.status).toBe('completed');
       expect(service._handoffToTerminal).not.toHaveBeenCalled();
     });
@@ -7883,15 +7883,15 @@ describe('Scenario Tests', () => {
   });
 
   // =========================================================================
-  // S21: /imp as Last Chain Step — Email Sent, No Chain Waiter Registered
+  // S21: /run as Last Chain Step — Email Sent, No Chain Waiter Registered
   // =========================================================================
-  describe('S21: imp Last Chain Step — Email Sent, No Chain Waiter', () => {
-    it('imp exit 0 success: email sent with ok result, no registerWaiter, no executeCommand', () => {
+  describe('S21: run Last Chain Step — Email Sent, No Chain Waiter', () => {
+    it('run exit 0 success: email sent with ok result, no registerWaiter, no executeCommand', () => {
       const { service } = createScenarioService();
       const registerSpy = vi.spyOn(service.chainExecutor, 'registerWaiter');
 
-      // imp is defined as isLastChainStep=true in the source
-      const exec = createRunningChainExecution(service, { command: 'imp' });
+      // run is defined as isLastChainStep=true in the source
+      const exec = createRunningChainExecution(service, { command: 'run' });
       exec.resultSubtype = 'success';
       exec.debugLogPath = null;
 
@@ -8195,7 +8195,7 @@ describe('Scenario Tests', () => {
       );
     });
 
-    it('[DONE] status change: run-lock released and imp enqueued (chain-slot inherited via chainParentId)', () => {
+    it('[DONE] status change: both locks released (run is last chain step, no imp enqueue)', () => {
       const { service } = createScenarioService();
 
       // Set up a terminal-active execution
@@ -8215,8 +8215,10 @@ describe('Scenario Tests', () => {
 
       // run-lock released
       expect(service.runLockFeatureId).toBeNull();
-      // registerWaiter called for imp enqueue
-      expect(service.chainExecutor.registerWaiter).toHaveBeenCalledWith(exec);
+      // chain-slot released (run is last step, no imp enqueue)
+      expect(service.chainSlots.has(exec.id)).toBe(false);
+      // registerWaiter NOT called (run is last chain step)
+      expect(service.chainExecutor.registerWaiter).not.toHaveBeenCalled();
       // terminalActive cleared
       expect(exec.terminalActive).toBe(false);
     });

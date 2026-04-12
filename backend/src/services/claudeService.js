@@ -1242,29 +1242,6 @@ export class ClaudeService {
 
     this._broadcastQueueUpdate();
     this._broadcastState(execution);
-
-    // Sync active imp IDs so featureService can promote RC features with active /imp
-    this._syncActiveImpIds();
-  }
-
-  /**
-   * Sync active imp execution IDs to featureService.
-   * Called after execution starts or completes so featureService can promote
-   * recently-completed features with active /imp back to their phase section.
-   */
-  _syncActiveImpIds() {
-    if (!this.featureService) return;
-    const ids = [];
-    for (const exec of this.executions.values()) {
-      if (
-        exec.command === 'imp' &&
-        (exec.status === 'running' || exec.status === 'queued') &&
-        exec.featureId
-      ) {
-        ids.push(exec.featureId);
-      }
-    }
-    this.featureService.setActiveImpFeatureIds(ids);
   }
 
   // ═══════════════════════════════════════
@@ -2362,7 +2339,7 @@ export class ClaudeService {
       execution.resultSubtype === 'success' &&
       !execution.promptTooLong &&
       !isFlRetryExhausted;
-    const isLastChainStep = execution.command === 'imp';
+    const isLastChainStep = execution.command === 'run';
 
     // Detect incomplete termination: exit 0 + success subtype, but status didn't advance.
     // This happens when context/max_turns is exhausted mid-work (CLI reports success but command didn't finish).
@@ -2373,7 +2350,6 @@ export class ClaudeService {
     const expectedStatus = EXPECTED_STATUS_AFTER_COMMAND[execution.command];
     if (
       chainContinues &&
-      !isLastChainStep &&
       expectedStatus &&
       (!execution._hadInputWait || execution._resumedAnswer)
     ) {
@@ -2512,9 +2488,6 @@ export class ClaudeService {
     ) {
       this._releaseRunLock(execution.featureId, 'adopt-completion-failure');
     }
-
-    // Sync active imp IDs — execution status changed, update featureService promotion state
-    this._syncActiveImpIds();
 
     this._dequeueNext();
 
@@ -2675,17 +2648,8 @@ export class ClaudeService {
     terminalExec.terminalActive = false;
     claudeLog.info(`[Queue] Terminal-active resolved: F${featureId} → ${newStatus}`);
 
-    if (newStatus === '[DONE]' && terminalExec.chain?.enabled) {
-      // Register waiter for chain continuation (imp enqueue).
-      // Chain slot stays held — imp inherits it via chainParentId
-      this.chainExecutor.registerWaiter(terminalExec);
-      // Release run-lock AFTER registerWaiter to prevent _dequeueNext
-      // from letting another /run slip in before imp is enqueued.
-      this._releaseRunLock(featureId, `terminal-${newStatus}`);
-      return;
-    }
-
-    // [CANCELLED] or no chain → release both locks
+    // [DONE], [CANCELLED], or no chain → release both locks
+    // run is now the last chain step — no further chain command after [DONE]
     this._releaseChainSlot(terminalExec);
     this._releaseRunLock(featureId, `terminal-${newStatus}`);
   }

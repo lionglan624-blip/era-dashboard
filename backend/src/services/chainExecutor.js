@@ -6,7 +6,7 @@
  * automatically triggered based on the feature's new status.
  *
  * Chain flow:
- *   [DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE] → imp → [DONE]
+ *   [DRAFT] → fc → [PROPOSED] → fl → [REVIEWED] → run → [DONE]
  */
 
 import { claudeLog } from '../utils/logger.js';
@@ -38,7 +38,6 @@ import { nowJSTISO } from '../utils/timeUtils.js';
 const STATUS_TO_COMMAND = {
   '[PROPOSED]': 'fl', // FC done → start FL
   '[REVIEWED]': 'run', // FL done → start Run
-  '[DONE]': 'imp', // Run done → start Imp
 };
 
 /**

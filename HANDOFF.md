@@ -61,7 +61,7 @@ dr button                                   # process.exit(0) → PM2 autorestar
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/execution/{fc,fl,run,imp}` | POST | Execute command |
+| `/api/execution/{fc,fl,run,imp}` | POST | Execute command. Automatic chain: `fc→fl→run` ([DONE] is the terminal state). `/imp` is available for manual use only — it is NOT part of the automatic chain. |
 | `/api/execution/terminal` | POST | Open terminal |
 | `/api/execution/shell` | POST | Run cs, dr, upd |
 | `/api/execution/slash` | POST | Run /commit, /sync-deps |

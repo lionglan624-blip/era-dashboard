@@ -16,8 +16,8 @@ describe('Chain Execution Pure Functions', () => {
       expect(getNextChainCommand('[REVIEWED]')).toBe('run');
     });
 
-    it('returns imp for [DONE] status', () => {
-      expect(getNextChainCommand('[DONE]')).toBe('imp');
+    it('returns null for [DONE] status (run is last chain step)', () => {
+      expect(getNextChainCommand('[DONE]')).toBeNull();
     });
 
     it('returns null for [DRAFT] status', () => {
@@ -364,10 +364,10 @@ describe('ChainExecutor', () => {
       expect(chainExecutor.hasWaiter('100')).toBe(false);
     });
 
-    it('triggers imp on [DONE] status', () => {
+    it('does not trigger on [DONE] status (run is last chain step)', () => {
       chainExecutor.handleStatusChanged('100', '[REVIEWED]', '[DONE]');
 
-      expect(mockDeps.executeCommand).toHaveBeenCalledWith('100', 'imp', expect.any(Object));
+      expect(mockDeps.executeCommand).not.toHaveBeenCalled();
     });
 
     it('does not trigger if no next command (e.g., [BLOCKED])', () => {
@@ -376,7 +376,7 @@ describe('ChainExecutor', () => {
       expect(mockDeps.executeCommand).not.toHaveBeenCalled();
     });
 
-    it('handles run → [DONE] → imp chain', () => {
+    it('handles run → [DONE] — chain complete, no further command', () => {
       const execution = {
         id: 'exec-789',
         featureId: '300',
@@ -397,15 +397,8 @@ describe('ChainExecutor', () => {
 
       chainExecutor.handleStatusChanged('300', '[WIP]', '[DONE]');
 
-      expect(mockDeps.executeCommand).toHaveBeenCalledWith('300', 'imp', {
-        chain: true,
-        chainParentId: 'parent-123',
-        chainHistory: [
-          { command: 'fc', result: 'ok' },
-          { command: 'fl', result: 'ok' },
-          { command: 'run', result: 'ok' },
-        ],
-      });
+      // [DONE] is terminal — no next command
+      expect(mockDeps.executeCommand).not.toHaveBeenCalled();
     });
 
     it('handles fl → [REVIEWED] → run chain', () => {
