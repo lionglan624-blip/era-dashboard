@@ -365,7 +365,7 @@ ${changelog}
           // Dry-run first
           exec(
             `python "${scriptPath}" --dry-run`,
-            { timeout: 60000, cwd: DEVKIT_ROOT },
+            { timeout: 60000, cwd: DEVKIT_ROOT, windowsHide: true },
             (err, stdout, stderr) => {
               if (err) {
                 this.logger.error(`patch dry-run failed for ${version}: ${stderr || err.message}`);
@@ -376,7 +376,7 @@ ${changelog}
               // Apply
               exec(
                 `python "${scriptPath}"`,
-                { timeout: 60000, cwd: DEVKIT_ROOT },
+                { timeout: 60000, cwd: DEVKIT_ROOT, windowsHide: true },
                 (applyErr, applyOut, applyStderr) => {
                   if (applyErr) {
                     this.logger.error(
@@ -440,7 +440,9 @@ ${changelog}
 
   _pollBinaryVersion(initialRun = false) {
     const cmd = process.env.CLAUDE_PATH || 'claude';
-    exec(`${cmd} --version`, { timeout: 10000 }, (err, stdout) => {
+    // windowsHide: true prevents the spawned cmd.exe from flashing a window
+    // and stealing focus every BINARY_VERSION_POLL_INTERVAL_MS (5min).
+    exec(`${cmd} --version`, { timeout: 10000, windowsHide: true }, (err, stdout) => {
       if (err) return;
       const match = stdout.trim().match(/^(\d+\.\d+\.\d+)/);
       if (!match) return;
@@ -482,7 +484,7 @@ ${changelog}
     this.logger.info(`Existing patch script found for ${bareVersion}, applying directly`);
     exec(
       `python "${scriptPath}" --dry-run`,
-      { timeout: 60000, cwd: DEVKIT_ROOT },
+      { timeout: 60000, cwd: DEVKIT_ROOT, windowsHide: true },
       (err, stdout, stderr) => {
         if (err) {
           this.logger.error(`patch dry-run failed for ${bareVersion}: ${stderr || err.message}`);
@@ -494,7 +496,7 @@ ${changelog}
         this.logger.info(`patch dry-run OK for ${bareVersion}: ${stdout.trim()}`);
         exec(
           `python "${scriptPath}"`,
-          { timeout: 60000, cwd: DEVKIT_ROOT },
+          { timeout: 60000, cwd: DEVKIT_ROOT, windowsHide: true },
           (applyErr, applyOut, applyStderr) => {
             this._patching = false;
             if (applyErr) {
