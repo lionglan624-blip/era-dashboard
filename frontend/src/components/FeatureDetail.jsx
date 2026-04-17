@@ -128,7 +128,9 @@ export default function FeatureDetail({
                   <th>AC#</th>
                   <th>Description</th>
                   <th>Type</th>
+                  <th>Method</th>
                   <th>Matcher</th>
+                  <th>Expected</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -138,7 +140,9 @@ export default function FeatureDetail({
                     <td>{ac.ac}</td>
                     <td>{ac.description}</td>
                     <td>{ac.type}</td>
+                    <td>{ac.method ?? ''}</td>
                     <td>{ac.matcher}</td>
+                    <td>{ac.expected ?? ''}</td>
                     <td>{ac.completed ? '✅' : '⬜'}</td>
                   </tr>
                 ))}

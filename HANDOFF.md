@@ -179,6 +179,42 @@ User action → App.jsx handler → useExecution API call
 | Input detection pattern | `inputPatterns.js` INPUT_WAIT_PATTERNS (also used by `remoteCapture.js` Phase 3) |
 | Styling | `frontend/src/styles/main.css` |
 
+### AC Table Parser Contract
+
+`featureParser.js` (`parseACTable`) supports 5 schema variants: `4/5/6/7/9-col`.
+
+| Variant | Header columns | Notes |
+|---------|---------------|-------|
+| `4-col` | AC# \| Description \| Type \| Status | Minimal format |
+| `5-col` | AC# \| Description \| Type \| Matcher \| Status | No Expected |
+| `6-col` | AC# \| Description \| Type \| Matcher \| Expected \| Status | Legacy full format |
+| `7-col` | AC# \| Description \| Type \| Method \| Matcher \| Expected \| Status | Canonical format |
+| `9-col` | AC# \| Description \| Type \| Method \| Matcher \| Expected \| Rationale \| Derivation \| Status | Compact format (F1386) |
+
+**Detection approach**: A `colIdx` header-name-to-index map is built from the first row of the AC Definition Table before parsing data rows. Each cell is resolved by name (`get('method')`, `get('matcher')`, etc.) rather than by fixed column position. This makes all 5 variants forward-compatible without branching.
+
+```js
+const headerCells = acLines[0].split('|').map(s => s.trim()).filter(s => s !== '');
+const colIdx = Object.fromEntries(headerCells.map((name, i) => [name.toLowerCase(), i]));
+const get = (name) => cols[colIdx[name]] ?? '';
+```
+
+**JSON fields** returned per AC row (F1386 additions in bold):
+
+| Field | Source column | Introduced |
+|-------|--------------|-----------|
+| `ac` | AC# | original |
+| `description` | Description | original |
+| `type` | Type | original |
+| **`method`** | Method | F1386 |
+| `matcher` | Matcher | original |
+| `expected` | Expected | original |
+| **`rationale`** | Rationale | F1386 |
+| **`derivation`** | Derivation | F1386 |
+| `completed` | Status (`[x]`) | original |
+
+Fields absent from the header (e.g., `method` in a 4-col table) resolve to `''` (empty string).
+
 ### File Structure
 
 ```

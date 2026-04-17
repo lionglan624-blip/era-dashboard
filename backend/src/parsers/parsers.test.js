@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import path from 'path';
 import { FeatureParser } from './featureParser.js';
 import { IndexParser } from './indexParser.js';
 
@@ -87,16 +88,22 @@ describe('FeatureParser', () => {
         ac: 1,
         description: 'Test AC',
         type: 'output',
+        method: '',
         matcher: 'contains',
         expected: 'text',
+        rationale: '',
+        derivation: '',
         completed: true,
       });
       expect(result[1]).toEqual({
         ac: 2,
         description: 'Another AC',
         type: 'build',
+        method: '',
         matcher: 'succeeds',
         expected: '-',
+        rationale: '',
+        derivation: '',
         completed: false,
       });
     });
@@ -117,8 +124,11 @@ describe('FeatureParser', () => {
         ac: 1,
         description: 'Test AC',
         type: 'output',
+        method: '',
         matcher: 'contains',
         expected: '',
+        rationale: '',
+        derivation: '',
         completed: true,
       });
     });
@@ -139,8 +149,11 @@ describe('FeatureParser', () => {
         ac: 1,
         description: 'Test AC',
         type: 'output',
+        method: '',
         matcher: '',
         expected: '',
+        rationale: '',
+        derivation: '',
         completed: false,
       });
     });
@@ -198,6 +211,56 @@ describe('FeatureParser', () => {
       };
 
       expect(parser.parseACTable(sections)).toEqual([]);
+    });
+
+    it('parses AC table with 7 columns (canonical with Method)', () => {
+      const sections = {
+        'Acceptance Criteria': [
+          '| AC# | Description | Type | Method | Matcher | Expected | Status |',
+          '|:---:|-------------|------|--------|---------|----------|:------:|',
+          '| 1 | Method test | code | Grep | contains | pattern | [x] |',
+        ],
+      };
+
+      const result = parser.parseACTable(sections);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].method).toBe('Grep');
+      expect(result[0].matcher).toBe('contains');
+      expect(result[0].expected).toBe('pattern');
+      expect(result[0].type).toBe('code');
+      expect(result[0].completed).toBe(true);
+    });
+
+    it('parses AC table with 9 columns (compact format)', () => {
+      const sections = {
+        'Acceptance Criteria': [
+          '| AC# | Description | Type | Method | Matcher | Expected | Rationale | Derivation | Status |',
+          '|:---:|-------------|------|--------|---------|----------|-----------|------------|:------:|',
+          '| 1 | Compact test | code | Grep | contains | value | Why needed | From spec | [x] |',
+        ],
+      };
+
+      const result = parser.parseACTable(sections);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].method).toBe('Grep');
+      expect(result[0].matcher).toBe('contains');
+      expect(result[0].expected).toBe('value');
+      expect(result[0].rationale).toBe('Why needed');
+      expect(result[0].derivation).toBe('From spec');
+      expect(result[0].completed).toBe(true);
+    });
+
+    it('parses real feature file feature-1385.md (7-col integration)', () => {
+      const filePath = path.resolve('C:/Era/devkit/pm/features/feature-1385.md');
+      const result = parser.parse(filePath);
+
+      expect(result.acceptanceCriteria.length).toBeGreaterThan(0);
+      for (const ac of result.acceptanceCriteria) {
+        expect(typeof ac.type).toBe('string');
+        expect(ac.type.length).toBeGreaterThan(0);
+      }
     });
   });
 

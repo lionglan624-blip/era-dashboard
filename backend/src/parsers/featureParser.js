@@ -112,26 +112,45 @@ export class FeatureParser {
     const lines = this.findSection(sections, 'Acceptance Criteria');
     if (!lines) return [];
 
-    // Find the AC Definition Table (header contains "AC#")
+    // Find the AC Definition Table (header has "AC#" as first column)
     // There may be other tables before it (e.g., Philosophy Derivation)
-    const acHeaderIdx = lines.findIndex((l) => l.trim().startsWith('|') && l.includes('AC#'));
+    // Match lines where AC# is the first cell (not just anywhere in the row)
+    const acHeaderIdx = lines.findIndex((l) => {
+      if (!l.trim().startsWith('|')) return false;
+      const firstCell = l.split('|')[1]?.trim() ?? '';
+      return firstCell === 'AC#';
+    });
     if (acHeaderIdx === -1) return [];
 
     const acLines = lines.slice(acHeaderIdx);
+
+    // Build header-name-to-index map from the first row
+    const headerCells = acLines[0]
+      .split('|')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
+    const colIdx = Object.fromEntries(headerCells.map((name, i) => [name.toLowerCase(), i]));
+
     return this.parseTable(acLines, (cols) => {
       const acNum = parseInt(cols[0]);
       if (isNaN(acNum)) return null;
 
-      // Status is the last column, check for [x] or [ ]
-      const statusCol = cols[cols.length - 1];
-      const completed = /\[x\]/i.test(statusCol);
+      const get = (name) => cols[colIdx[name]] ?? '';
+
+      // Status is resolved via colIdx rather than last column
+      const statusCol =
+        colIdx['status'] !== undefined ? cols[colIdx['status']] : cols[cols.length - 1];
+      const completed = /\[x\]/i.test(statusCol ?? '');
 
       return {
         ac: acNum,
         description: cols[1] || '',
         type: cols[2] || '',
-        matcher: cols.length > 4 ? cols[3] : '',
-        expected: cols.length > 5 ? cols[4] : '',
+        method: get('method'),
+        matcher: get('matcher'),
+        expected: get('expected'),
+        rationale: get('rationale'),
+        derivation: get('derivation'),
         completed,
       };
     });

@@ -80,6 +80,29 @@ describe('FeatureDetail', () => {
     expect(screen.getByText('AC 2')).toBeInTheDocument();
   });
 
+  it('renders AC table with Method and Expected column headers and body cells', () => {
+    const feature = createFeature({
+      acceptanceCriteria: [
+        {
+          ac: 1,
+          description: 'AC with method',
+          type: 'code',
+          method: 'Grep',
+          matcher: 'contains',
+          expected: 'some-pattern',
+          rationale: 'needed for correctness',
+          derivation: 'from spec',
+          completed: false,
+        },
+      ],
+    });
+    render(<FeatureDetail feature={feature} onClose={vi.fn()} />);
+    expect(screen.getByRole('columnheader', { name: 'Method' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Expected' })).toBeInTheDocument();
+    expect(screen.getByText('Grep')).toBeInTheDocument();
+    expect(screen.getByText('some-pattern')).toBeInTheDocument();
+  });
+
   it('completed AC rows have row-done class and checkmark', () => {
     const feature = createFeature({
       acceptanceCriteria: [
